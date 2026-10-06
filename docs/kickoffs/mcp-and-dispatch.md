@@ -34,3 +34,17 @@ Work for at most 90 minutes. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Other agents are working in other worktrees at the same time; change `ts/packages/core` only when you must, and then say so in the write-up. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+**What changed.** `ts/packages/mcp` adds MCP servers' tools as `<server>__<tool>`, over stdio or streamable HTTP, with one connection per server for the process and `close()` for shutdown. Failed calls become error results naming the server. A server down at session open leaves its tools out and adds an `mcp` section saying so; a resumed session keeps its frozen MCP tools and retries on each call. `examples/mcp-python/server.py` is a two-tool unit converter run with `uv run`. `ts/packages/dispatch` adds `dispatch` (brief, agent, wait) and gives each sub-agent `report`. One line in `docs/spec/sessions.md` says a dispatch's `parent.session` belongs to the dispatching agent. No core change, so no conformance scenario.
+
+**Choices.** I used the official `@modelcontextprotocol/sdk` client: streamable HTTP alone (SSE responses, session headers, version negotiation) is well past a few dozen lines. The cost is 95 packages in the lockfile. The Python server pins `mcp<2`, since 2.x renamed FastMCP. Each dispatch makes a fresh sub-agent, `<parent>.<name>-<hex4>`, and runs one session of it; the parent link is set by wrapping the store's `create`, which kept the core untouched. `maxDepth` defaults to 1, so sub-agents cannot dispatch. The brief is a `brief` section, so it survives a reset. A `custom` entry in the parent records the child's id.
+
+**Commands.** `scripts/check.sh ts`: all passed, 8 new tests (Python server via uv, an in-process HTTP server, a missing command, a down server on resume; dispatch waiting, stopped without report, not waiting with wake, depth 2).
+
+**Left out.** Not-waiting results live in the agent's in-process queue, so a restart loses them. No stop signal reaches sub-agents. MCP tool names with characters providers reject are rewritten to `_`, and on the resume fallback the rewritten name is called. `docs/overview.md` still lists MCP and dispatch as next; I left it to avoid conflicts.
+
+**How it went.** Smooth; the spec and core were accurate. The 2.x Python rename cost one retry.
+
+## Question for the lead
+
+Should the header's `parent` name the dispatching agent, such as `parent.agent`? Without it, the link is found only through the sub-agent's id. My guess: yes, as an optional field in the spec, types and suite, but it touches the core, so I left it.

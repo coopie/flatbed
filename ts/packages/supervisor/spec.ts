@@ -7,7 +7,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { check } from './check.ts';
-import type { Usage } from './types.ts';
+import type { Usage } from '@flatbed/core';
 
 export type Severity = 'block' | 'warn';
 
@@ -32,17 +32,12 @@ export type ItemVerdict = { analysis: string; ok: boolean };
 /**
  * What a supervisor came back with. `given` answers every item of the spec, the model's and the
  * host's. `unavailable` answers nothing and says why: a verdict nobody gave is never a pass.
+ * `callId` is the id of the tool call judged, when there was one.
  */
-export type Verdict =
-	| {
-			status: 'given';
-			spec: string;
-			items: Record<string, ItemVerdict>;
-			summary: string;
-			model: string;
-			usage: Usage;
-	  }
-	| { status: 'unavailable'; spec: string; reason: string; model: string; usage: Usage };
+export type Verdict = { spec: string; callId?: string; model: string; usage: Usage } & (
+	| { status: 'given'; items: Record<string, ItemVerdict>; summary: string }
+	| { status: 'unavailable'; reason: string }
+);
 
 const specSchema: object = JSON.parse(
 	readFileSync(new URL('./spec.schema.json', import.meta.url), 'utf8')
@@ -117,4 +112,43 @@ export function failures(
 		const answer = verdict.items[item.id];
 		return answer === undefined || answer.ok ? [] : [{ ...item, ...answer }];
 	});
+}
+
+/**
+ * Whether a host should stop what the verdict judged: true when the verdict is unavailable, or
+ * when any `block` item failed. A `warn` item never blocks. Use this rather than `failures()` to
+ * decide, so an unavailable verdict, which has no failures, is never taken for a pass.
+ */
+export function blocked(spec: Spec, verdict: Verdict): boolean {
+	return verdict.status === 'unavailable' || failures(spec, verdict).some((item) => item.severity === 'block');
+}
+
+/**
+ * Checks the host's answers against the spec: one for every `answeredBy: "host"` item, and none for
+ * an item the model answers, so a host answer never silently replaces the model's. A mismatch is a
+ * bug in the host, not a verdict to record, so it throws.
+ */
+export function checkHostAnswers(spec: Spec, answers: Record<string, ItemVerdict>): void {
+	const missing = spec.checklist.filter((item) => item.answeredBy === 'host' && !(item.id in answers));
+	if (missing.length > 0) {
+		throw new Error(`The host must answer ${missing.map((item) => item.id).join(', ')} for ${spec.id}.`);
+	}
+	const hostIds = new Set(spec.checklist.filter((item) => item.answeredBy === 'host').map((item) => item.id));
+	const extra = Object.keys(answers).filter((id) => !hostIds.has(id));
+	if (extra.length > 0) {
+		throw new Error(`The host may answer only items marked answeredBy "host"; ${spec.id} has ${extra.join(', ')} for the model or not at all.`);
+	}
+}
+
+/** The items of a given verdict in the spec's order, whoever answered, so every reader sees them the same way. */
+export function mergeAnswers(
+	spec: Spec,
+	modelAnswers: Record<string, ItemVerdict>,
+	hostAnswers: Record<string, ItemVerdict>
+): Record<string, ItemVerdict> {
+	const items: Record<string, ItemVerdict> = {};
+	for (const item of spec.checklist) {
+		items[item.id] = (item.answeredBy === 'host' ? hostAnswers[item.id] : modelAnswers[item.id])!;
+	}
+	return items;
 }

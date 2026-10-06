@@ -4,7 +4,8 @@ You are taking `@flatbed/supervisor` from a library to something an agent uses. 
 
 ## Guidance
 
-- **Use the core's types.** Replace the provider and session types the library defined locally with `@flatbed/core`'s.
+- **Use the core.** Replace the types, `pathOf`, the escaping and the live test's stand-in provider that the library defined locally with `@flatbed/core`'s, so events render exactly as the core renders them.
+- **Fix what the wave 1 review found:** `prompt.ts` throws on a reset with no reason; add `blocked(spec, verdict)`, true for an `unavailable` verdict or any failed `block` item, and use it everywhere a host might use `failures()`; a host's answer must not silently replace the model's answer to a model item; and a verdict records the `callId` it judged, when there was one.
 - **The guard plugin.** The host gives it a map from tool name to spec, a mode and a `complete` function. Its `beforeTool` hook checks each call to a mapped tool against the session so far.
   - `off`: nothing is checked.
   - `shadow`: the verdict is recorded and the call runs.
@@ -25,3 +26,13 @@ Work for at most 60 minutes. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Other agents are working in other worktrees at the same time; change `ts/packages/core` only when you must, and then say so. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+**What changed.** `@flatbed/supervisor` now builds on `@flatbed/core`: its local types are gone, and it uses the core's `pathOf`, `renderEvent` (so events read exactly as the agent saw them), the core's escaping rules, and its providers in the tests. The review fixes are in: a reset with no reason renders, `blocked(spec, verdict)` is the one way to decide, a host answer to a model item throws, and verdicts carry `callId`. New: `supervisorGuard` (guard.ts) with `off`, `shadow` and `enforce`, and `agentPass` (agent.ts), which ends on `report_verdict`.
+
+**Choices.** The guard takes a `Supervise` rather than a `complete`, so it takes either runner. `agentPass` writes its session's header, context and material itself and then runs the loop, because the core escapes event text and the material is already XML. The parent link uses `reason: "dispatch"`. Checks on one runner are queued. A refusal is an error result listing every failed item as `<failed_check>` with analysis and guidance. Custom entry data is `{ mode, refused, verdict }`. See `docs/decisions.md`. I removed the package's own tsconfig: its `exactOptionalPropertyTypes` fails on the core, and the workspace config is the gate.
+
+**Commands.** `scripts/check.sh ts`: core 6 pass 1 skipped, docs 5 pass, supervisor 14 pass 1 skipped (live), "all checks passed". The live test was not run, since the key is revoked.
+
+**Left out.** No turn limit on the agent supervisor beyond the core's context budget. Nothing in `ts/packages/core` changed. `docs/overview.md` still lists the supervisor under *Now*.
+
+**How it went.** Two core gaps slowed me: the core does not export its escaping, so the supervisor copies two lines of it, and there is no way to start a session with a user message or a chosen header, so the agent runner writes to the store directly. A core `openSession({ parent, messages })` or an exported `escapeText` would remove both. Header `parent` also cannot name another agent's session.

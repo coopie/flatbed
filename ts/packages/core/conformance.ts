@@ -9,7 +9,7 @@ import { createAgent } from './loop.ts';
 import { pathOf } from './render.ts';
 import { fauxProvider, type ScriptStep } from './providers/faux.ts';
 import { memoryStore, newEntryId } from './store.ts';
-import type { Entry, EntryBody, Event, Section, Tool, ToolDefinition } from './types.ts';
+import type { Entry, EntryBody, Event, Plugin, Section, Tool, ToolDefinition, ToolResult } from './types.ts';
 
 const SCENARIOS = fileURLToPath(new URL('../../../conformance/scenarios/', import.meta.url));
 const AGENT = 'test';
@@ -21,12 +21,21 @@ type Step =
   | { crash: EntryBody }
   | { rewind: number };
 
+/** What the test plugin does beyond giving sections and tools, as docs/spec/conformance.md describes. */
+type PluginHooks = {
+  beforeTool?: Record<string, ToolResult>;
+  afterTool?: Record<string, ToolResult>;
+  onEntry?: { custom: unknown };
+  onSessionEnd?: { deliver: Event };
+};
+
 type Scenario = {
   name: string;
-  agent: { model: string; softLimit?: number; hardLimit?: number };
+  agent: { model: string; softLimit?: number; hardLimit?: number; maxTokens?: number };
   sections?: Section[];
   tools?: (ToolDefinition & { behaviour: Behaviour })[];
-  script: ScriptStep[];
+  plugin?: PluginHooks;
+  script: (ScriptStep | { abort: string })[];
   steps: Step[];
   expect: { sessions: unknown[][]; requests?: unknown[] };
 };
@@ -48,10 +57,37 @@ function toolFor({ behaviour, ...definition }: ToolDefinition & { behaviour: Beh
   };
 }
 
+function testPlugin(scenario: Scenario): Plugin {
+  const hooks = scenario.plugin ?? {};
+  return {
+    name: 'test',
+    context: () => ({ sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map(toolFor) }),
+    beforeTool: (call) => hooks.beforeTool?.[call.name],
+    afterTool: (call) => hooks.afterTool?.[call.name],
+    async onEntry(entry, ctx) {
+      if (hooks.onEntry && entry.type === 'message' && entry.message.role === 'tool') {
+        await ctx.append({ type: 'custom', plugin: 'test', data: hooks.onEntry.custom });
+      }
+    },
+    onSessionEnd(_session, ctx) {
+      if (hooks.onSessionEnd) ctx.deliver(hooks.onSessionEnd.deliver);
+    },
+  };
+}
+
 async function runScenario(scenario: Scenario): Promise<string | undefined> {
   const store = memoryStore();
-  const faux = fauxProvider(scenario.script);
-  const plugin = { name: 'test', context: () => ({ sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map(toolFor) }) };
+  let controller = new AbortController();
+  // `{"abort": "<who>"}` sets the stop signal while the call is in flight, and the call fails.
+  const script = scenario.script.map((step): ScriptStep => {
+    if (!('abort' in step)) return step;
+    return () => {
+      controller.abort(step.abort);
+      throw new Error('The request was cancelled.');
+    };
+  });
+  const faux = fauxProvider(script);
+  const plugin = testPlugin(scenario);
   const agent = createAgent({ id: AGENT, ...scenario.agent, plugins: [plugin] }, { store, providers: { faux } });
   const current = async () => store.read(AGENT, (await store.list(AGENT)).at(-1)!);
   const rewoundTo = new Set<string>();
@@ -62,7 +98,7 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
       agent.deliver(step.deliver, rewind === undefined ? {} : { parentId: rewind });
       rewind = undefined;
     } else if ('run' in step) {
-      const controller = new AbortController();
+      controller = new AbortController();
       if (step.run.stop !== undefined) controller.abort(step.run.stop);
       const outcome = await agent.run({ signal: controller.signal });
       if (step.expect !== undefined && outcome !== step.expect) return `step ${i}: run ended ${outcome}, expected ${step.expect}`;

@@ -38,13 +38,15 @@ A lightly held plan, started on 6 October 2026.
 - The docs and the spec.
 - The core in TypeScript, with the conformance suite, the fake, Anthropic and OpenAI providers, and a rough CLI. The live check against Anthropic has not passed yet, because the key it was run with had been revoked.
 
+- The docs plugin, in `ts/packages/docs`, with a file store and an in-memory one.
+
 **Now**
 
 - The supervisor library.
 
 **Next**
 
-- The docs, MCP and dispatch plugins.
+- The MCP and dispatch plugins.
 - The Python and Rust implementations, against the suite.
 - The example app, with Google mail and calendar and the proposal screen.
 - A walkthrough of the whole stack, from the core to the app.
