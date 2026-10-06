@@ -57,8 +57,10 @@ export function dispatchPlugin(options: DispatchOptions): Plugin {
       const sub = byName.get(typeof input.agent === 'string' ? input.agent : options.agents[0].name);
       if (sub === undefined) return error(`No sub-agent named ${String(input.agent)}.`);
 
-      // The sub-agent's first session links back to the entry that holds this call.
-      const parent = { session: ctx.session.header.id, reason: 'dispatch' as const, entry: ctx.session.entries.at(-1)!.id };
+      // The sub-agent's first session links back to the assistant message that holds this call. It
+      // is the last one: its results are appended only after every call in the turn has run.
+      const call = ctx.session.entries.findLast((e) => e.type === 'message' && e.message.role === 'assistant')!;
+      const parent = { session: ctx.session.header.id, reason: 'dispatch' as const, entry: call.id };
       const id = `${ctx.agent.id}.${sub.name}-${newEntryId().slice(0, 4)}`;
       await ctx.append({ type: 'custom', plugin: 'dispatch', data: { agent: id, brief } });
 
