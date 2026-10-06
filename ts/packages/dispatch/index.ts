@@ -4,7 +4,7 @@
  * the dispatching session and entry. It works from its configured sections plus the brief, and
  * ends with the `report` tool.
  */
-import { createAgent, newEntryId, type Entry, type Event, type Plugin, type Provider, type Section, type Store, type Tool, type ToolContext, type ToolResult } from '@flatbed/core';
+import { createAgent, escapeText, newEntryId, type Entry, type Event, type ParentLink, type Plugin, type Provider, type RunOutcome, type Section, type Store, type Tool, type ToolContext, type ToolResult } from '@flatbed/core';
 
 /** A sub-agent the host configures. Its budget is its own `softLimit` and `hardLimit`. */
 export type SubAgent = {
@@ -31,6 +31,9 @@ export type DispatchOptions = {
 };
 
 const REPORTED = 'reported';
+const HOW: Record<RunOutcome, string> = { idle: 'finished', reset: 'reset its session', stopped: 'was stopped', error: 'hit an error' };
+const START =
+  'Work on your brief. When you are done, call report with your answer. Calling report is the only way your answer reaches the agent that dispatched you: it sees nothing else you write.';
 
 export function dispatchPlugin(options: DispatchOptions): Plugin {
   const maxDepth = options.maxDepth ?? 1;
@@ -60,23 +63,27 @@ export function dispatchPlugin(options: DispatchOptions): Plugin {
       // The sub-agent's first session links back to the assistant message that holds this call. It
       // is the last one: its results are appended only after every call in the turn has run.
       const call = ctx.session.entries.findLast((e) => e.type === 'message' && e.message.role === 'assistant')!;
-      const parent = { session: ctx.session.header.id, reason: 'dispatch' as const, entry: call.id };
+      const parent: ParentLink = { session: ctx.session.header.id, reason: 'dispatch', entry: call.id, agent: ctx.agent.id };
       const id = `${ctx.agent.id}.${sub.name}-${newEntryId().slice(0, 4)}`;
       await ctx.append({ type: 'custom', plugin: 'dispatch', data: { agent: id, brief } });
 
       if (input.wait === false) {
-        work(id, sub, brief, parent)
+        work(id, sub, brief, parent, undefined)
           .then((result) => finish(ctx, id, result))
           .catch((caught) => console.error(`dispatch: waking ${ctx.agent.id} failed:`, caught));
         return `Dispatched to ${id}. You will get a dispatch_result event when it reports.`;
       }
-      const result = await work(id, sub, brief, parent);
-      return { content: [{ type: 'text', text: result.text }], isError: result.status === 'failed' };
+      // A stop reaches the sub-agent only while the dispatching run waits for it.
+      const result = await work(id, sub, brief, parent, ctx.signal);
+      return { content: [{ type: 'text', text: result.text }], isError: result.status !== REPORTED };
     },
   };
 
-  /** Runs a fresh sub-agent to the end of its first session. Never throws. */
-  async function work(id: string, sub: SubAgent, brief: string, parent: { session: string; reason: 'dispatch'; entry: string }) {
+  /**
+   * Runs a fresh sub-agent to the end of its first session. Never throws. Only a report is a
+   * success: a sub-agent that ends any other way, by a reset or a stop, did not finish its brief.
+   */
+  async function work(id: string, sub: SubAgent, brief: string, parent: ParentLink, signal: AbortSignal | undefined) {
     let answer: string | undefined;
     const report: Tool = {
       name: 'report',
@@ -90,30 +97,23 @@ export function dispatchPlugin(options: DispatchOptions): Plugin {
     };
     const own: Plugin = {
       name: 'sub-agent',
-      context: () => ({ sections: [...(sub.sections ?? []), { name: 'brief', text: `<brief>\n${escape(brief)}\n</brief>` }], tools: [report] }),
+      context: () => ({ sections: [...(sub.sections ?? []), { name: 'brief', text: `<brief>\n${escapeText(brief)}\n</brief>` }], tools: [report] }),
     };
     const deeper = maxDepth > 1 ? [dispatchPlugin({ ...options, maxDepth: maxDepth - 1 })] : [];
-    // The store gives the sub-agent's first session its link to the dispatching session.
-    const base = options.store;
-    const store: Store = {
-      list: (agent) => base.list(agent),
-      read: (agent, session) => base.read(agent, session),
-      append: (agent, session, entry) => base.append(agent, session, entry),
-      create: (header) => base.create({ ...header, parent: header.parent ?? parent }),
-    };
     try {
       const agent = createAgent(
-        { id, model: sub.model, plugins: [own, ...(sub.plugins ?? []), ...deeper], softLimit: sub.softLimit, hardLimit: sub.hardLimit, maxTokens: sub.maxTokens },
-        { store, providers: options.providers },
+        { id, model: sub.model, plugins: [own, ...(sub.plugins ?? []), ...deeper], softLimit: sub.softLimit, hardLimit: sub.hardLimit, maxTokens: sub.maxTokens, parent },
+        { store: options.store, providers: options.providers },
       );
       // A run needs something to answer, and the brief is a section, so the sub-agent is asked to start.
-      agent.deliver({ kind: 'message', attrs: { from: 'dispatcher' }, text: 'Work on your brief, then call report with your answer.' });
-      const outcome = await agent.run();
+      agent.deliver({ kind: 'message', attrs: { from: 'dispatcher' }, text: START });
+      const outcome = await agent.run(signal === undefined ? {} : { signal });
       if (answer !== undefined) return { status: REPORTED, text: answer };
       const session = await options.store.read(id, (await options.store.list(id)).at(-1)!);
       const last = lastText(session.entries);
-      if (last !== undefined) return { status: 'stopped', text: last };
-      return { status: 'failed', text: `The sub-agent ${id} stopped (${outcome}) without an answer.` };
+      const ended = `The sub-agent ${id} ${HOW[outcome]} without calling report, so it gave no answer.`;
+      if (last !== undefined) return { status: 'stopped', text: `${ended} Its last message said:\n\n${last}` };
+      return { status: 'failed', text: ended };
     } catch (caught) {
       return { status: 'failed', text: `The sub-agent ${id} failed: ${caught instanceof Error ? caught.message : String(caught)}` };
     }
@@ -129,7 +129,6 @@ export function dispatchPlugin(options: DispatchOptions): Plugin {
 }
 
 const error = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true });
-const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
 /** The text of the last assistant message that has any. */
 function lastText(entries: Entry[]): string | undefined {

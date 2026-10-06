@@ -113,3 +113,13 @@ Entries marked *for review* were made overnight on 6 October 2026 while Sam was 
 **Because:** the same documents then always give the same context bytes, which keeps the cache warm, and a resumed session keeps its day.
 
 **Rules out:** a session running past midnight writing to the new day; it writes to the day it opened until it resets.
+
+## Each agent check is its own agent, opened by the core *(for review)*
+
+7 October 2026. Replaces "The agent supervisor writes its own session start".
+
+**Chose:** `agentPass` makes a fresh agent for each check, with the id `<id>-<hex4>`, as dispatch does for a sub-agent. The core opens its one session, from the agent's `parent` (`reason: "supervise"`, naming the checked agent, session and head entry). The system prompt and the material are context sections, and a short event asks for the verdict. The verdict's `supervisor` field names the agent, so a host can find the session.
+
+**Because:** the core now gives an agent's first session a parent and has a `supervise` reason, and a section is not escaped, so the runner no longer needs to write the store itself. An agent per check means two checks can never share a session, even from two guards on one store.
+
+**Rules out:** listing every check under one agent id. A host finds a check's session from its verdict.
