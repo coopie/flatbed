@@ -73,3 +73,13 @@ Entries marked *for review* were made overnight on 6 October 2026 while Sam was 
 **Because:** the brief asks for specs any language can write, and an array keeps its order in every language, where object key order does not. Otherworldly kept the host's check as a function on the brief, which cannot live in JSON.
 
 **Rules out:** functions or gathered material on the spec itself. A host that wants extra material adds it to the session before it asks.
+
+## The agent supervisor writes its own session start *(for review)*
+
+6 October 2026.
+
+**Chose:** `agentPass` creates each check's session itself, with a header whose `parent` points at the checked session (`reason: "dispatch"`, `entry` at its head), a context entry, and the material as a user message. It then delivers a short event and lets the loop run. The guard takes a `Supervise`, not a `complete` function.
+
+**Because:** the core escapes an event's text, and the material is already escaped XML, so delivering it as an event would escape it twice. The spec's parent reasons have no `supervise`, and a supervisor is a child session that reports back, which is what `dispatch` means. Taking a `Supervise` lets the guard use either runner.
+
+**Rules out:** two checks at once on one supervisor agent id, since the loop resumes the newest session; the runner queues them.
