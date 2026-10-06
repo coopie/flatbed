@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::ids::{new_entry_id, new_session_id, now_iso};
 use crate::plugin::{Contribution, Ctx, Outputs, Plugin, Tool, ToolResult};
 use crate::providers::{Provider, Request};
-use crate::render::{path_of, render};
+use crate::render::{path_of, render, Context};
 use crate::store::Store;
 use crate::types::{
     AssistantMessage, Entry, EntryBody, Event, Header, Message, ParentLink, Session, Stop,
@@ -213,6 +213,7 @@ impl Agent {
             }
             let mut run = Run::new(config, &**store, providers, queue, tools, newest.unwrap());
             run.apply(outputs)?;
+            run.freeze_context();
             return Ok(run);
         }
 
@@ -254,6 +255,7 @@ impl Agent {
             Some(Some(reason)) => format!("Session started after a reset: {reason}"),
         })?;
         run.apply(outputs)?;
+        run.freeze_context();
         Ok(run)
     }
 }
@@ -286,6 +288,8 @@ struct Run<'a> {
     queue: &'a mut Vec<Queued>,
     tools: &'a [Box<dyn Tool>],
     session: Session,
+    /// The last `context` entry on the path, taken once for the whole run.
+    context: Context,
 }
 
 impl<'a> Run<'a> {
@@ -308,7 +312,12 @@ impl<'a> Run<'a> {
             queue,
             tools,
             session,
+            context: Context::default(),
         }
+    }
+
+    fn freeze_context(&mut self) {
+        self.context = render(&path_of(&self.session.entries)).0;
     }
 
     /// Appends an entry after `parent`, or after the head when `parent` is `None`.
@@ -371,12 +380,7 @@ impl<'a> Run<'a> {
         };
         let answered: HashSet<&str> = path[at + 1..]
             .iter()
-            .filter_map(|e| match &e.body {
-                EntryBody::Message {
-                    message: Message::Tool(result),
-                } => Some(result.call_id.as_str()),
-                _ => None,
-            })
+            .filter_map(|e| tool_result_id(e))
             .collect();
         let missing: Vec<ToolCall> = assistant(path[at])
             .expect("found as an assistant message")
@@ -390,19 +394,34 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
-    /// Appends every queued event, in order. A rewound event follows the head instead when its
-    /// parent is not in this session, such as when the session has since reset, or when its
-    /// parent is a message with tool calls, whose results would then never be on the path.
+    /// Appends every queued event, in order. A rewound event goes to the head instead when its
+    /// parent is not in this session, or when the path up to its parent would leave a tool call
+    /// without its result, as docs/spec/sessions.md describes.
     fn deliver_waiting(&mut self) -> Result<()> {
         while !self.queue.is_empty() {
             let Queued { event, parent } = self.queue.remove(0);
-            let parent = parent.filter(|id| {
-                let found = self.session.entries.iter().find(|e| e.id == *id);
-                found.is_some_and(|e| assistant(e).is_none_or(|m| m.tool_calls().next().is_none()))
-            });
+            let parent = parent.filter(|id| self.can_rewind_to(id));
             self.append(EntryBody::Event(event), parent)?;
         }
         Ok(())
+    }
+
+    fn can_rewind_to(&self, id: &str) -> bool {
+        let Some(at) = self.session.entries.iter().position(|e| e.id == id) else {
+            return false;
+        };
+        let path = path_of(&self.session.entries[..=at]);
+        let Some(last) = path.iter().rposition(|e| assistant(e).is_some()) else {
+            return true;
+        };
+        let answered: HashSet<&str> = path[last + 1..]
+            .iter()
+            .filter_map(|e| tool_result_id(e))
+            .collect();
+        assistant(path[last])
+            .expect("found as an assistant message")
+            .tool_calls()
+            .all(|call| answered.contains(call.id.as_str()))
     }
 
     /// A session needs a run when the last entry on its path, leaving out context and custom
@@ -433,7 +452,7 @@ impl<'a> Run<'a> {
     }
 
     fn ask_model(&self, signal: Option<&StopSignal>) -> Result<AssistantMessage> {
-        let (context, messages) = render(&path_of(&self.session.entries));
+        let (_, messages) = render(&path_of(&self.session.entries));
         let (provider_name, model) =
             self.agent.model.split_once('/').ok_or_else(|| {
                 Error(format!("The model {} names no provider.", self.agent.model))
@@ -444,8 +463,8 @@ impl<'a> Run<'a> {
             .ok_or_else(|| Error(format!("No provider named {provider_name}.")))?;
         provider.complete(&Request {
             model: model.to_string(),
-            sections: context.sections,
-            tools: context.tools,
+            sections: self.context.sections.clone(),
+            tools: self.context.tools.clone(),
             messages,
             max_tokens: self.agent.max_tokens,
             output_schema: None,
@@ -490,8 +509,11 @@ impl<'a> Run<'a> {
     /// One call, as docs/spec/plugins.md describes: find the tool, check the input, let the
     /// plugins replace the call, run it, then pass the result through the plugins.
     fn run_call(&self, call: &ToolCall) -> (ToolResult, Outputs) {
-        let (context, _) = render(&path_of(&self.session.entries));
-        let definition = context.tools.iter().find(|tool| tool.name == call.name);
+        let definition = self
+            .context
+            .tools
+            .iter()
+            .find(|tool| tool.name == call.name);
         let code = self
             .tools
             .iter()
@@ -551,6 +573,16 @@ fn assistant(entry: &Entry) -> Option<&AssistantMessage> {
         EntryBody::Message {
             message: Message::Assistant(message),
         } => Some(message),
+        _ => None,
+    }
+}
+
+/// The call id a `tool` message answers.
+fn tool_result_id(entry: &Entry) -> Option<&str> {
+    match &entry.body {
+        EntryBody::Message {
+            message: Message::Tool(result),
+        } => Some(&result.call_id),
         _ => None,
     }
 }

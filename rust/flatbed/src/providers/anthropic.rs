@@ -57,11 +57,17 @@ impl Anthropic {
                 }
                 Err(ureq::Error::Transport(transport)) => transport.to_string(),
             };
-            let stopped = request.signal.as_ref().and_then(|s| s.stopped_by());
-            if attempt == RETRIES || stopped.is_some() {
+            if attempt == RETRIES {
                 return Err(Error(format!("{failure} (after {attempt} retries)")));
             }
-            std::thread::sleep(Duration::from_secs(1 << attempt));
+            // Wait in short steps, so that a stop ends the backoff at once.
+            let waited = std::time::Instant::now();
+            while waited.elapsed() < Duration::from_secs(1 << attempt) {
+                if let Some(who) = request.signal.as_ref().and_then(|s| s.stopped_by()) {
+                    return Err(Error(format!("Stopped by {who}.")));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
             attempt += 1;
         }
     }
