@@ -1,6 +1,6 @@
 {
   "name": "stop",
-  "description": "The stop signal is set before the run. The loop appends a notice naming who stopped it and does not call the model. The next run answers the stop notice along with everything before it.",
+  "description": "The stop signal is set before the run. The loop appends a notice naming who stopped it and does not call the model. A stop notice is from the harness, so the next run with nothing new does not call the model either; once a message is delivered, the model answers it along with everything before it.",
   "agent": {
     "model": "faux/test",
     "softLimit": 120000,
@@ -18,7 +18,7 @@
       "content": [
         {
           "type": "text",
-          "text": "Stopped, as asked."
+          "text": "Carrying on."
         }
       ],
       "stop": "end",
@@ -43,6 +43,19 @@
         "stop": "Sam"
       },
       "expect": "stopped"
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    },
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Go on"
+      }
     },
     {
       "run": {},
@@ -100,13 +113,21 @@
           "text": "Stopped by Sam."
         },
         {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Go on"
+        },
+        {
           "type": "message",
           "message": {
             "role": "assistant",
             "content": [
               {
                 "type": "text",
-                "text": "Stopped, as asked."
+                "text": "Carrying on."
               }
             ],
             "model": "faux/test",
@@ -135,6 +156,10 @@
             {
               "type": "text",
               "text": "<notice from=\"harness\">Stopped by Sam.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">Go on</message>"
             }
           ]
         }

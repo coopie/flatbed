@@ -40,6 +40,7 @@ test('anthropic: sections, cache breakpoints, tool results and structured output
     { type: 'text', text: '<timeline>today</timeline>' },
   ]);
   deepEqual(body.tools, [{ name: 'echo', description: 'Echo.', input_schema: { type: 'object' }, cache_control: { type: 'ephemeral' } }]);
+  deepEqual(body.cache_control, { type: 'ephemeral' });
   deepEqual(body.output_config, { format: { type: 'json_schema', schema: request.outputSchema } });
   deepEqual(body.messages, [
     { role: 'user', content: [{ type: 'text', text: '<message from="Sam">Hi</message>' }] },
@@ -86,6 +87,56 @@ test('anthropic: a response becomes an assistant message', () => {
   });
 });
 
+test('anthropic: at most four cache breakpoints, keeping the earliest sections', () => {
+  const sections = ['a', 'b', 'c', 'd'].map((name) => ({ name, text: name, cache: true }));
+  const withTools = anthropicRequest({ ...request, sections, outputSchema: undefined });
+  const marked = (body: Record<string, unknown>) =>
+    (body.system as { text: string; cache_control?: unknown }[]).filter((b) => b.cache_control).map((b) => b.text);
+  // The history and the tools take two, so two sections are left.
+  deepEqual(marked(withTools), ['a', 'b']);
+  deepEqual(marked(anthropicRequest({ ...request, sections, tools: [], outputSchema: undefined })), ['a', 'b', 'c']);
+});
+
+test('anthropic: empty text dropped, empty results filled, tool results first, effort sent', () => {
+  const body = anthropicRequest({
+    model: 'm',
+    maxTokens: 10,
+    effort: 'high',
+    sections: [{ name: 'empty', text: '' }, { name: 'soul', text: 'Soul.' }],
+    tools: [],
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }, { type: 'text', text: '' }] },
+      {
+        role: 'assistant', model: 'anthropic/m', usage: { input: 1, output: 1 }, stop: 'toolUse',
+        content: [{ type: 'text', text: '' }, { type: 'thinking', text: 't', provider: 'anthropic' }, { type: 'toolCall', id: 'c1', name: 'echo', input: {} }],
+      },
+      // An event that an older log has between the call and its result.
+      { role: 'user', content: [{ type: 'text', text: '<message from="Sam">Hm</message>' }] },
+      { role: 'tool', callId: 'c1', name: 'echo', content: [{ type: 'text', text: '' }], isError: false },
+    ],
+  });
+  deepEqual(body.system, [{ type: 'text', text: 'Soul.' }]);
+  deepEqual(body.output_config, { effort: 'high' });
+  deepEqual(body.messages, [
+    { role: 'user', content: [{ type: 'text', text: 'Hi' }] },
+    { role: 'assistant', content: [{ type: 'thinking', thinking: 't' }, { type: 'tool_use', id: 'c1', name: 'echo', input: {} }] },
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'text', text: '(no output)' }], is_error: false },
+        { type: 'text', text: '<message from="Sam">Hm</message>' },
+      ],
+    },
+  ]);
+});
+
+test('anthropic: refusal is kept, unknown stop reasons end, a missing signature is left out', () => {
+  const response = (stop_reason: string) => ({ content: [{ type: 'thinking', thinking: 'h' }], stop_reason, usage: { input_tokens: 1, output_tokens: 1 } });
+  equal(fromAnthropic(response('refusal'), 'm').stop, 'refusal');
+  equal(fromAnthropic(response('pause_turn'), 'm').stop, 'end');
+  deepEqual(fromAnthropic(response('end_turn'), 'm').content, [{ type: 'thinking', text: 'h', provider: 'anthropic' }]);
+});
+
 test('openai: one system message, tool calls as functions, thinking dropped', () => {
   const body = openaiRequest(request);
   deepEqual(body.messages, [
@@ -116,4 +167,20 @@ test('openai: a response becomes an assistant message, with cached tokens counte
       { type: 'toolCall', id: 'c2', name: 'echo', input: { text: 'z' } },
     ],
   });
+});
+
+test('http: the backoff sleep ends when the stop signal is set', async () => {
+  const { postJson } = await import('./providers/http.ts');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('busy', { status: 529 });
+  try {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort('Sam'), 50);
+    const started = Date.now();
+    const outcome = await postJson('https://example.invalid', {}, {}, controller.signal).then(() => 'resolved', (reason) => reason);
+    equal(outcome, 'Sam');
+    equal(Date.now() - started < 900, true);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

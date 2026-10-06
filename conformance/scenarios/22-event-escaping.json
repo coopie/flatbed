@@ -1,0 +1,130 @@
+{
+  "name": "an event with several attributes and characters to escape",
+  "description": "The event's attributes render sorted by key. The text escapes &, < and >; the attributes escape those and the double quote.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Yes."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 10,
+        "output": 1
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam & \"Jo\"",
+          "channel": "<general>",
+          "at": "9>8"
+        },
+        "text": "Is 1 < 2 & \"yes\" > no?"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam & \"Jo\"",
+            "channel": "<general>",
+            "at": "9>8"
+          },
+          "text": "Is 1 < 2 & \"yes\" > no?"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Yes."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 1
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "requests": [
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message at=\"9&gt;8\" channel=\"&lt;general&gt;\" from=\"Sam &amp; &quot;Jo&quot;\">Is 1 &lt; 2 &amp; \"yes\" &gt; no?</message>"
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}

@@ -25,6 +25,22 @@ export async function postJson(url: string, headers: Record<string, string>, bod
       failure = error.message;
     }
     if (attempt === RETRIES) throw new Error(`${failure} (after ${RETRIES} retries)`);
-    await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+    await sleep(1000 * 2 ** attempt, signal);
   }
+}
+
+/** Waits, but ends early and throws when the signal is aborted, so that a stop does not wait out a backoff. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
