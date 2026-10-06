@@ -1,0 +1,14 @@
+{
+  "name": "@flatbed/supervisor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./spec.schema.json": "./spec.schema.json"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  }
+}
