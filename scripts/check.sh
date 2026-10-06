@@ -9,7 +9,9 @@ check_ts() {
   echo "== ts"
   (cd ts && pnpm install --frozen-lockfile --silent)
   (cd ts && pnpm exec tsc --noEmit -p tsconfig.json)
-  (cd ts/packages/core && node --test "*.test.ts")
+  for pkg in ts/packages/*/; do
+    if compgen -G "$pkg*.test.ts" > /dev/null; then (cd "$pkg" && node --test "*.test.ts"); fi
+  done
   node ts/packages/core/conformance.ts
 }
 
