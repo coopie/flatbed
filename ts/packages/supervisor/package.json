@@ -8,7 +8,9 @@
     "./spec.schema.json": "./spec.schema.json"
   },
   "scripts": {
-    "test": "node --test",
-    "typecheck": "tsc --noEmit"
+    "test": "node --test \"*.test.ts\""
+  },
+  "dependencies": {
+    "@flatbed/core": "workspace:*"
   }
 }

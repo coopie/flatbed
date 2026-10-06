@@ -23,7 +23,11 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/supervisor: {}
+  packages/supervisor:
+    dependencies:
+      '@flatbed/core':
+        specifier: workspace:*
+        version: link:../core
 
 packages:
 
