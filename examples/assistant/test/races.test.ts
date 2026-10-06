@@ -17,7 +17,7 @@ before(async () => {
   await host.seedDemoPeople();
 });
 after(async () => {
-  if (!skip) await db.drop();
+  if (!skip) await db?.drop();
 });
 
 test('two accepts of one proposal at once send it once', { skip }, async () => {

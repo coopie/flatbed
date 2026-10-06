@@ -18,7 +18,7 @@ before(async () => {
   await host.seedDemoPeople();
 });
 after(async () => {
-  if (!skip) await db.drop();
+  if (!skip) await db?.drop();
 });
 
 test('a message leads to a proposal, and an accepted proposal reaches the outbox', { skip }, async () => {

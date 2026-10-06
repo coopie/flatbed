@@ -12,7 +12,7 @@ before(async () => {
   if (!skip) db = await testSchema();
 });
 after(async () => {
-  if (!skip) await db.drop();
+  if (!skip) await db?.drop();
 });
 
 test('the session store keeps sessions that a second process can resume', { skip }, async () => {
