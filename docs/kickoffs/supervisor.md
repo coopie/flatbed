@@ -28,3 +28,27 @@ Work for at most 75 minutes. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Another agent is building `ts/packages/core` at the same time, so do not touch it or `scripts/check.sh`; if the pnpm workspace files do not exist yet, create minimal ones and expect a merge. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+`ts/packages/supervisor` is `@flatbed/supervisor`. It has `spec.schema.json`, `verdictSchema(spec)`, a checker of about 60 lines (`check.ts`), the session renderer (`prompt.ts`), `singlePass` (`run.ts`), local copies of the core types (`types.ts`), an invented spec and session in `examples/`, and a README. I also added minimal `ts/package.json` and `pnpm-workspace.yaml`, which will need merging with ts-core's.
+
+**Choices someone could make differently**
+
+- The checklist is an ordered array, because array order survives every language. Host-answered items are marked `answeredBy: "host"`, and the host passes their answers in as values. I logged this in `docs/decisions.md`, marked for review.
+- The verdict is `{ items: { <id>: { analysis, ok } }, summary }`. Nesting means an item can never clash with `summary`.
+- A retry sends the same request again. It does not tell the model what was wrong.
+- `parseSpec` checks a spec against the schema and also checks that item ids are unique.
+- `Supervise` is a function type, so an agent supervisor can be added later as a second function. The README explains how.
+
+**Commands**
+
+- `node --test`: 7 tests, 6 passed, 1 skipped (the live test).
+- `tsc --noEmit -p .`: no errors.
+- `FLATBED_LIVE=1 node --test live.test.ts`: failed with `401 authentication_error: API key is invalid`. The `.env` line parses as an `sk-ant-api` key, so the key itself looks revoked. **The live check has not passed.**
+
+**Left out:** a host plugin that applies verdicts to tool calls, refusal wording, the redraft loop, gathered material and cache breakpoints on the material.
+
+**How it went:** the brief and the Otherworldly page were clear. The live check needs a working key. Also, nothing has confirmed that the Messages API accepts `output_config.format`, because the 401 came back before the body was checked. The live test's provider is a stand-in and should switch to core's.
+
+## Question for the lead
+
+The `.env` key is rejected as invalid. Can you replace it and run `FLATBED_LIVE=1 node --test live.test.ts` from `ts/packages/supervisor`? My best guess is that the code is right and only the key is wrong.
