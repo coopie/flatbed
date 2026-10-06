@@ -7,11 +7,13 @@
 use flatbed::providers::faux::{Faux, Script, Scripted};
 use flatbed::render::path_of;
 use flatbed::{
-    Agent, AgentConfig, Block, Contribution, Ctx, Entry, EntryBody, Event, MemoryStore, Plugin,
-    Provider, Section, Stop, StopSignal, Store, Tool, ToolDefinition, ToolResult, Usage,
+    Agent, AgentConfig, Block, Contribution, Ctx, Entry, EntryBody, Event, MemoryStore, Message,
+    Plugin, Provider, Section, Session, Stop, StopSignal, Store, Tool, ToolCall, ToolDefinition,
+    ToolResult, Usage,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -20,9 +22,13 @@ use std::rc::Rc;
 struct Scenario {
     name: String,
     agent: ScenarioAgent,
+    #[serde(default)]
     sections: Vec<Section>,
+    #[serde(default)]
     tools: Vec<ScenarioTool>,
-    script: Vec<ScriptedJson>,
+    #[serde(default)]
+    plugin: Hooks,
+    script: Vec<ScriptStep>,
     steps: Vec<Value>,
     expect: Expect,
 }
@@ -31,8 +37,58 @@ struct Scenario {
 #[serde(rename_all = "camelCase")]
 struct ScenarioAgent {
     model: String,
-    soft_limit: u64,
-    hard_limit: u64,
+    soft_limit: Option<u64>,
+    hard_limit: Option<u64>,
+    max_tokens: Option<u32>,
+}
+
+/// What the test plugin does beyond giving sections and tools.
+#[derive(Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Hooks {
+    /// A result to use in place of running the named tool.
+    before_tool: Option<HashMap<String, ResultJson>>,
+    /// A result to replace the named tool's result with.
+    after_tool: Option<HashMap<String, ResultJson>>,
+    /// Data for a custom entry appended after each tool message.
+    on_entry: Option<CustomJson>,
+    /// An event to deliver when the session ends.
+    on_session_end: Option<DeliverJson>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResultJson {
+    content: Vec<Block>,
+    is_error: bool,
+}
+
+impl ResultJson {
+    fn result(&self) -> ToolResult {
+        ToolResult {
+            content: self.content.clone(),
+            is_error: self.is_error,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+struct CustomJson {
+    custom: Value,
+}
+
+#[derive(Clone, Deserialize)]
+struct DeliverJson {
+    deliver: Event,
+}
+
+/// A scripted response, or `{"abort": "<who>"}`: set the stop signal while the call is in flight,
+/// and fail the call.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ScriptStep {
+    Abort { abort: String },
+    Response(ScriptedJson),
 }
 
 #[derive(Clone, Deserialize)]
@@ -61,6 +117,7 @@ struct Expect {
 struct ScenarioPlugin {
     sections: Vec<Section>,
     tools: Vec<ScenarioTool>,
+    hooks: Hooks,
 }
 
 impl Plugin for ScenarioPlugin {
@@ -77,6 +134,48 @@ impl Plugin for ScenarioPlugin {
                 .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
                 .collect(),
         })
+    }
+
+    fn before_tool(&self, call: &ToolCall, _ctx: &mut Ctx) -> flatbed::Result<Option<ToolResult>> {
+        let found = self
+            .hooks
+            .before_tool
+            .as_ref()
+            .and_then(|by_name| by_name.get(&call.name));
+        Ok(found.map(ResultJson::result))
+    }
+
+    fn after_tool(
+        &self,
+        call: &ToolCall,
+        result: ToolResult,
+        _ctx: &mut Ctx,
+    ) -> flatbed::Result<ToolResult> {
+        let found = self
+            .hooks
+            .after_tool
+            .as_ref()
+            .and_then(|by_name| by_name.get(&call.name));
+        Ok(found.map(ResultJson::result).unwrap_or(result))
+    }
+
+    fn on_entry(&self, entry: &Entry, ctx: &mut Ctx) {
+        let is_result = matches!(
+            &entry.body,
+            EntryBody::Message {
+                message: Message::Tool(_)
+            }
+        );
+        if let (Some(hook), true) = (&self.hooks.on_entry, is_result) {
+            ctx.append("test", hook.custom.clone())
+                .expect("the session is open");
+        }
+    }
+
+    fn on_session_end(&self, _session: &Session, ctx: &mut Ctx) {
+        if let Some(hook) = &self.hooks.on_session_end {
+            ctx.deliver(hook.deliver.clone());
+        }
     }
 }
 
@@ -155,24 +254,35 @@ fn main() {
 /// Runs one scenario, and returns the first difference from what it expects.
 fn run(scenario: &Scenario) -> Result<(), String> {
     let store = Rc::new(MemoryStore::new());
+    // The signal for the current run, which an `abort` step sets mid-call.
+    let signal = Rc::new(RefCell::new(StopSignal::new()));
     let script = scenario
         .script
         .iter()
-        .map(|s| {
-            Script::Response(Scripted {
+        .map(|step| match step {
+            ScriptStep::Response(s) => Script::Response(Scripted {
                 content: s.content.clone(),
                 usage: s.usage.clone(),
                 stop: s.stop,
-            })
+            }),
+            ScriptStep::Abort { abort } => {
+                let (signal, who) = (signal.clone(), abort.clone());
+                Script::Function(Box::new(move |_| {
+                    signal.borrow().stop(who.clone());
+                    Err("The request was cancelled.".into())
+                }))
+            }
         })
         .collect();
     let faux = Rc::new(Faux::new(script));
     let mut config = AgentConfig::new("test", &scenario.agent.model);
-    config.soft_limit = scenario.agent.soft_limit;
-    config.hard_limit = scenario.agent.hard_limit;
+    config.soft_limit = scenario.agent.soft_limit.unwrap_or(config.soft_limit);
+    config.hard_limit = scenario.agent.hard_limit.unwrap_or(config.hard_limit);
+    config.max_tokens = scenario.agent.max_tokens.unwrap_or(config.max_tokens);
     config.plugins.push(Box::new(ScenarioPlugin {
         sections: scenario.sections.clone(),
         tools: scenario.tools.clone(),
+        hooks: scenario.plugin.clone(),
     }));
     let providers = HashMap::from([("faux".to_string(), faux.clone() as Rc<dyn Provider>)]);
     let mut agent = Agent::new(config, store.clone(), providers);
@@ -189,11 +299,12 @@ fn run(scenario: &Scenario) -> Result<(), String> {
                 None => agent.deliver(event),
             }
         } else if let Some(options) = step.get("run") {
-            let signal = StopSignal::new();
+            let current = StopSignal::new();
             if let Some(who) = options.get("stop").and_then(Value::as_str) {
-                signal.stop(who);
+                current.stop(who);
             }
-            let outcome = agent.run(Some(&signal)).map_err(|e| fail(e.to_string()))?;
+            *signal.borrow_mut() = current.clone();
+            let outcome = agent.run(Some(&current)).map_err(|e| fail(e.to_string()))?;
             if let Some(expected) = step.get("expect").and_then(Value::as_str) {
                 if outcome.as_str() != expected {
                     return Err(fail(format!(

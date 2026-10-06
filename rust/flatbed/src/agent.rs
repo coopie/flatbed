@@ -387,12 +387,16 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
-    /// Appends every queued event, in order. An event whose parent is not in this session, such
-    /// as one queued to rewind a session that has since reset, follows the head instead.
+    /// Appends every queued event, in order. A rewound event follows the head instead when its
+    /// parent is not in this session, such as when the session has since reset, or when its
+    /// parent is a message with tool calls, whose results would then never be on the path.
     fn deliver_waiting(&mut self) -> Result<()> {
         while !self.queue.is_empty() {
             let Queued { event, parent } = self.queue.remove(0);
-            let parent = parent.filter(|id| self.session.entries.iter().any(|e| e.id == *id));
+            let parent = parent.filter(|id| {
+                let found = self.session.entries.iter().find(|e| e.id == *id);
+                found.is_some_and(|e| assistant(e).is_none_or(|m| m.tool_calls().next().is_none()))
+            });
             self.append(EntryBody::Event(event), parent)?;
         }
         Ok(())

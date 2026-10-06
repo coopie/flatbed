@@ -16,10 +16,14 @@ pub struct Scripted {
     pub stop: Option<Stop>,
 }
 
+/// A scripted function: the response to a request, or the error the call fails with.
+pub type Respond = Box<dyn Fn(&Request) -> Result<Scripted>>;
+
 pub enum Script {
     Response(Scripted),
-    /// A function of the request, for a response that depends on what the model was sent.
-    Function(Box<dyn Fn(&Request) -> Scripted>),
+    /// A function of the request, for a response that depends on what the model was sent, or
+    /// for a call that fails.
+    Function(Respond),
 }
 
 pub struct Faux {
@@ -47,7 +51,7 @@ impl Provider for Faux {
         let next = self.script.borrow_mut().pop_front();
         let scripted = match next {
             Some(Script::Response(scripted)) => scripted,
-            Some(Script::Function(respond)) => respond(request),
+            Some(Script::Function(respond)) => respond(request)?,
             None => return Err(Error::new("No more scripted responses.")),
         };
         let has_call = scripted
