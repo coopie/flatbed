@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+target/
+__pycache__/
+.venv/
+dist/
+.svelte-kit/
+build/
+data/
+*.log
+.DS_Store
