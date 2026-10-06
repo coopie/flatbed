@@ -174,6 +174,9 @@ class Agent:
     max_tokens: int = 8_192
     # Passed to providers that take it, such as Anthropic's `output_config.effort`. Optional.
     effort: str | None = None
+    # The parent of the agent's first session, such as the session that dispatched it: `session`,
+    # `reason`, and optionally `entry` and `agent`, as docs/spec/sessions.md describes.
+    parent: dict[str, str] | None = None
 
 
 @dataclass
@@ -189,6 +192,8 @@ class PluginContext:
 @dataclass
 class ToolContext(PluginContext):
     request_reset: Callable[[str | None], None] = lambda reason: None
+    # The run's stop signal, so that a long tool can stop when the run is stopped.
+    signal: StopSignal = field(default_factory=lambda: StopSignal())
 
 
 class StopSignal:

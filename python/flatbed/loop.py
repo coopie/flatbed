@@ -93,6 +93,11 @@ def message_of(error: BaseException) -> str:
     return str(error) or type(error).__name__
 
 
+def plugin_failed(plugin: str, error: BaseException) -> ToolResult:
+    """A throwing hook is the plugin's bug: the call gets an error result, and no later hook runs."""
+    return error_result(f"The {plugin} plugin failed: {message_of(error)}")
+
+
 class Runner:
     """Runs one agent against a store, with a provider for each provider name in its models.
 
@@ -167,7 +172,7 @@ class Runner:
             self._append(session, {"type": "message", "message": message})
 
             resets: list[str | None] = []
-            ctx = ToolContext(**vars(self._context(session)), request_reset=resets.append)
+            ctx = ToolContext(**vars(self._context(session)), request_reset=resets.append, signal=stop)
             # Calls run one after another; the spec allows them to run concurrently. A response cut off
             # by the token limit may hold a call with half its input, so none of its calls run.
             for call in tool_calls(message):
@@ -193,11 +198,13 @@ class Runner:
     # Opening, repairing and ending sessions.
 
     def _open_session(self) -> tuple[Session, dict[str, Tool]]:
-        """The agent's newest session, unless it ends in a reset; otherwise a new one."""
+        """The agent's newest session, unless it ends in a reset; otherwise a new one. A newest
+        session that holds only its header, because a process stopped after writing it, is opened
+        in place."""
         ids = self.store.list(self.agent.id)
         newest = self.store.read(self.agent.id, ids[-1]) if ids else None
         last = newest.entries[-1] if newest and newest.entries else None
-        if newest is not None and (last is None or last["type"] != "reset"):
+        if newest is not None and last is not None and last["type"] != "reset":
             if self._tools is not None and self._tools[0] == newest.header["id"]:
                 return newest, self._tools[1]
             # Opened by an earlier process: ask the plugins again for their tools' code.
@@ -205,6 +212,31 @@ class Runner:
             self._tools = (newest.header["id"], tools)
             return newest, tools
 
+        header_only = newest is not None and not newest.entries
+        if newest is not None and header_only:
+            # A process stopped after writing the header. The session before it says why it starts.
+            session = newest
+            previous = self.store.read(self.agent.id, ids[-2]).entries if len(ids) > 1 else []
+            last = previous[-1] if previous else None
+        else:
+            session = Session(header=self._new_header(ids), entries=[])
+        sections, tools = self._collect_context(session)
+        if not header_only:
+            self.store.create(session.header)
+        definitions = [tool.definition() for tool in tools.values()]
+        self._append(session, {"type": "context", "sections": sections, "tools": definitions})
+        if last is None or last["type"] != "reset":
+            why = "Session started."
+        elif last.get("reason"):
+            why = f"Session started after a reset: {last['reason']}"
+        else:
+            why = "Session started after a reset."
+        self._append(session, notice(why))
+        self._tools = (session.header["id"], tools)
+        return session, tools
+
+    def _new_header(self, ids: list[str]) -> Any:
+        """A header for a new session: its parent is the previous session, or the agent's parent."""
         now = datetime.now(UTC)
         header: Any = {
             "type": "session",
@@ -215,20 +247,9 @@ class Runner:
         }
         if ids:
             header["parent"] = {"session": ids[-1], "reason": "reset"}
-        session = Session(header=header, entries=[])
-        sections, tools = self._collect_context(session)
-        self.store.create(header)
-        definitions = [tool.definition() for tool in tools.values()]
-        self._append(session, {"type": "context", "sections": sections, "tools": definitions})
-        if last is None:
-            why = "Session started."
-        elif last.get("reason"):
-            why = f"Session started after a reset: {last['reason']}"
-        else:
-            why = "Session started after a reset."
-        self._append(session, notice(why))
-        self._tools = (header["id"], tools)
-        return session, tools
+        elif self.agent.parent is not None:
+            header["parent"] = dict(self.agent.parent)
+        return header
 
     def _collect_context(self, session: Session) -> tuple[list[Any], dict[str, Tool]]:
         """Calls every plugin's `context` hook, and adds the core `reset` tool after their tools."""
@@ -353,8 +374,11 @@ class Runner:
 
         result: ToolResult | None = None
         for plugin in self.agent.plugins:
-            if plugin.before_tool and (result := plugin.before_tool(call, ctx)) is not None:
-                break
+            try:
+                if plugin.before_tool and (result := plugin.before_tool(call, ctx)) is not None:
+                    break
+            except Exception as error:
+                return plugin_failed(plugin.name, error)
         if result is None:
             try:
                 output = tool.run(call["input"], ctx)
@@ -366,6 +390,9 @@ class Runner:
             except Exception as error:
                 result = error_result(message_of(error))
         for plugin in self.agent.plugins:
-            if plugin.after_tool:
-                result = plugin.after_tool(call, result, ctx) or result
+            try:
+                if plugin.after_tool:
+                    result = plugin.after_tool(call, result, ctx) or result
+            except Exception as error:
+                return plugin_failed(plugin.name, error)
         return result

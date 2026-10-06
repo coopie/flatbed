@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from flatbed import Agent, ContextAddition, FileStore, Plugin, Runner, StopSignal, Tool, path_of
 from flatbed.providers import FauxProvider
-from flatbed.store import new_entry_id, now_iso
+from flatbed.store import new_entry_id, new_session_id, now_iso
 
 SCENARIOS = Path(__file__).resolve().parent.parent / "conformance" / "scenarios"
 
@@ -48,6 +49,12 @@ def make_plugin(scenario: dict[str, Any]) -> Plugin:
     hooks = scenario.get("plugin") or {}
     before, after = hooks.get("beforeTool", {}), hooks.get("afterTool", {})
 
+    def hook_result(result: Any) -> Any:
+        # `{"throw": "<message>"}` makes the hook throw instead of returning a result.
+        if result is not None and "throw" in result:
+            raise RuntimeError(result["throw"])
+        return result
+
     def on_entry(entry: dict[str, Any], ctx: Any) -> None:
         if entry["type"] == "message" and entry["message"]["role"] == "tool":
             ctx.append({"type": "custom", "plugin": "test", "data": hooks["onEntry"]["custom"]})
@@ -55,8 +62,8 @@ def make_plugin(scenario: dict[str, Any]) -> Plugin:
     return Plugin(
         name="test",
         context=lambda ctx: ContextAddition(sections=scenario["sections"], tools=tools),
-        before_tool=(lambda call, ctx: before.get(call["name"])) if before else None,
-        after_tool=(lambda call, result, ctx: after.get(call["name"])) if after else None,
+        before_tool=(lambda call, ctx: hook_result(before.get(call["name"]))) if before else None,
+        after_tool=(lambda call, result, ctx: hook_result(after.get(call["name"]))) if after else None,
         on_entry=on_entry if "onEntry" in hooks else None,
         on_session_end=(
             (lambda session, ctx: ctx.deliver(hooks["onSessionEnd"]["deliver"]))
@@ -110,6 +117,7 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
         soft_limit=spec["softLimit"],
         hard_limit=spec["hardLimit"],
         max_tokens=spec.get("maxTokens", 8_192),
+        parent=spec.get("parent"),
     )
     faux = FauxProvider(
         [abort_step(step["abort"]) if "abort" in step else step for step in scenario["script"]]
@@ -141,6 +149,20 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
             }
             entry.update(step["crash"])
             store.append("test", newest, entry)
+        elif "header" in step:
+            # Only the header of a new session, as a process that stopped before its context entry left.
+            ids = store.list("test")
+            now = datetime.now(UTC)
+            header: Any = {
+                "type": "session",
+                "version": 1,
+                "id": new_session_id(now, ids[-1] if ids else None),
+                "agent": "test",
+                "createdAt": now_iso(),
+            }
+            if ids:
+                header["parent"] = {"session": ids[-1], "reason": "reset"}
+            store.create(header)
         elif "rewind" in step:
             path = path_of(store.read("test", store.list("test")[-1]).entries)
             rewind_to = path[step["rewind"]]["id"]
@@ -155,10 +177,13 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
     for number, (session_id, expected) in enumerate(zip(ids, expected_sessions, strict=True)):
         session = store.read("test", session_id)
         if expected and "header" in expected[0]:
-            want = expected[0]["header"]["parent"]["reason"]
-            got = session.header.get("parent", {}).get("reason")
-            if got != want:
-                return f"session {number} header parent reason is {got}, expected {want}"
+            want = expected[0]["header"]["parent"]
+            got = session.header.get("parent")
+            # A scenario cannot know the id of a session the loop made, so it may leave `session` out.
+            if got is not None and "session" not in want:
+                got = {k: v for k, v in got.items() if k != "session"}
+            if found := first_difference(want, got, f"session {number} header parent"):
+                return found
             expected = expected[1:]
         previous = None
         for position, entry in enumerate(session.entries):
