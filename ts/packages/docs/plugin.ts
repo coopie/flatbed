@@ -15,7 +15,7 @@
  * differently. Nothing here throws to the loop.
  */
 import { readFile } from 'node:fs/promises';
-import type { Plugin, Section, Session, Tool, ToolResult } from '@flatbed/core';
+import { escapeAttr, escapeText, type Plugin, type Section, type Session, type Tool, type ToolResult } from '@flatbed/core';
 import { checkName, type Doc, type DocStore } from './store.ts';
 
 export type Seed = { name: string; summary: string; body: string; pinned?: boolean };
@@ -43,12 +43,16 @@ Give every document a one-line summary that says what it is for, and a name like
 Your timeline has one document a day, named timeline/YYYY-MM-DD. You see today's in full and one summary line for each of the six days before it. When something happens that a later session would want to know, add a line with add_to_timeline, and keep the day's summary true.
 </documents>`;
 
-const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
-
-/** One document as the model sees it. Trailing whitespace goes, so it cannot change the bytes. */
+/**
+ * One document as the model sees it, escaped, so a body that holds `</doc>` cannot end it early.
+ * Trailing whitespace goes, so it cannot change the bytes.
+ */
 export function renderDoc(doc: Pick<Doc, 'name' | 'summary' | 'body'>): string {
-  return `<doc name="${escape(doc.name)}" summary="${escape(doc.summary)}">\n${doc.body.trimEnd()}\n</doc>`;
+  return `<doc name="${escapeAttr(doc.name)}" summary="${escapeAttr(doc.summary)}">\n${escapeText(doc.body.trimEnd())}\n</doc>`;
 }
+
+/** Undoes `escapeText`, for a passage the agent copied from a document as it saw it. */
+const unescapeText = (text: string) => text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 
 /** The host's local calendar date of the moment the session opened. */
 function localDay(session: Session): string {
@@ -70,13 +74,13 @@ async function timelineSection(store: DocStore, today: string): Promise<Section>
       doc: await store.get(TIMELINE + day),
     })),
   );
-  const lines = earlier.flatMap(({ day, doc }) => (doc ? [`- ${day}: ${doc.summary}`] : []));
+  const lines = earlier.flatMap(({ day, doc }) => (doc ? [`- ${day}: ${escapeText(doc.summary)}`] : []));
   const todayDoc = await store.get(TIMELINE + today);
   const parts = [
     ...(lines.length > 0 ? [lines.join('\n')] : []),
     todayDoc ? renderDoc(todayDoc) : 'Nothing on today\'s timeline yet.',
   ];
-  return { name: 'timeline', text: `<timeline today="${today}">\n${parts.join('\n\n')}\n</timeline>` };
+  return { name: 'timeline', text: `<timeline today="${escapeAttr(today)}">\n${parts.join('\n\n')}\n</timeline>` };
 }
 
 const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: false });
@@ -146,7 +150,7 @@ export function docsPlugin(options: DocsOptions): Plugin {
     },
     {
       name: 'write_doc',
-      description: 'Write a whole document, creating it or replacing its body. Use it for a new document or a rewrite; use edit_doc to change a passage. The previous version is kept.',
+      description: 'Write a whole document, creating it or replacing its body, for a new document or a rewrite. To change one passage, use edit_doc instead. The previous version is kept.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -178,14 +182,20 @@ export function docsPlugin(options: DocsOptions): Plugin {
       },
       run: (input, ctx) => guarded(() => serially(async () => {
         const name = str(input.name) ?? '';
-        const passage = str(input.passage) ?? '';
+        let passage = str(input.passage) ?? '';
+        let replacement = str(input.replacement) ?? '';
         const doc = await store.get(name);
         if (doc === undefined) return notFound(name);
         if (passage === '') return fail('The passage is empty. Copy the text you want to replace from the document.');
+        // The agent sees bodies escaped, so a passage it copied may hold &amp; where the body has &.
+        if (occurrences(doc.body, passage) === 0 && occurrences(doc.body, unescapeText(passage)) > 0) {
+          passage = unescapeText(passage);
+          replacement = unescapeText(replacement);
+        }
         const count = occurrences(doc.body, passage);
         if (count === 0) return fail(`That passage is not in ${name}. Read the document and copy the passage exactly as it is.`);
         if (count > 1) return fail(`That passage occurs more than once in ${name}. Include more of the text around it.`);
-        const body = doc.body.replace(passage, () => str(input.replacement) ?? '');
+        const body = doc.body.replace(passage, () => replacement);
         const written = await store.put({ ...doc, body, writtenBy: ctx.agent.id });
         return ok(`Edited ${name} (version ${written.version}).`);
       })),
