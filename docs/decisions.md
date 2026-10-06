@@ -83,3 +83,33 @@ Entries marked *for review* were made overnight on 6 October 2026 while Sam was 
 **Because:** the core escapes an event's text, and the material is already escaped XML, so delivering it as an event would escape it twice. The spec's parent reasons have no `supervise`, and a supervisor is a child session that reports back, which is what `dispatch` means. Taking a `Supervise` lets the guard use either runner.
 
 **Rules out:** two checks at once on one supervisor agent id, since the loop resumes the newest session; the runner queues them.
+
+## A harness notice alone does not start a run *(for review)*
+
+7 October 2026.
+
+**Chose:** a session needs a run only when its last entry, ignoring `custom` and `context` entries, is a tool result or an event not from the harness. The soft-budget notice is the exception: the loop runs one more turn after it.
+
+**Because:** otherwise a bare run after a stop resumes the work a person stopped, a failed call is retried silently, and every new session pays a call to answer "Session started". The review of wave 1 found this ([core-fixes.md](kickoffs/core-fixes.md) history in git).
+
+**Rules out:** hosts relying on a notice to wake an agent; they deliver a real event instead, as dispatch now does.
+
+## A plugin hook that throws gives its call an error result *(for review)*
+
+7 October 2026.
+
+**Chose:** when `beforeTool` or `afterTool` throws, that call's result is `The <plugin> plugin failed: <message>`, and the run carries on.
+
+**Because:** failing the run left the session to be repaired later with a misleading "harness stopped" result, and a supervisor that fails should not take an agent down with it.
+
+**Rules out:** treating a plugin bug as fatal. The error is visible in the session for a person to find.
+
+## The timeline uses the day the session opened *(for review)*
+
+7 October 2026.
+
+**Chose:** the docs plugin takes the day once from the session header, and `add_to_timeline` writes to that day.
+
+**Because:** the same documents then always give the same context bytes, which keeps the cache warm, and a resumed session keeps its day.
+
+**Rules out:** a session running past midnight writing to the new day; it writes to the day it opened until it resets.
