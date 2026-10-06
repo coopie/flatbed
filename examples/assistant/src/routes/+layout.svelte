@@ -76,6 +76,6 @@
   header { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; padding-block: 16px; border-bottom: 1px solid var(--line); }
   .name { font-size: 1.5rem; text-decoration: none; }
   .end { margin-left: auto; gap: 12px; }
-  main { min-height: 70vh; padding-bottom: 48px; }
+  main { flex: 1; padding-bottom: 48px; }
   footer { padding-block: 16px; border-top: 1px solid var(--line); }
 </style>

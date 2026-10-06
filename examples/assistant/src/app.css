@@ -25,7 +25,7 @@
 :root[data-theme="dark"] { --bg: #0b0b0b; --fg: #f1f1f0; --muted: #9b9b9b; --line: #272727; --soft: #141414; color-scheme: dark; }
 
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 400 0.95rem/1.7 var(--mono); -webkit-font-smoothing: antialiased; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 400 0.95rem/1.7 var(--mono); -webkit-font-smoothing: antialiased; }
 p, h1, h2, h3, ul, ol { margin: 0; }
 ul.plain { padding: 0; list-style: none; }
 a { color: inherit; text-underline-offset: 4px; }
@@ -33,7 +33,7 @@ a, button, summary { cursor: var(--hand); }
 :focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
 ::selection { background: var(--fg); color: var(--bg); }
 
-.wrap { max-width: var(--max); margin-inline: auto; padding-inline: var(--gutter); }
+.wrap { width: 100%; max-width: var(--max); margin-inline: auto; padding-inline: var(--gutter); }
 .label { font: 500 0.75rem var(--mono); color: var(--muted); letter-spacing: 0.02em; }
 .display { font-family: var(--display); font-weight: 400; letter-spacing: var(--track); text-wrap: balance; }
 

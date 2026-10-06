@@ -9,25 +9,31 @@ export const GET: RequestHandler = async ({ locals, request }) => {
   if (!locals.person) error(401);
   const host = await getHost();
   const person = locals.person.id;
-  let listener: (update: Update) => void;
-  let ping: ReturnType<typeof setInterval>;
+  let stop = () => {};
   const stream = new ReadableStream({
     start(controller) {
       const send = (text: string) => controller.enqueue(new TextEncoder().encode(text));
-      listener = (update) => send(`data: ${JSON.stringify(update)}\n\n`);
+      const listener = (update: Update) => send(`data: ${JSON.stringify(update)}\n\n`);
       host.bus.on(person, listener);
       // A comment every 25 seconds keeps proxies from closing a quiet stream.
-      ping = setInterval(() => send(': ping\n\n'), 25_000);
-      request.signal.addEventListener('abort', () => controller.close());
+      const ping = setInterval(() => send(': ping\n\n'), 25_000);
+      let stopped = false;
+      stop = () => {
+        if (stopped) return;
+        stopped = true;
+        host.bus.off(person, listener);
+        clearInterval(ping);
+        try {
+          controller.close();
+        } catch {
+          // Already closed by the runtime when the browser went away.
+        }
+      };
+      request.signal.addEventListener('abort', () => stop());
     },
     cancel() {
-      host.bus.off(person, listener);
-      clearInterval(ping);
+      stop();
     },
-  });
-  request.signal.addEventListener('abort', () => {
-    host.bus.off(person, listener);
-    clearInterval(ping);
   });
   return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' } });
 };
