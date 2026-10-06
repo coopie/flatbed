@@ -143,6 +143,13 @@ impl Agent {
     /// tool is recorded in the session instead.
     pub fn run(&mut self, signal: Option<&StopSignal>) -> Result<Outcome> {
         let stopped_by = || signal.and_then(StopSignal::stopped_by);
+        let (provider, _) = self.config.model.split_once('/').unwrap_or_default();
+        if !self.providers.contains_key(provider) {
+            let model = &self.config.model;
+            return Err(Error(format!(
+                "No provider named {provider} for model {model}."
+            )));
+        }
         let mut run = self.start()?;
         run.repair()?;
         run.deliver_waiting()?;
@@ -453,14 +460,8 @@ impl<'a> Run<'a> {
 
     fn ask_model(&self, signal: Option<&StopSignal>) -> Result<AssistantMessage> {
         let (_, messages) = render(&path_of(&self.session.entries));
-        let (provider_name, model) =
-            self.agent.model.split_once('/').ok_or_else(|| {
-                Error(format!("The model {} names no provider.", self.agent.model))
-            })?;
-        let provider = self
-            .providers
-            .get(provider_name)
-            .ok_or_else(|| Error(format!("No provider named {provider_name}.")))?;
+        let (provider, model) = self.agent.model.split_once('/').expect("checked by run");
+        let provider = &self.providers[provider];
         provider.complete(&Request {
             model: model.to_string(),
             sections: self.context.sections.clone(),
@@ -493,7 +494,7 @@ impl<'a> Run<'a> {
             let result = if message.stop == Stop::MaxTokens {
                 ToolResult::error(CUT_OFF_TEXT)
             } else {
-                let (result, outputs) = self.run_call(call);
+                let (result, outputs) = self.run_call(call)?;
                 reset = reset.or(outputs.reset.clone());
                 self.apply(outputs)?;
                 result
@@ -508,7 +509,9 @@ impl<'a> Run<'a> {
 
     /// One call, as docs/spec/plugins.md describes: find the tool, check the input, let the
     /// plugins replace the call, run it, then pass the result through the plugins.
-    fn run_call(&self, call: &ToolCall) -> (ToolResult, Outputs) {
+    /// A failing hook is a bug in its plugin, not something the model can act on, so its error
+    /// fails the run.
+    fn run_call(&self, call: &ToolCall) -> Result<(ToolResult, Outputs)> {
         let definition = self
             .context
             .tools
@@ -520,32 +523,28 @@ impl<'a> Run<'a> {
             .find(|tool| tool.definition().name == call.name);
         let (Some(definition), Some(code)) = (definition, code) else {
             let result = ToolResult::error(format!("No tool named {}.", call.name));
-            return (result, Outputs::default());
+            return Ok((result, Outputs::default()));
         };
         let input = match check_input(definition, &call.input) {
             Ok(input) => input,
-            Err(problem) => return (ToolResult::error(problem), Outputs::default()),
+            Err(problem) => return Ok((ToolResult::error(problem), Outputs::default())),
         };
         let mut ctx = Ctx::new(self.agent, &self.session);
         let mut replaced = None;
         for plugin in &self.agent.plugins {
-            match plugin.before_tool(call, &mut ctx) {
-                Ok(None) => continue,
-                Ok(Some(result)) => replaced = Some(result),
-                Err(error) => replaced = Some(ToolResult::error(error.0)),
+            replaced = plugin.before_tool(call, &mut ctx)?;
+            if replaced.is_some() {
+                break;
             }
-            break;
         }
         let mut result = replaced.unwrap_or_else(|| {
             code.run(input, &mut ctx)
                 .unwrap_or_else(|error| ToolResult::error(error.0))
         });
         for plugin in &self.agent.plugins {
-            result = plugin
-                .after_tool(call, result, &mut ctx)
-                .unwrap_or_else(|error| ToolResult::error(error.0));
+            result = plugin.after_tool(call, result, &mut ctx)?;
         }
-        (result, ctx.outputs)
+        Ok((result, ctx.outputs))
     }
 
     /// Appends a `reset` and tells the plugins the session has ended.

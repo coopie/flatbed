@@ -16,6 +16,7 @@ pub trait Plugin {
     }
 
     /// Before a tool call runs: a result to use instead of running it, or `None` to let it run.
+    /// An error here, or in `after_tool`, fails the run.
     fn before_tool(&self, _call: &ToolCall, _ctx: &mut Ctx) -> Result<Option<ToolResult>> {
         Ok(None)
     }
