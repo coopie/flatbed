@@ -1,0 +1,323 @@
+{
+  "name": "two calls in one turn",
+  "description": "The model makes two calls in one message. Their results are appended in call order, and both go back in the next request.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Both at once."
+        },
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "echo",
+          "input": {
+            "text": "one"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "echo",
+          "input": {
+            "text": "two"
+          }
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 9
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Done."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 30,
+        "output": 2
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Two things"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Two things"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Both at once."
+              },
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "echo",
+                "input": {
+                  "text": "one"
+                }
+              },
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "echo",
+                "input": {
+                  "text": "two"
+                }
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 9
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "one"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "two"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Done."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 30,
+              "output": 2
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "requests": [
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">Two things</message>"
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">Two things</message>"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Both at once."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "echo",
+              "input": {
+                "text": "one"
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "echo",
+              "input": {
+                "text": "two"
+              }
+            }
+          ],
+          "model": "faux/test",
+          "usage": {
+            "input": 10,
+            "output": 9
+          },
+          "stop": "toolUse"
+        },
+        {
+          "role": "tool",
+          "callId": "c1",
+          "name": "echo",
+          "content": [
+            {
+              "type": "text",
+              "text": "one"
+            }
+          ],
+          "isError": false
+        },
+        {
+          "role": "tool",
+          "callId": "c2",
+          "name": "echo",
+          "content": [
+            {
+              "type": "text",
+              "text": "two"
+            }
+          ],
+          "isError": false
+        }
+      ]
+    ]
+  }
+}

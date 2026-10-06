@@ -36,10 +36,10 @@ A lightly held plan, started on 6 October 2026.
 **Done**
 
 - The docs and the spec.
+- The core in TypeScript, with the conformance suite, the fake, Anthropic and OpenAI providers, and a rough CLI. The live check against Anthropic has not passed yet, because the key it was run with had been revoked.
 
 **Now**
 
-- The core in TypeScript, with the conformance suite and the fake provider.
 - The supervisor library.
 
 **Next**
