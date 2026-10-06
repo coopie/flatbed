@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Supervisor spec",
+  "description": "What a supervisor checks and how. Write every sentence a model reads to the supervisor, in the second person. See ts/packages/supervisor/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "task", "preamble", "checklist"],
+  "properties": {
+    "id": {
+      "description": "A stable name for the spec, such as send_email. A stored verdict names the spec it answered.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "task": {
+      "description": "What the supervisor checks, in a few words: the tool call it reads before it runs, or the session it audits. The prompt says 'You are checking <task>'.",
+      "type": "string",
+      "minLength": 1
+    },
+    "preamble": {
+      "description": "Markdown, to the supervisor: what the agent is doing, what a wrong verdict costs and what a right one is worth. It goes into the system prompt under its own heading.",
+      "type": "string",
+      "minLength": 1
+    },
+    "checklist": {
+      "description": "The items, in the order the supervisor should think about them. Ids are stable: verdicts are keyed by them.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "lookFor", "severity"],
+        "properties": {
+          "id": {
+            "description": "Stable once a verdict has been stored under it.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "title": {
+            "description": "A few words a person reads beside a tick or a cross.",
+            "type": "string",
+            "minLength": 1
+          },
+          "lookFor": {
+            "description": "To the supervisor: what to check, what ok means, which cases pass, and what the analysis should cite, with an invented example.",
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "description": "block: a failed item stops the call. warn: it is recorded and never stops anything.",
+            "type": "string",
+            "enum": ["block", "warn"]
+          },
+          "guidance": {
+            "description": "To the agent: what to read or do when this item fails. A host shows it beside the analysis when it sends a call back.",
+            "type": "string",
+            "minLength": 1
+          },
+          "answeredBy": {
+            "description": "host: the host answers this item in code, and the model is not asked. Leave it out for the model to answer.",
+            "type": "string",
+            "enum": ["model", "host"]
+          }
+        }
+      }
+    }
+  }
+}
