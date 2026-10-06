@@ -25,14 +25,14 @@ Sam is asleep and nobody will answer questions: use the Question for the lead se
 
 ## Write-up
 
-The crate `flatbed` is in `rust/flatbed`, about 1,850 lines of library (types, file and memory stores, rendering, plugins and tools, the loop, faux and Anthropic providers), plus a rough CLI (`cargo run -- chat <agent>`, `view <file>`) and the conformance runner (`cargo run --bin conformance`). Dependencies: `serde`, `serde_json` and `ureq` 2, each with its reason in `Cargo.toml`.
+The crate `flatbed` is in `rust/flatbed`, about 1,850 lines of library (types, file and memory stores, rendering, plugins and tools, the loop, faux and Anthropic providers), plus a rough CLI (`cargo run -- chat <agent>`, `view <file>`) and the conformance runner (`cargo run --bin conformance`).
 
 **Choices someone could make differently**
 
 - Blocking, with tools run one at a time. The loop is sequential, and threads would make every plugin `Send + Sync`.
 - A hook's `ctx` collects what it appends or delivers, and the loop writes it when the hook returns. No hook holds the session while it changes.
 - `run(&mut self)` is the in-process guard. Random ids and ISO times use the standard library, not `rand` or `chrono`.
-- The TypeScript fixture is a real session written by the TypeScript core with a throwaway script: thinking, a tool call, a custom entry, escaping and a reset. The test checks that every line round-trips to the same JSON.
+- The TypeScript fixture was written by the TypeScript core with a throwaway script. The test checks that every line round-trips to the same JSON.
 
 **Spec fixes**, in `416e2a3`:
 
@@ -50,7 +50,7 @@ I also followed every core-fix change after merging `main`.
 
 **Left out:** full JSON Schema checks, streaming, concurrent tools, cancelling a request already in flight (the stop signal is checked between attempts and during backoff), and the OpenAI provider.
 
-**How it went:** the spec was enough for the loop. My unclear points were hook errors and where appended entries land, both now specced. Building against `core-fixes` before it merged saved rework.
+**How it went:** the spec was enough for the loop. My unclear points were hook errors and where appended entries land, both now specced.
 
 ## Question for the lead
 
