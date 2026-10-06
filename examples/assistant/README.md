@@ -19,6 +19,14 @@ The host, in [host.ts](src/lib/server/host.ts), decides when an agent runs: when
 
 Demo mode is the default. Sign-in is a choice between two invented people, and their mail and calendar are invented fixtures. What they accept goes to a fake outbox, shown on the proposals page. You need Node 24, pnpm, and `DATABASE_URL` in `.env` at the repo root. The app keeps its tables in a schema of its own, `assistant`, and creates it when it starts.
 
+Any Postgres will do for the database. A local one in Docker is the quickest:
+
+```sh
+docker run -d --name assistant-db -e POSTGRES_PASSWORD=assistant -p 5432:5432 postgres:17
+```
+
+Then put `DATABASE_URL=postgres://postgres:assistant@localhost:5432/postgres` in `.env`.
+
 ```sh
 cd ts && pnpm install && cd ../examples/assistant
 FLATBED_MODEL=faux/demo pnpm dev
@@ -28,23 +36,29 @@ Open http://localhost:5173, choose Ada Brennan, select **use the demo message** 
 
 `faux/demo` is a scripted stand-in for a model, so the app runs with no API key. It plays one exchange per person, and passes every supervisor check. For a real agent, leave `FLATBED_MODEL` unset to use `anthropic/claude-opus-5-5`, and set `ANTHROPIC_API_KEY` in `.env`.
 
+Demo mode lets anyone in as either invented person, so the built server refuses to start in it unless you set `DEMO=1`. `pnpm dev` needs no such setting.
+
 To retake the screenshots in `screenshots/`, play the demo exchange, then run `node scripts/screenshots.ts http://localhost:5173` while the dev server runs. It needs Google Chrome.
 
 ## Connect Google
 
-With Google configured, sign-in is Google's, limited to a list of addresses, and the same consent lets each person's agent read their Gmail and Calendar and send what they accept. Set three things in `.env`:
+With Google configured, sign-in is Google's, limited to a list of verified addresses, and the same consent lets each person's agent read their Gmail and Calendar and send what they accept. Taking an address off the list signs that person out at their next request, and every sign-in lasts at most 30 days. Set three things in `.env`:
 
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, from an OAuth client in Google Cloud
 - `ALLOWED_EMAILS`, the addresses that may sign in, separated by commas
 
-Use the project and consent screen perso uses, with the Gmail API and Calendar API on and these scopes: `gmail.readonly`, `gmail.send` and `calendar.events`. [perso's docs/google_setup.md](../../../perso/docs/google_setup.md) walks through it, including publishing the app so sign-ins last more than seven days.
+Use the project and consent screen perso uses, with the Gmail API and Calendar API on and these scopes: `gmail.readonly`, `gmail.send` and `calendar.events`. [perso's docs/google_setup.md](../../../perso/docs/google_setup.md) walks through it.
+
+For two to four people, keep the consent screen in **Testing** and add each person's address as a test user. Do not publish it: `gmail.readonly` is a restricted scope, so publishing means Google's verification, which is a security assessment rather than a form. In Testing, Google's tokens last seven days; after that the agent's mail and calendar tools fail with a message asking the person to sign in again, which the agent passes on, and the person signs out and back in.
 
 Sam's existing client is a desktop client. A desktop client accepts any `http://localhost` redirect, so it works for local development as it is. A deployed app needs a **web client**, because a desktop client cannot redirect to a public address. To make one:
 
 1. In Google Cloud, go to **Google Auth Platform → Clients** and select **Create client**.
 2. Choose **Web application** and name it, such as `assistant on Cloud Run`.
-3. Under **Authorised redirect URIs**, add `https://<your Cloud Run URL>/auth/google/callback`, and `http://localhost:5173/auth/google/callback` if you want to use it locally too.
+3. Under **Authorised redirect URIs**, add `http://localhost:5173/auth/google/callback` if you want to use it locally.
 4. Create it, and put its id and secret in Secret Manager, as below.
+
+The Cloud Run URL, and so the callback URL, exists only after the first deploy. So deploy first, then add `https://<your Cloud Run URL>/auth/google/callback` to the client's redirect URIs, then sign in. Google can take a few minutes to accept a new redirect URI.
 
 ## Deploy to Cloud Run
 
@@ -62,7 +76,7 @@ Give the Cloud Run service account the **Secret Manager Secret Accessor** role, 
 PROJECT=my-project ALLOWED_EMAILS=a@example.org,b@example.org examples/assistant/deploy.sh
 ```
 
-The service runs one instance with CPU always on, because the page's live updates come from the process the agent runs in, and an agent keeps running after the request that woke it has answered. To have agents check mail on a schedule, point Cloud Scheduler at `POST /api/tick` with the header `Authorization: Bearer <tick secret>`.
+The service runs one instance with CPU always on, because the page's live updates come from the process the agent runs in, and an agent keeps running after the request that woke it has answered. To have agents check mail on a schedule, point Cloud Scheduler at `POST /api/tick` with the header `Authorization: Bearer <tick secret>`. A tick wakes each allowed person who has signed in. In production the tick refuses every call when `TICK_SECRET` is not set.
 
 ## Tests
 
@@ -70,7 +84,7 @@ From this folder, or with `scripts/check.sh assistant` from the repo root:
 
 ```sh
 pnpm run check                  # svelte-check, types included
-node --test "test/*.test.ts"    # the Postgres stores, and a whole run from message to outbox
+node --test "test/*.test.ts"    # the Postgres stores, a whole run from message to outbox, and two races
 ```
 
 The tests make a schema of their own, such as `assistant_test_3f0c9a12`, and drop it when they finish. They skip when `DATABASE_URL` is not set.

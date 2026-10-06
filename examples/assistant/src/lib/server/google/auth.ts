@@ -54,7 +54,9 @@ async function tokenRequest(body: Record<string, string>): Promise<Token> {
 export async function finishSignIn(origin: string, code: string): Promise<{ email: string; name: string; token: Token }> {
   const token = await tokenRequest({ code, grant_type: 'authorization_code', redirect_uri: redirectFor(origin) });
   // The ID token came straight from Google over TLS, so its payload can be read without checking the signature.
-  const payload = JSON.parse(Buffer.from(token.id_token!.split('.')[1]!, 'base64url').toString('utf8')) as { email: string; name?: string };
+  const payload = JSON.parse(Buffer.from(token.id_token!.split('.')[1]!, 'base64url').toString('utf8')) as { email: string; email_verified?: boolean; name?: string };
+  // An account can carry an address its owner has not proved is theirs; only a verified one counts.
+  if (payload.email_verified !== true) throw new Error('Google has not verified this address.');
   return { email: payload.email.toLowerCase(), name: payload.name ?? payload.email, token };
 }
 
@@ -65,7 +67,10 @@ export async function accessToken(sql: Sql, person: string): Promise<string> {
   if (!token) throw new Error('This person has not connected Google. Sign out and sign in again.');
   if (token.expires_at > Date.now() + 60_000) return token.access_token;
   if (!token.refresh_token) throw new Error('Google gave no refresh token. Sign out and sign in again.');
-  const fresh = await tokenRequest({ refresh_token: token.refresh_token, grant_type: 'refresh_token' });
+  // While the consent screen is in Testing, Google ends refresh tokens after seven days.
+  const fresh = await tokenRequest({ refresh_token: token.refresh_token, grant_type: 'refresh_token' }).catch((error: Error) => {
+    throw new Error(`Google no longer accepts this sign-in, so ask the person to sign out and sign in again. ${error.message}`);
+  });
   // A refresh answer leaves out the refresh token, so keep the one already saved.
   const saved = { ...token, ...fresh, refresh_token: fresh.refresh_token ?? token.refresh_token };
   await sql`update people set google_token = ${JSON.stringify(saved)}::text::json where id = ${person}`;

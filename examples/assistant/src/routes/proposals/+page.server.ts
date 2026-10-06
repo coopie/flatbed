@@ -48,6 +48,7 @@ export const actions: Actions = {
     const outcome = form.get('outcome') === 'accepted' ? 'accepted' : 'denied';
     const proposal = (await host.proposals(locals.person!)).find((p) => p.id === id);
     if (!proposal || proposal.status !== 'pending') return fail(409, { message: 'That proposal has already been decided.' });
+    // host.decide claims the proposal again, so a second decision racing this one still sends nothing.
     const input = Object.fromEntries(
       FIELDS[proposal.kind].map((field) => {
         const value = String(form.get(field) ?? '');
@@ -57,7 +58,12 @@ export const actions: Actions = {
     );
     const note = String(form.get('note') ?? '').trim();
     // Sending happens before this answers; the agent's run goes on after it.
-    await host.decide(locals.person!, id, { outcome, input, ...(note ? { note } : {}) });
+    try {
+      await host.decide(locals.person!, id, { outcome, input, ...(note ? { note } : {}) });
+    } catch (error) {
+      // The messages say what went wrong, such as a line break in the subject or Google's answer, and carry no secret.
+      return fail(409, { message: `That did not go through: ${(error as Error).message}` });
+    }
     return { decided: id };
   },
 };

@@ -7,17 +7,18 @@
  * the person's open pages. The host decides when an agent runs: when the person sends a message,
  * when they decide a proposal, and on a tick. A Postgres advisory lock keeps two processes from
  * running one agent at once; within a process, a wake during a run asks for one more run after it.
+ * At most MAX_RUNS agents run at once, below the size of the connection pool, as `runWhileWanted` says.
  */
 import { EventEmitter } from 'node:events';
 import { anthropicProvider, createAgent, type Agent, type Entry, type Event, type Provider } from '@flatbed/core';
 import { docsPlugin, type DocStore } from '@flatbed/docs';
-import type { Sql } from './db.ts';
+import { POOL_SIZE, type Sql } from './db.ts';
 import { demoModel } from './demo-model.ts';
 import { demoPeople, demoPerson } from './fixtures.ts';
 import { demoGoogle } from './google/demo.ts';
 import type { Google } from './google/google.ts';
 import { liveGoogle } from './google/live.ts';
-import { decide, listProposals, mailAndCalendar, proposals, type Decision, type Proposal } from './plugins.ts';
+import { claim, decide, listProposals, mailAndCalendar, proposals, type Decision, type Proposal } from './plugins.ts';
 import { seeds } from './seeds.ts';
 import { pgDocStore, pgStore } from './stores.ts';
 import { emailGuard } from './supervision.ts';
@@ -26,6 +27,13 @@ export type Person = { id: string; email: string; name: string };
 
 /** What the person's open pages hear: each new entry, a new or decided proposal, and whether the agent is working. */
 export type Update = { type: 'entry'; entry: Entry } | { type: 'proposal'; proposal: Proposal } | { type: 'working'; working: boolean };
+
+/**
+ * How many agents may run at once. Each run holds one pooled connection for its whole length, for
+ * its lock, and needs at least one more for its own reads and writes. Keeping runs well below the
+ * pool size leaves connections for those and for the pages, so a tick for everyone cannot starve them.
+ */
+export const MAX_RUNS = Math.max(1, Math.floor(POOL_SIZE / 2) - 1);
 
 export type HostOptions = {
   sql: Sql;
@@ -91,13 +99,32 @@ export function createHost(options: HostOptions) {
     return slot;
   }
 
+  // A queue of runs waiting for one of the MAX_RUNS places.
+  let runsNow = 0;
+  const waitingForPlace: (() => void)[] = [];
+  async function place(): Promise<() => void> {
+    if (runsNow >= MAX_RUNS) await new Promise<void>((resolve) => waitingForPlace.push(resolve));
+    else runsNow++;
+    // A freed place passes straight to the next waiting run, so runsNow counts it already.
+    return () => {
+      const next = waitingForPlace.shift();
+      if (next) next();
+      else runsNow--;
+    };
+  }
+
   /**
    * Runs the agent until no wake is waiting, holding a transaction-level advisory lock on its id.
+   *
    * The lock is per transaction, not per connection, because Supabase's pooler hands a connection's
    * statements to whichever server it likes between transactions; a session lock taken there can
-   * be left held on a server nobody is using. The transaction stays open for the whole run.
+   * be left held on a server nobody is using. The transaction stays open for the whole run, which
+   * is acceptable here: it writes nothing and takes no snapshot after its one statement, so it
+   * holds back no vacuum and blocks no other query. It pins one pooler connection per running agent,
+   * and MAX_RUNS bounds those to a handful.
    */
   async function runWhileWanted(who: Person, slot: ReturnType<typeof slotFor>) {
+    const release = await place();
     publish(who.id, { type: 'working', working: true });
     try {
       await sql.begin(async (tx) => {
@@ -109,7 +136,29 @@ export function createHost(options: HostOptions) {
         }
       });
     } finally {
+      release();
       publish(who.id, { type: 'working', working: false });
+    }
+  }
+
+  /**
+   * Runs the agent until no wake is waiting, then clears `running`. Checking `wanted` and clearing
+   * `running` happen with no await between them, so a wake always either sees `running` cleared
+   * and starts a run, or sets `wanted` before the check and is run by this loop.
+   */
+  async function drive(who: Person, slot: ReturnType<typeof slotFor>) {
+    try {
+      while (slot.wanted) {
+        try {
+          await runWhileWanted(who, slot);
+        } catch (error) {
+          console.error(`The agent ${who.id} failed:`, error);
+          // The next wake runs it again; looping now would repeat a failure such as a lost database.
+          slot.wanted = false;
+        }
+      }
+    } finally {
+      slot.running = undefined;
     }
   }
 
@@ -122,9 +171,7 @@ export function createHost(options: HostOptions) {
     const slot = slotFor(who);
     slot.agent.deliver(event);
     slot.wanted = true;
-    slot.running ??= runWhileWanted(who, slot)
-      .catch((error) => console.error(`The agent ${who.id} failed:`, error))
-      .finally(() => (slot.running = undefined));
+    slot.running ??= drive(who, slot);
     return slot.running;
   }
 
@@ -140,6 +187,13 @@ export function createHost(options: HostOptions) {
     /** In demo mode, the invented people; with Google, the people who have signed in. */
     async people(): Promise<Person[]> {
       return sql<Person[]>`select id, email, name from people order by name`;
+    },
+
+    /** Whom a tick wakes: in demo mode everyone; with Google, those with a token and still allowed. */
+    async tickable(allowed: string[]): Promise<Person[]> {
+      if (mode === 'demo') return sql<Person[]>`select id, email, name from people order by name`;
+      return sql<Person[]>`
+        select id, email, name from people where google_token is not null and email in ${sql(allowed.length ? allowed : [''])} order by name`;
     },
 
     /** Writes the demo people's rows, so they can sign in. */
@@ -170,10 +224,15 @@ export function createHost(options: HostOptions) {
 
     proposals: (who: Person) => listProposals(sql, who.id),
 
-    /** Sends what was accepted, then wakes the agent. `run` resolves when the agent is idle again. */
+    /**
+     * Claims the proposal, sends what was accepted, then wakes the agent. `run` resolves when the
+     * agent is idle again. Throws when the proposal is not the person's or is no longer pending, so
+     * a second decision, from a double click or a second tab, sends nothing.
+     */
     async decide(who: Person, id: string, decision: Decision): Promise<{ run: Promise<void> }> {
-      const proposal = (await listProposals(sql, who.id)).find((p) => p.id === id);
-      if (proposal === undefined) throw new Error(`No proposal ${id}.`);
+      const proposal = await claim(sql, who.id, id);
+      if (proposal === undefined) throw new Error(`Proposal ${id} is not waiting for a decision.`);
+      publish(who.id, { type: 'proposal', proposal });
       const event = await decide(sql, google(who.id), proposal, decision);
       const decided = (await listProposals(sql, who.id)).find((p) => p.id === id)!;
       publish(who.id, { type: 'proposal', proposal: decided });

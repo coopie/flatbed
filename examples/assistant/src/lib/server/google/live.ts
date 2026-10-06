@@ -53,8 +53,12 @@ const toEvent = (raw: RawEvent): CalendarEvent => ({
   attendees: (raw.attendees ?? []).map((a) => a.email),
 });
 
-/** A plain-text email as MIME, with the subject encoded so any characters survive. */
+/**
+ * A plain-text email as MIME, with the subject encoded so any characters survive. A line break in
+ * a header field would let it add headers, such as a Bcc, so one is refused.
+ */
 function mime(to: string, subject: string, body: string): string {
+  if (/[\r\n]/.test(to) || /[\r\n]/.test(subject)) throw new Error('A mail header cannot contain a line break.');
   const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, 'utf8').toString('base64')}?=`;
   return [`To: ${to}`, `Subject: ${encodedSubject}`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', body].join('\r\n');
 }

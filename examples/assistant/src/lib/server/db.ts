@@ -12,10 +12,13 @@ export type Sql = postgres.Sql;
 // Found from the working directory, which is the app's folder in development, tests and the image.
 const MIGRATIONS = resolve(process.cwd(), 'migrations');
 
+/** Connections in the pool. The host keeps its runs at once well below this; see MAX_RUNS in host.ts. */
+export const POOL_SIZE = 10;
+
 export function connect(url: string, schema = 'assistant'): Sql {
   if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Not a schema name: ${schema}`);
   // No prepared statements: Supabase's transaction pooler gives each transaction any server it likes.
-  return postgres(url, { connection: { search_path: schema }, onnotice: () => {}, max: 5, prepare: false });
+  return postgres(url, { connection: { search_path: schema }, onnotice: () => {}, max: POOL_SIZE, prepare: false });
 }
 
 /** Creates the schema, then runs each migration file not yet run, in name order. */

@@ -61,7 +61,8 @@ export type Proposal = {
   reason: string;
   session: string;
   callId: string;
-  status: 'pending' | 'accepted' | 'denied';
+  /** `sending` while a decision is being carried out; it ends `accepted` or `denied`, or back at `pending` if sending failed. */
+  status: 'pending' | 'sending' | 'accepted' | 'denied';
   decidedInput: Record<string, unknown> | null;
   note: string | null;
   result: string | null;
@@ -156,26 +157,44 @@ export function proposals(options: { sql: Sql; onProposed?: (proposal: Proposal)
 export type Decision = { outcome: 'accepted' | 'denied'; input?: Record<string, unknown>; note?: string };
 
 /**
- * Decides a pending proposal: sends what was accepted, as the person left it, and records the
- * outcome. Returns the event to deliver to the agent, which names every field the person changed.
+ * Claims a pending proposal for a decision, moving it to `sending`. Returns undefined when it is not
+ * this agent's or is no longer pending, so of two decisions at once only one goes on to send.
+ */
+export async function claim(sql: Sql, agent: string, id: string): Promise<Proposal | undefined> {
+  const [row] = await sql<ProposalRow[]>`
+    update proposals set status = 'sending' where id = ${id} and agent = ${agent} and status = 'pending' returning *`;
+  return row && toProposal(row);
+}
+
+/**
+ * Decides a proposal claimed with `claim`: sends what was accepted, as the person left it, and
+ * records the outcome. If sending fails, the proposal goes back to pending so the person can try
+ * again. Returns the event to deliver to the agent, which names every field the person changed.
  */
 export async function decide(sql: Sql, google: Google, proposal: Proposal, decision: Decision): Promise<Event> {
-  if (proposal.status !== 'pending') throw new Error(`Proposal ${proposal.id} is already ${proposal.status}.`);
-  const final = { ...proposal.input, ...(decision.input ?? {}) };
+  if (proposal.status !== 'sending') throw new Error(`Proposal ${proposal.id} is ${proposal.status}, not claimed.`);
+  const accepted = decision.outcome === 'accepted';
+  // A denial sends nothing, so what the person typed in the fields before denying does not count as a change.
+  const final = accepted ? { ...proposal.input, ...(decision.input ?? {}) } : proposal.input;
   const changed = FIELDS[proposal.kind].filter((field) => JSON.stringify(proposal.input[field]) !== JSON.stringify(final[field]));
   let result = '';
-  if (decision.outcome === 'accepted') {
-    result = proposal.kind === 'email'
-      ? await google.sendEmail({ to: str(final.to), subject: str(final.subject), body: str(final.body), ...(final.thread ? { threadId: str(final.thread) } : {}) })
-      : await google.createEvent({ title: str(final.title), start: str(final.start), end: str(final.end), attendees: (final.attendees as string[]) ?? [] });
+  try {
+    if (accepted) {
+      result = proposal.kind === 'email'
+        ? await google.sendEmail({ to: str(final.to), subject: str(final.subject), body: str(final.body), ...(final.thread ? { threadId: str(final.thread) } : {}) })
+        : await google.createEvent({ title: str(final.title), start: str(final.start), end: str(final.end), attendees: (final.attendees as string[]) ?? [] });
+    }
+  } catch (error) {
+    await sql`update proposals set status = 'pending' where id = ${proposal.id} and status = 'sending'`;
+    throw error;
   }
   await sql`
-    update proposals set status = ${decision.outcome}, decided_input = ${JSON.stringify(final)}::text::json,
+    update proposals set status = ${decision.outcome}, decided_input = ${accepted ? JSON.stringify(final) : null}::text::json,
       note = ${decision.note ?? null}, result = ${result || null}, decided_at = now()
     where id = ${proposal.id}`;
 
   const lines = [
-    decision.outcome === 'accepted' ? `The person accepted your ${proposal.kind} proposal. ${result}` : `The person denied your ${proposal.kind} proposal. Nothing was sent.`,
+    accepted ? `The person accepted your ${proposal.kind} proposal. ${result}` : `The person denied your ${proposal.kind} proposal. Nothing was sent.`,
     // The core escapes an event's text when it renders it, so plain lines go here rather than markup.
     ...changed.map((field) => `They changed the ${field}.\nYours: ${String(proposal.input[field] ?? '')}\nTheirs: ${String(final[field] ?? '')}`),
     ...(decision.note ? [`Their note: ${decision.note}`] : []),

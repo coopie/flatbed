@@ -4,6 +4,15 @@
   const pending = $derived(data.proposals.filter((p) => p.status === 'pending'));
   const decided = $derived(data.proposals.filter((p) => p.status !== 'pending'));
   const show = (value: unknown) => (Array.isArray(value) ? value.join(', ') : String(value ?? ''));
+  // The proposals with a decision in flight, whose buttons are disabled so a second click sends nothing.
+  let deciding = $state(new Set<string>());
+  const track = (id: string) => () => {
+    deciding = new Set([...deciding, id]);
+    return async ({ update }: { update: () => Promise<void> }) => {
+      await update();
+      deciding = new Set([...deciding].filter((d) => d !== id));
+    };
+  };
 </script>
 
 <svelte:head><title>Proposals · Assistant</title></svelte:head>
@@ -30,7 +39,7 @@
 {#if pending.length === 0}<p class="muted">Nothing is waiting.</p>{:else}
 <div class="grid cards">
   {#each pending as p (p.id)}
-    <form method="POST" use:enhance class="box card">
+    <form method="POST" use:enhance={track(p.id)} class="box card">
       <input type="hidden" name="id" value={p.id} />
       <p class="label">{p.kind === 'email' ? 'Email' : 'Calendar event'} · {p.id}</p>
       <p><span class="label">Why</span><br />{p.reason}</p>
@@ -46,8 +55,8 @@
       <input id="{p.id}-note" name="note" placeholder="Such as: keep it shorter next time" />
       {@render checklist(p.check)}
       <div class="row">
-        <button class="btn" name="outcome" value="accepted">Accept and send</button>
-        <button class="bracket" name="outcome" value="denied">deny</button>
+        <button class="btn" name="outcome" value="accepted" disabled={deciding.has(p.id)}>Accept and send</button>
+        <button class="bracket" name="outcome" value="denied" disabled={deciding.has(p.id)}>deny</button>
       </div>
     </form>
   {/each}
