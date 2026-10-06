@@ -63,3 +63,13 @@ Entries marked *for review* were made overnight on 6 October 2026 while Sam was 
 **Because:** making a GitHub repo public or private, and spending on Cloud Run, are Sam's calls.
 
 **Rules out:** nothing; `examples/assistant/deploy.sh` is ready to run.
+
+## Supervisor specs are JSON, with host answers passed as values *(for review)*
+
+6 October 2026.
+
+**Chose:** a supervisor spec is a JSON document checked against `ts/packages/supervisor/spec.schema.json`, with the checklist as an ordered array. An item the host answers in code is marked `answeredBy: "host"`, and the host passes its answers to the runner as values with each request.
+
+**Because:** the brief asks for specs any language can write, and an array keeps its order in every language, where object key order does not. Otherworldly kept the host's check as a function on the brief, which cannot live in JSON.
+
+**Rules out:** functions or gathered material on the spec itself. A host that wants extra material adds it to the session before it asks.
