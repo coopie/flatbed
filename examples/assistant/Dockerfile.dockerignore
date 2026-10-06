@@ -1,0 +1,9 @@
+**/node_modules
+**/.svelte-kit
+**/build
+**/screenshots
+.env
+.env.*
+.git
+python
+rust

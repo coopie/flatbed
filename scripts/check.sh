@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The gate before a merge: each implementation's checks, then the conformance suite against it.
-# Run `scripts/check.sh` for everything, or name sections, such as `scripts/check.sh ts`.
+# Run `scripts/check.sh` for everything, or name sections, such as `scripts/check.sh ts`
+# or `scripts/check.sh assistant` for the example app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export NODE_NO_WARNINGS=1
@@ -13,6 +14,14 @@ check_ts() {
     if compgen -G "$pkg*.test.ts" > /dev/null; then (cd "$pkg" && node --test "*.test.ts"); fi
   done
   node ts/packages/core/conformance.ts
+}
+
+check_assistant() {
+  echo "== assistant"
+  # Its dependencies come with the ts workspace's install. The tests skip without DATABASE_URL.
+  (cd ts && pnpm install --frozen-lockfile --silent)
+  (cd examples/assistant && pnpm run --silent check)
+  (cd examples/assistant && node --test "test/*.test.ts")
 }
 
 check_python() {
@@ -31,10 +40,11 @@ check_rust() {
 }
 
 sections=("$@")
-if [ ${#sections[@]} -eq 0 ]; then sections=(ts python rust); fi
+if [ ${#sections[@]} -eq 0 ]; then sections=(ts assistant python rust); fi
 for section in "${sections[@]}"; do
   case "$section" in
     ts) check_ts ;;
+    assistant) check_assistant ;;
     python) check_python ;;
     rust) check_rust ;;
     *) echo "Unknown section: $section" >&2; exit 2 ;;
