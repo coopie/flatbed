@@ -28,6 +28,7 @@ async function runAgent(servers: McpServer[], script: ScriptStep[]) {
   const plugin = mcpPlugin(servers);
   try {
     const agent = createAgent({ id: 'test', model: 'faux/test', plugins: [plugin] }, { store, providers: { faux } });
+    agent.deliver({ kind: 'message', attrs: { from: 'Sam' }, text: 'Go ahead.' });
     const outcome = await agent.run();
     const session = await store.read('test', (await store.list('test'))[0]!);
     return { outcome, session, requests: faux.requests };
