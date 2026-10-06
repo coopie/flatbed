@@ -12,7 +12,7 @@ The first line is the **header**:
 {"type":"session","version":1,"id":"2026-10-06T21-04-11Z-a3f9","agent":"assistant","createdAt":"2026-10-06T21:04:11.000Z","parent":{"session":"2026-10-06T19-55-02Z-77c1","reason":"reset"}}
 ```
 
-- `id` is unique for the agent. Implementations make it from the UTC time and four random hex characters, so a directory listing sorts by age.
+- `id` is unique for the agent. Implementations make it from the UTC time to the second and four random hex characters, so a directory listing sorts by age. A new id must sort after the agent's previous session id: when the time has not moved on since that id, take its time and add one to its hex part.
 - `parent` is optional. It links a session to the one it came from, with `reason` set to `reset`, `fork` or `dispatch`, and an optional `entry` id for a fork or a dispatch.
 
 Every other line is an **entry**:
@@ -89,7 +89,7 @@ The session has ended.
 {"type":"reset","by":"agent","reason":"notes are up to date"}
 ```
 
-`by` is `agent` when the agent called the `reset` tool, or `harness` when the loop ended the session itself. Nothing follows a reset. The next run opens a new session.
+`by` is `agent` when the agent called the `reset` tool, or `harness` when the loop ended the session itself. `reason` is left out when the agent gave none. Nothing follows a reset. The next run opens a new session.
 
 ### `custom`
 
@@ -105,7 +105,7 @@ The loop turns the path into the list of messages it sends to a provider. This r
 
 1. Take the last `context` entry on the path as the context. It is not a message.
 2. Copy each `message` entry's message as it is.
-3. Render each `event` as a text block in a `user` message: an XML element named by `kind`, with `attrs` as attributes in key order and `text` as its content. Escape `&`, `<` and `>` in the text, and `&`, `<`, `>` and `"` in attributes. For example, `<message from="Sam">Can you move my 3pm?</message>`.
+3. Render each `event` as a text block in a `user` message: an XML element named by `kind`, with `attrs` as attributes sorted by key and `text` as its content. Escape `&`, `<` and `>` in the text, and `&`, `<`, `>` and `"` in attributes. For example, `<message from="Sam">Can you move my 3pm?</message>`. An event with empty text renders as `<kind></kind>`.
 4. Merge neighbouring `user` messages into one, keeping block order.
 5. Skip `custom` entries.
 

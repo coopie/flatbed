@@ -23,8 +23,8 @@ A provider retries rate limits and server errors itself, three times with backof
 
 ## Every implementation has
 
-- **`faux`**, a scripted fake for tests. It is given a list of assistant messages, or functions that receive the request and return one, and returns them in order. It records every request it receives. When the list runs out, it throws `No more scripted responses.` It reports `usage` as given in the script, or zero.
-- **`anthropic`**, the Messages API. It sends sections as system blocks, with a cache breakpoint after each section marked `cache: true` and after the tool list. It moves `tool` messages into user messages as `tool_result` blocks. It sends thinking blocks back only when they came from Anthropic. For `outputSchema`, it uses the API's structured output format rather than a forced tool call, which recent models refuse.
+- **`faux`**, a scripted fake for tests. It is given a list of assistant messages, or functions that receive the request and return one, and returns them in order. It records every request it receives. When the list runs out, it throws `No more scripted responses.` It sets `model` to `faux/<model-name>`, and reports `usage` as given in the script, or zero, and `stop` as given, or `toolUse` when the content has a tool call and `end` otherwise.
+- **`anthropic`**, the Messages API. It sends sections as system blocks, with a cache breakpoint after each section marked `cache: true` and after the tool list. It moves `tool` messages into user messages as `tool_result` blocks. It sends thinking blocks back only when they came from Anthropic. For `outputSchema`, it sends `output_config: {format: {type: "json_schema", schema}}` rather than a forced tool call, which recent models refuse; the API wants `additionalProperties: false` on every object in the schema. It leaves out an assistant message with no content, such as the one a failed call leaves, since the API rejects it.
 
 TypeScript also has **`openai`**, for any chat-completions-compatible endpoint, which joins the sections into one system message.
 

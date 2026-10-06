@@ -4,17 +4,17 @@ The loop is the whole harness. It asks the model for the next step, runs the too
 
 ## A run
 
-A host calls `run(agent)`, optionally with a stop signal. A run:
+A host calls `run(agent)`, optionally with a stop signal that says who stopped the run. A run reads the session from the store each time, since the host may have appended to it between runs. A run:
 
-1. **Opens a session if none is open.** The agent's open session is its newest session, unless that session ends in a `reset`. To open one, collect sections and tools from every plugin's `context` hook in plugin order, add the core `reset` tool, write the header and a `context` entry, and append a `notice` event saying why the session started: `Session started.` for an agent's first, or `Session started after a reset: <reason>` after one.
-2. **Repairs the session.** When the last `message` on the path is an assistant message with tool calls that have no results, append a `tool` message for each, with `isError: true` and the text `The harness stopped before this tool ran.` A crash then never leaves the model looking at a call with no answer.
-3. **Delivers waiting events.** The host may queue events while the agent runs. Append everything queued.
+1. **Opens a session if none is open.** The agent's open session is its newest session, unless that session ends in a `reset`. To open one, collect sections and tools from every plugin's `context` hook in plugin order, add the core `reset` tool, write the header and a `context` entry, and append a `notice` event saying why the session started: `Session started.` for an agent's first, or `Session started after a reset: <reason>` after one, or `Session started after a reset.` when the reset gave no reason.
+2. **Repairs the session.** Take the last assistant message on the path. For each of its tool calls that has no `tool` message after it on the path, append one, in call order, with `isError: true` and the text `The harness stopped before this tool ran.` A crash, even one partway through a turn's results, then never leaves the model looking at a call with no answer.
+3. **Delivers waiting events.** The host may queue events while the agent runs. Append everything queued, in order. A host may queue an event with an earlier entry as its parent, to rewind, as [sessions.md](sessions.md) describes.
 4. **Loops while the session needs a run.** A session needs a run when the last entry on its path is an `event` or a `tool` message. Each turn:
    1. When the stop signal is set, append a `notice` event, `Stopped by <who>.`, and end the run.
    2. Render the path and call the provider with the context, the messages and the agent's model.
-   3. Append the assistant message. When the provider fails after its retries, append an assistant message with `stop: "error"`, empty content, then a `notice` event, `The model call failed: <reason>`, and end the run.
+   3. Append the assistant message. When the provider fails after its retries, append an assistant message with `stop: "error"`, empty content, the agent's full model name and zero `input` and `output` usage, then a `notice` event, `The model call failed: <error message>`, and end the run with `error`. When the call failed because the stop signal was set during it, treat it as step i instead.
    4. Run each tool call, as [plugins.md](plugins.md) describes, and append a `tool` message for each, in the order the calls appear. Calls may run concurrently; results are appended in call order.
-   5. When a tool requested a reset, append a `reset` entry with `by: "agent"` and end the run.
+   5. When a tool requested a reset, append a `reset` entry with `by: "agent"` and the reason of the first request, and end the run with `reset`.
    6. Check the budget, as below.
    7. Deliver waiting events.
 5. **Ends** and returns why: `idle`, `reset`, `stopped` or `error`.

@@ -14,8 +14,10 @@ A plugin is a plain object with a `name` and any of five hooks. Every hook may b
 
 `ctx` gives a hook the agent, the open session, and two actions:
 
-- `append(entry)`, to add a `custom` entry, or an `event` from `onSessionEnd` or `afterTool`
+- `append(entry)`, to add a `custom` entry or an `event` to the open session now, such as from `afterTool`
 - `deliver(event)`, to queue an event for the next delivery point
+
+Nothing follows a reset, so `append` fails in `onSessionEnd`. Use `deliver` there instead: the event arrives at the start of the next session.
 
 ## A tool
 
@@ -39,10 +41,14 @@ A tool is a name, a description, an input schema and a function:
 For each call in an assistant message:
 
 1. Find the tool by name in the session's tools. When none matches, the result is an error: `No tool named <name>.`
-2. Check the input against the tool's schema. Each implementation checks at least that the input is an object and that required properties are present. When it fails, the result is an error that names the problem.
+2. Check the input against the tool's schema. Each implementation checks at least that the input is an object and that required properties are present, and reports the first problem in these words, which the conformance suite checks: `Invalid input for <name>: expected an object.` or `Invalid input for <name>: missing required property "<property>".` A fuller check may report other problems in its own words.
 3. Call each plugin's `beforeTool`. When one returns a result, use it.
 4. Otherwise call the tool's `run`. When it throws, the result is an error with the message.
 5. Pass the result through each plugin's `afterTool`.
+
+A call that fails at step 1 or 2 never reaches the plugins.
+
+The session's `context` entry decides which tools exist; the plugins supply their code. When a run resumes a session that an earlier process opened, the loop calls the `context` hooks again for the tools' code and ignores the sections.
 
 ## Tools in other languages
 
