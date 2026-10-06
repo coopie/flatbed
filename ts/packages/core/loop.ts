@@ -36,6 +36,7 @@ export type Agent = {
 
 const notice = (text: string): EntryBody => ({ type: 'event', kind: 'notice', attrs: { from: 'harness' }, text });
 const errorResult = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true });
+const isSoftLimitNotice = (e: Entry) => e.type === 'event' && e.kind === 'notice' && e.attrs?.from === 'harness' && e.text === SOFT_LIMIT_NOTICE;
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export function createAgent(config: AgentConfig, deps: { store: Store; providers: Record<string, Provider> }): Agent {
@@ -54,7 +55,11 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     return {
       agent: config,
       session,
-      append: async (entry) => void (await append(session, entry)),
+      append: async (entry) => {
+        // Events go through `deliver`, so that none lands between a call and its result.
+        if (entry.type !== 'custom') throw new Error('A plugin may append only custom entries. Deliver events instead.');
+        await append(session, entry);
+      },
       deliver: (event) => void queue.push({ event }),
     };
   }
@@ -80,7 +85,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     for (const plugin of plugins) {
       const added = await plugin.context?.(contextFor(session));
       sections.push(...(added?.sections ?? []));
-      for (const tool of [...(added?.tools ?? [])]) {
+      for (const tool of added?.tools ?? []) {
         if (tools.has(tool.name)) throw new Error(`Two tools are named ${tool.name}.`);
         tools.set(tool.name, tool);
       }
@@ -122,25 +127,35 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
 
   /** Step 2: gives every unanswered call of the last assistant message an error result. */
   async function repair(session: Session) {
-    const path = pathOf(session.entries);
-    const at = path.findLastIndex((e) => e.type === 'message' && e.message.role === 'assistant');
-    const assistant = path[at];
-    if (assistant?.type !== 'message' || assistant.message.role !== 'assistant') return;
-    const answered = new Set(path.slice(at + 1).flatMap((e) => (e.type === 'message' && e.message.role === 'tool' ? [e.message.callId] : [])));
-    for (const call of toolCalls(assistant.message)) {
-      if (answered.has(call.id)) continue;
+    for (const call of unansweredCalls(pathOf(session.entries))) {
       const result = errorResult('The harness stopped before this tool ran.');
       await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...result } });
     }
   }
 
   async function deliverQueued(session: Session) {
-    for (const { event, parentId } of queue.splice(0)) await append(session, { type: 'event', ...event }, parentId);
+    for (const { event, parentId } of queue.splice(0)) await append(session, { type: 'event', ...event }, rewindTarget(session, parentId));
   }
 
+  /**
+   * The parent for a delivered event. A rewind target must be in the open session and must leave no
+   * call on its path without a result; otherwise the event goes at the head, as usual.
+   */
+  function rewindTarget(session: Session, parentId: string | undefined): string | null {
+    const head = session.entries.at(-1)?.id ?? null;
+    const at = session.entries.findIndex((e) => e.id === parentId);
+    if (at === -1) return head;
+    return unansweredCalls(pathOf(session.entries.slice(0, at + 1))).length === 0 ? parentId! : head;
+  }
+
+  /**
+   * A session needs a run when the last entry on its path, ignoring `custom` and `context` entries,
+   * is a `tool` message or an event that is not from the harness.
+   */
   function needsRun(session: Session): boolean {
-    const head = pathOf(session.entries).at(-1);
-    return head?.type === 'event' || (head?.type === 'message' && head.message.role === 'tool');
+    const last = pathOf(session.entries).findLast((e) => e.type !== 'custom' && e.type !== 'context');
+    if (last?.type === 'event') return last.attrs?.from !== 'harness';
+    return last?.type === 'message' && last.message.role === 'tool';
   }
 
   /** Runs one call as docs/spec/plugins.md describes. Never throws for a tool's own failure. */
@@ -167,7 +182,8 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   }
 
   async function endSession(session: Session, by: 'agent' | 'harness', reason: string | undefined): Promise<RunOutcome> {
-    await append(session, { type: 'reset', by, ...(reason === undefined ? {} : { reason }) });
+    // An empty reason is no reason.
+    await append(session, { type: 'reset', by, ...(reason ? { reason } : {}) });
     for (const plugin of plugins) await plugin.onSessionEnd?.(session, contextFor(session));
     return 'reset';
   }
@@ -179,11 +195,17 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     await deliverQueued(session);
     const softLimit = config.softLimit ?? DEFAULT_SOFT_LIMIT;
     const hardLimit = config.hardLimit ?? DEFAULT_HARD_LIMIT;
+    // The frozen context decides which tools exist; the plugins only supply their code.
+    const { context } = render(pathOf(session.entries));
+    const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, tools.get(t.name)!] as const] : [])));
+    // After the soft-limit notice, the loop runs one more turn so that the model can answer it.
+    let answerNotice = false;
 
-    while (needsRun(session)) {
+    while (answerNotice || needsRun(session)) {
+      answerNotice = false;
       if (signal?.aborted) return stopped(session, signal);
 
-      const { context, messages } = render(pathOf(session.entries));
+      const { messages } = render(pathOf(session.entries));
       let message: AssistantMessage;
       try {
         message = await provider!.complete({
@@ -192,6 +214,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
           tools: context.tools,
           messages,
           maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
+          ...(config.effort === undefined ? {} : { effort: config.effort }),
           signal,
         });
       } catch (error) {
@@ -206,9 +229,10 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       const resets: (string | undefined)[] = [];
       const ctx: ToolContext = { ...contextFor(session), requestReset: (reason) => void resets.push(reason) };
       const calls = toolCalls(message);
-      // The frozen context decides which tools exist; the plugins only supply their code.
-      const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, tools.get(t.name)!] as const] : [])));
-      const results = await Promise.all(calls.map((call) => runTool(call, frozen, ctx)));
+      // A response cut off by maxTokens may hold a call whose input is incomplete, so none of its calls run.
+      const results = message.stop === 'maxTokens'
+        ? calls.map(() => errorResult('The response was cut off before this call was complete.'))
+        : await Promise.all(calls.map((call) => runTool(call, frozen, ctx)));
       for (const [i, call] of calls.entries()) {
         await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
       }
@@ -217,8 +241,10 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       const { input, output, cacheRead = 0, cacheWrite = 0 } = message.usage;
       const size = input + output + cacheRead + cacheWrite;
       if (size > hardLimit) return endSession(session, 'harness', 'context budget');
-      const warned = session.entries.some((e) => e.type === 'event' && e.kind === 'notice' && e.text === SOFT_LIMIT_NOTICE);
-      if (size > softLimit && !warned) await append(session, notice(SOFT_LIMIT_NOTICE));
+      if (size > softLimit && !session.entries.some(isSoftLimitNotice)) {
+        await append(session, notice(SOFT_LIMIT_NOTICE));
+        answerNotice = true;
+      }
 
       await deliverQueued(session);
     }
@@ -250,6 +276,15 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
 
 function toolCalls(message: AssistantMessage): ToolCall[] {
   return message.content.filter((block): block is ToolCall => block.type === 'toolCall');
+}
+
+/** The calls of the last assistant message on a path that have no `tool` message after them. */
+function unansweredCalls(path: Entry[]): ToolCall[] {
+  const at = path.findLastIndex((e) => e.type === 'message' && e.message.role === 'assistant');
+  const assistant = path[at];
+  if (assistant?.type !== 'message' || assistant.message.role !== 'assistant') return [];
+  const answered = new Set(path.slice(at + 1).flatMap((e) => (e.type === 'message' && e.message.role === 'tool' ? [e.message.callId] : [])));
+  return toolCalls(assistant.message).filter((call) => !answered.has(call.id));
 }
 
 /** The least check the spec asks for: an object, with its required properties present. */

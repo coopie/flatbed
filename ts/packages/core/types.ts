@@ -14,7 +14,7 @@ export type ToolCall = { type: 'toolCall'; id: string; name: string; input: Reco
 export type Block = TextBlock | ImageBlock | ThinkingBlock | ToolCall;
 
 export type Usage = { input: number; output: number; cacheRead?: number; cacheWrite?: number };
-export type Stop = 'end' | 'toolUse' | 'maxTokens' | 'error';
+export type Stop = 'end' | 'toolUse' | 'maxTokens' | 'refusal' | 'error';
 
 export type UserMessage = { role: 'user'; content: (TextBlock | ImageBlock)[] };
 export type AssistantMessage = { role: 'assistant'; content: Block[]; model: string; usage: Usage; stop: Stop };
@@ -70,6 +70,8 @@ export type ProviderRequest = {
   messages: Message[];
   maxTokens: number;
   outputSchema?: JsonSchema;
+  /** How much effort the model should spend, for providers that take it, such as `low` or `high`. */
+  effort?: string;
   signal?: AbortSignal;
 };
 
@@ -85,14 +87,16 @@ export type AgentConfig = {
   softLimit?: number;
   hardLimit?: number;
   maxTokens?: number;
+  /** Passed through to providers that take it. */
+  effort?: string;
 };
 
 export type PluginContext = {
   agent: AgentConfig;
   session: Session;
-  /** Adds a `custom` entry, or an `event`, to the open session. */
-  append(entry: EntryBody<CustomEntry | EventEntry>): Promise<void>;
-  /** Queues an event for the next delivery point. */
+  /** Adds a `custom` entry to the open session. Events go through `deliver`. */
+  append(entry: EntryBody<CustomEntry>): Promise<void>;
+  /** Queues an event for the next delivery point, which is never between a call and its result. */
   deliver(event: Event): void;
 };
 

@@ -1,6 +1,7 @@
 /**
  * The Anthropic Messages API over fetch. Sections become system blocks, `tool` messages become
- * `tool_result` blocks in user messages, and `outputSchema` becomes `output_config.format`.
+ * `tool_result` blocks in user messages, and `outputSchema` and `effort` go in `output_config`.
+ * Empty text blocks are dropped everywhere, since the API rejects them.
  */
 import type { AssistantMessage, Block, ImageBlock, Message, Provider, ProviderRequest, Stop, TextBlock } from '../types.ts';
 import { postJson } from './http.ts';
@@ -9,6 +10,8 @@ type ApiBlock = Record<string, unknown> & { type: string };
 type ApiMessage = { role: 'user' | 'assistant'; content: ApiBlock[] };
 
 const EPHEMERAL = { type: 'ephemeral' } as const;
+/** The API allows at most four cache breakpoints in a request. */
+const MAX_BREAKPOINTS = 4;
 
 export function anthropicProvider(options: { apiKey: string; baseUrl?: string }): Provider {
   const url = `${options.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`;
@@ -29,13 +32,27 @@ export function anthropicRequest(request: ProviderRequest): Record<string, unkno
     input_schema: tool.inputSchema,
     ...(i === request.tools.length - 1 ? { cache_control: EPHEMERAL } : {}),
   }));
+  // One breakpoint goes on the history, through the top-level `cache_control`, and one after the
+  // tools when there are any. The earliest sections marked `cache: true` get the rest.
+  let sectionBreakpoints = MAX_BREAKPOINTS - 1 - (tools.length > 0 ? 1 : 0);
+  const system = request.sections
+    .filter((s) => s.text !== '')
+    .map((s) => {
+      const cache = s.cache === true && sectionBreakpoints-- > 0;
+      return { type: 'text', text: s.text, ...(cache ? { cache_control: EPHEMERAL } : {}) };
+    });
+  const outputConfig = {
+    ...(request.outputSchema ? { format: { type: 'json_schema', schema: request.outputSchema } } : {}),
+    ...(request.effort === undefined ? {} : { effort: request.effort }),
+  };
   return {
     model: request.model,
     max_tokens: request.maxTokens,
-    system: request.sections.map((s) => ({ type: 'text', text: s.text, ...(s.cache ? { cache_control: EPHEMERAL } : {}) })),
+    cache_control: EPHEMERAL,
+    ...(system.length > 0 ? { system } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     messages: toAnthropicMessages(request.messages),
-    ...(request.outputSchema ? { output_config: { format: { type: 'json_schema', schema: request.outputSchema } } } : {}),
+    ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
   };
 }
 
@@ -47,33 +64,39 @@ function toAnthropicMessages(messages: Message[]): ApiMessage[] {
     else out.push({ role, content });
   };
   for (const message of messages) {
-    if (message.role === 'user') push('user', message.content.map(toAnthropicBlock));
-    else if (message.role === 'tool') {
-      push('user', [{ type: 'tool_result', tool_use_id: message.callId, content: message.content.map(toAnthropicBlock), is_error: message.isError }]);
+    if (message.role === 'tool') {
+      const content = message.content.flatMap(toAnthropicBlock);
+      const result = content.length > 0 ? content : [{ type: 'text', text: '(no output)' }];
+      push('user', [{ type: 'tool_result', tool_use_id: message.callId, content: result, is_error: message.isError }]);
     } else {
-      const content = message.content.flatMap(toAnthropicAssistantBlock);
-      // An assistant message left empty by a failed call has nothing to send.
-      if (content.length > 0) push('assistant', content);
+      const content = message.role === 'user' ? message.content.flatMap(toAnthropicBlock) : message.content.flatMap(toAnthropicAssistantBlock);
+      // A message left empty, such as the assistant message a failed call leaves, has nothing to send.
+      if (content.length > 0) push(message.role, content);
     }
+  }
+  // The API wants a user message's tool results before anything else in it.
+  for (const message of out) {
+    if (message.role === 'user') message.content.sort((a, b) => Number(b.type === 'tool_result') - Number(a.type === 'tool_result'));
   }
   return out;
 }
 
-function toAnthropicBlock(block: TextBlock | ImageBlock): ApiBlock {
-  if (block.type === 'text') return { type: 'text', text: block.text };
-  return { type: 'image', source: { type: 'base64', media_type: block.mimeType, data: block.data } };
+function toAnthropicBlock(block: TextBlock | ImageBlock): ApiBlock[] {
+  if (block.type === 'text') return block.text === '' ? [] : [{ type: 'text', text: block.text }];
+  return [{ type: 'image', source: { type: 'base64', media_type: block.mimeType, data: block.data } }];
 }
 
 function toAnthropicAssistantBlock(block: Block): ApiBlock[] {
   switch (block.type) {
     case 'text':
     case 'image':
-      return [toAnthropicBlock(block)];
+      return toAnthropicBlock(block);
     case 'toolCall':
       return [{ type: 'tool_use', id: block.id, name: block.name, input: block.input }];
     case 'thinking':
       // Thinking goes back only to the provider that made it.
-      return block.provider === 'anthropic' ? [{ type: 'thinking', thinking: block.text, signature: block.signature ?? '' }] : [];
+      if (block.provider !== 'anthropic') return [];
+      return [{ type: 'thinking', thinking: block.text, ...(block.signature === undefined ? {} : { signature: block.signature }) }];
   }
 }
 
@@ -91,11 +114,16 @@ export function fromAnthropic(response: AnthropicResponse, model: string): Assis
   const content: Block[] = response.content.flatMap((block): Block[] => {
     if (block.type === 'text') return [{ type: 'text', text: String(block.text) }];
     if (block.type === 'tool_use') return [{ type: 'toolCall', id: String(block.id), name: String(block.name), input: block.input as Record<string, unknown> }];
-    if (block.type === 'thinking') return [{ type: 'thinking', text: String(block.thinking), signature: String(block.signature), provider: 'anthropic' }];
+    if (block.type === 'thinking') {
+      // A missing signature is left out, never stored as the string "undefined".
+      const signature = typeof block.signature === 'string' ? { signature: block.signature } : {};
+      return [{ type: 'thinking', text: String(block.thinking), ...signature, provider: 'anthropic' }];
+    }
     return [];
   });
   const { usage } = response;
-  const stops: Record<string, Stop> = { tool_use: 'toolUse', max_tokens: 'maxTokens' };
+  // Any other reason, such as end_turn or pause_turn, maps to end.
+  const stops: Record<string, Stop> = { tool_use: 'toolUse', max_tokens: 'maxTokens', refusal: 'refusal' };
   return {
     role: 'assistant',
     content,
