@@ -27,7 +27,7 @@
 {/snippet}
 
 <h2 class="display">Waiting for you</h2>
-{#if pending.length === 0}<p class="muted section">Nothing is waiting.</p>{/if}
+{#if pending.length === 0}<p class="muted">Nothing is waiting.</p>{:else}
 <div class="grid cards">
   {#each pending as p (p.id)}
     <form method="POST" use:enhance class="box card">
@@ -52,9 +52,10 @@
     </form>
   {/each}
 </div>
+{/if}
 
 <h2 class="display">Decided</h2>
-{#if decided.length === 0}<p class="muted section">Nothing decided yet.</p>{/if}
+{#if decided.length === 0}<p class="muted">Nothing decided yet.</p>{:else}
 <div class="grid cards">
   {#each decided as p (p.id)}
     <article class="box">
@@ -68,6 +69,7 @@
     </article>
   {/each}
 </div>
+{/if}
 
 {#if data.outbox.length > 0}
   <h2 class="display">Demo outbox</h2>
@@ -90,7 +92,7 @@
 
 <style>
   h2.display { margin: 32px 0 12px; }
-  .cards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 560px)); width: fit-content; max-width: 100%; }
   .card { display: flex; flex-direction: column; gap: 6px; }
   .card > * + * { margin-top: 0; }
   .check { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }

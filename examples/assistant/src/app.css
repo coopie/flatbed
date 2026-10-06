@@ -27,7 +27,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 400 0.95rem/1.7 var(--mono); -webkit-font-smoothing: antialiased; }
 p, h1, h2, h3, ul, ol { margin: 0; }
-ul.plain { padding: 0; list-style: none; }
+.plain { padding: 0; margin: 0; list-style: none; }
 a { color: inherit; text-underline-offset: 4px; }
 a, button, summary { cursor: var(--hand); }
 :focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
