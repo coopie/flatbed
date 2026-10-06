@@ -40,3 +40,20 @@ Work for at most three hours. When you reach it, stop and write up what you have
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Change the packages in `ts/packages/` only when you must, and say so in the write-up. Never print, log or commit a value from `.env`, and put no real person's data in fixtures. Run long commands in the foreground one at a time, and stop any server you started before you finish.
 
 ## Write-up
+
+`examples/assistant/` is a SvelteKit 2 app (Svelte 5, Node adapter) on Postgres, in schema `assistant`. Each person's agent has the docs plugin, mail and calendar read tools, the app's proposals plugin, `supervisorGuard` in shadow mode on `propose_email`, and a stream plugin feeding server-sent events. Pages: chat, proposals (with the checklist and a demo outbox), documents with history and pin, sessions as the model saw them, timeline. Google mode, a Dockerfile and `deploy.sh` are written. `scripts/check.sh` has an `assistant` section. I changed nothing in `ts/packages/`; `ts/pnpm-workspace.yaml` now includes the app.
+
+Choices someone could make differently:
+
+- SvelteKit 2, not 3: Kit 3 wants TypeScript 6 and the workspace is on 5.9.
+- Entries go in `json` columns as text. `jsonb`, or a parameter the driver sends as one, sorts keys, so a session would render to different bytes.
+- The lock is `pg_advisory_xact_lock`, holding a transaction for the whole run, and the client sets `prepare: false`. `DATABASE_URL` is Supabase's transaction pooler, where a session lock or a prepared statement lands on whichever server it likes. Prepared statements hung every run until I turned them off.
+- `faux/demo` is a scripted Provider in the app that plays one exchange per demo person and passes every supervisor item.
+- The proposal finds its call id by matching name and input, since a tool's `run` is not given it.
+- `@flatbed/*` are external to the server bundle: the supervisor reads its schema from beside itself.
+
+Commands: `scripts/check.sh` printed `== all checks passed`, with the app's 3 tests passing. In the browser pane I sent the demo message, edited the subject, accepted, and saw it in the outbox. `scripts/screenshots.ts` (headless Chrome) wrote 36 screenshots: every page, light and dark, desktop and 390 px.
+
+Left: Docker was not running, so the image is unbuilt. Google mode is untested. Live updates assume one instance.
+
+**How it went.** The pooler cost most of an hour: two hangs that looked like my lock. Killed test runs left two backends idle in a transaction, which I could not end; they should time out. Driving the pane's emulated viewport misplaced clicks and clipped screenshots, so I wrote the Chrome script. An orphaned `node build` (pid 29671, not listening) sits in the app folder; I am not sure it is mine. Worth a decisions entry: `json` over `jsonb`, and the pooler settings.
