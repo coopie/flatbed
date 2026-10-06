@@ -35,6 +35,8 @@ pub struct AgentConfig {
     pub max_tokens: u32,
     /// Passed to providers that take it, such as `low` or `high`.
     pub effort: Option<String>,
+    /// The parent of the agent's first session, such as the session that dispatched it.
+    pub parent: Option<ParentLink>,
 }
 
 impl AgentConfig {
@@ -47,6 +49,7 @@ impl AgentConfig {
             hard_limit: 180_000,
             max_tokens: 8_192,
             effort: None,
+            parent: None,
         }
     }
 }
@@ -170,7 +173,7 @@ impl Agent {
                 }
             };
             run.append_message(Message::Assistant(message.clone()))?;
-            if let Some(reason) = run.run_tools(&message)? {
+            if let Some(reason) = run.run_tools(&message, signal)? {
                 run.end("agent", reason)?;
                 return Ok(Outcome::Reset);
             }
@@ -188,7 +191,9 @@ impl Agent {
     }
 
     /// Reads the agent's newest session and opens a new one when there is none, or when the
-    /// newest ended in a reset. Loads the tools' code when this process has not yet.
+    /// newest ended in a reset. A newest session that holds only its header, because a process
+    /// stopped after writing it, is opened in place. Loads the tools' code when this process has
+    /// not yet.
     fn start(&mut self) -> Result<Run<'_>> {
         let Agent {
             config,
@@ -202,14 +207,14 @@ impl Agent {
             Some(id) => Some(store.read(&config.id, id)?),
             None => None,
         };
-        let ended_with =
-            newest
-                .as_ref()
-                .and_then(|session| match session.entries.last().map(|e| &e.body) {
-                    Some(EntryBody::Reset { reason, .. }) => Some(reason.clone()),
-                    _ => None,
-                });
-        if let (Some(session), None) = (&newest, &ended_with) {
+        let ended_with = |session: &Session| match session.entries.last().map(|e| &e.body) {
+            Some(EntryBody::Reset { reason, .. }) => Some(reason.clone()),
+            _ => None,
+        };
+        let open = newest
+            .as_ref()
+            .filter(|s| !s.entries.is_empty() && ended_with(s).is_none());
+        if let Some(session) = open {
             let loaded = tools
                 .as_ref()
                 .is_some_and(|(id, _)| *id == session.header.id);
@@ -224,21 +229,38 @@ impl Agent {
             return Ok(run);
         }
 
-        let now = now_iso();
-        let header = Header {
-            version: 1,
-            id: new_session_id(&now, ids.last().map(String::as_str))?,
-            agent: config.id.clone(),
-            created_at: now,
-            parent: newest.map(|previous| ParentLink {
-                session: previous.header.id,
-                reason: "reset".into(),
-                entry: None,
-            }),
+        let header_only = newest.as_ref().is_some_and(|s| s.entries.is_empty());
+        // The session whose reset says why this one starts: the one before a header-only newest.
+        let ended_with = match (header_only, ids.len()) {
+            (false, _) => newest.as_ref().and_then(ended_with),
+            (true, n) if n > 1 => ended_with(&store.read(&config.id, &ids[n - 2])?),
+            (true, _) => None,
         };
-        let session = Session {
-            header,
-            entries: Vec::new(),
+        let session = match newest.filter(|_| header_only) {
+            Some(session) => session,
+            None => {
+                let now = now_iso();
+                let parent = match ids.last() {
+                    Some(previous) => Some(ParentLink {
+                        session: previous.clone(),
+                        reason: "reset".into(),
+                        entry: None,
+                        agent: None,
+                    }),
+                    None => config.parent.clone(),
+                };
+                let header = Header {
+                    version: 1,
+                    id: new_session_id(&now, ids.last().map(String::as_str))?,
+                    agent: config.id.clone(),
+                    created_at: now,
+                    parent,
+                };
+                Session {
+                    header,
+                    entries: Vec::new(),
+                }
+            }
         };
         let mut outputs = Outputs::default();
         let Contribution {
@@ -246,7 +268,9 @@ impl Agent {
             tools: code,
         } = collect_context(config, &session, &mut outputs)?;
         let definitions = code.iter().map(|tool| tool.definition()).collect();
-        store.create(&session.header)?;
+        if !header_only {
+            store.create(&session.header)?;
+        }
         *tools = Some((session.header.id.clone(), code));
         let mut run = Run::new(config, &**store, providers, queue, tools, session);
         run.append(
@@ -486,7 +510,11 @@ impl<'a> Run<'a> {
 
     /// Runs the message's tool calls one at a time and appends their results in call order.
     /// Returns the reset a tool asked for, with its reason, if any did.
-    fn run_tools(&mut self, message: &AssistantMessage) -> Result<Option<Option<String>>> {
+    fn run_tools(
+        &mut self,
+        message: &AssistantMessage,
+        signal: Option<&StopSignal>,
+    ) -> Result<Option<Option<String>>> {
         let mut results = Vec::new();
         let mut reset = None;
         for call in message.tool_calls() {
@@ -494,7 +522,7 @@ impl<'a> Run<'a> {
             let result = if message.stop == Stop::MaxTokens {
                 ToolResult::error(CUT_OFF_TEXT)
             } else {
-                let (result, outputs) = self.run_call(call)?;
+                let (result, outputs) = self.run_call(call, signal);
                 reset = reset.or(outputs.reset.clone());
                 self.apply(outputs)?;
                 result
@@ -509,9 +537,9 @@ impl<'a> Run<'a> {
 
     /// One call, as docs/spec/plugins.md describes: find the tool, check the input, let the
     /// plugins replace the call, run it, then pass the result through the plugins.
-    /// A failing hook is a bug in its plugin, not something the model can act on, so its error
-    /// fails the run.
-    fn run_call(&self, call: &ToolCall) -> Result<(ToolResult, Outputs)> {
+    /// A failing hook is a bug in its plugin: the call gets an error result naming the plugin,
+    /// and no later hook runs for it.
+    fn run_call(&self, call: &ToolCall, signal: Option<&StopSignal>) -> (ToolResult, Outputs) {
         let definition = self
             .context
             .tools
@@ -523,16 +551,25 @@ impl<'a> Run<'a> {
             .find(|tool| tool.definition().name == call.name);
         let (Some(definition), Some(code)) = (definition, code) else {
             let result = ToolResult::error(format!("No tool named {}.", call.name));
-            return Ok((result, Outputs::default()));
+            return (result, Outputs::default());
         };
         let input = match check_input(definition, &call.input) {
             Ok(input) => input,
-            Err(problem) => return Ok((ToolResult::error(problem), Outputs::default())),
+            Err(problem) => return (ToolResult::error(problem), Outputs::default()),
         };
         let mut ctx = Ctx::new(self.agent, &self.session);
+        if let Some(signal) = signal {
+            ctx.signal = signal.clone();
+        }
+        let failed = |plugin: &dyn Plugin, error: Error| {
+            ToolResult::error(format!("The {} plugin failed: {}", plugin.name(), error.0))
+        };
         let mut replaced = None;
         for plugin in &self.agent.plugins {
-            replaced = plugin.before_tool(call, &mut ctx)?;
+            replaced = match plugin.before_tool(call, &mut ctx) {
+                Ok(replaced) => replaced,
+                Err(error) => return (failed(plugin.as_ref(), error), ctx.outputs),
+            };
             if replaced.is_some() {
                 break;
             }
@@ -542,9 +579,12 @@ impl<'a> Run<'a> {
                 .unwrap_or_else(|error| ToolResult::error(error.0))
         });
         for plugin in &self.agent.plugins {
-            result = plugin.after_tool(call, result, &mut ctx)?;
+            result = match plugin.after_tool(call, result, &mut ctx) {
+                Ok(result) => result,
+                Err(error) => return (failed(plugin.as_ref(), error), ctx.outputs),
+            };
         }
-        Ok((result, ctx.outputs))
+        (result, ctx.outputs)
     }
 
     /// Appends a `reset` and tells the plugins the session has ended.

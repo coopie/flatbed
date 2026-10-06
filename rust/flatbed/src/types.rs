@@ -168,10 +168,13 @@ pub struct Header {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParentLink {
     pub session: String,
-    /// `reset`, `fork` or `dispatch`.
+    /// `reset`, `fork`, `dispatch` or `supervise`.
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
+    /// The parent session's agent, when it is another agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// Every line of a session after the header.

@@ -50,7 +50,7 @@ For each call in an assistant message:
 4. Otherwise call the tool's `run`. When it throws, the result is an error with the message.
 5. Pass the result through each plugin's `afterTool`.
 
-When `beforeTool` or `afterTool` throws, the result of that call is an error, `The <plugin> plugin failed: <message>`, where `<plugin>` is the plugin's name, and no later plugin's hook runs for it. The session stays consistent, every call keeps its own result, and the model learns that something went wrong rather than seeing a misleading repair on the next run.
+When `beforeTool` or `afterTool` throws, the result of that call is an error, `The <plugin> plugin failed: <message>`, where `<plugin>` is the plugin's name. No other hook runs for that call afterwards, so a throwing `beforeTool` also skips every `afterTool`. A custom entry the hook appended before it threw stays in the session. The session stays consistent, every call keeps its own result, and the model learns that something went wrong rather than seeing a misleading repair on the next run.
 
 A custom entry that a tool, `beforeTool` or `afterTool` appends is written at once, so it lands before the turn's `tool` messages, which are appended together after the last call.
 

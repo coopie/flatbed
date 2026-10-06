@@ -7,9 +7,9 @@
 use flatbed::providers::faux::{Faux, Script, Scripted};
 use flatbed::render::path_of;
 use flatbed::{
-    Agent, AgentConfig, Block, Contribution, Ctx, Entry, EntryBody, Event, MemoryStore, Message,
-    Plugin, Provider, Section, Session, Stop, StopSignal, Store, Tool, ToolCall, ToolDefinition,
-    ToolResult, Usage,
+    Agent, AgentConfig, Block, Contribution, Ctx, Entry, EntryBody, Event, Header, MemoryStore,
+    Message, ParentLink, Plugin, Provider, Section, Session, Stop, StopSignal, Store, Tool,
+    ToolCall, ToolDefinition, ToolResult, Usage,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -40,6 +40,7 @@ struct ScenarioAgent {
     soft_limit: Option<u64>,
     hard_limit: Option<u64>,
     max_tokens: Option<u32>,
+    parent: Option<ParentLink>,
 }
 
 /// What the test plugin does beyond giving sections and tools.
@@ -56,18 +57,28 @@ struct Hooks {
     on_session_end: Option<DeliverJson>,
 }
 
+/// A result for a hook to return, or `{"throw": "<message>"}`: make the hook fail with that error.
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ResultJson {
-    content: Vec<Block>,
-    is_error: bool,
+#[serde(untagged)]
+enum ResultJson {
+    Throw {
+        throw: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Result {
+        content: Vec<Block>,
+        is_error: bool,
+    },
 }
 
 impl ResultJson {
-    fn result(&self) -> ToolResult {
-        ToolResult {
-            content: self.content.clone(),
-            is_error: self.is_error,
+    fn result(&self) -> flatbed::Result<ToolResult> {
+        match self {
+            ResultJson::Throw { throw } => Err(throw.as_str().into()),
+            ResultJson::Result { content, is_error } => Ok(ToolResult {
+                content: content.clone(),
+                is_error: *is_error,
+            }),
         }
     }
 }
@@ -122,7 +133,7 @@ struct ScenarioPlugin {
 
 impl Plugin for ScenarioPlugin {
     fn name(&self) -> &str {
-        "scenario"
+        "test"
     }
 
     fn context(&self, _ctx: &mut Ctx) -> flatbed::Result<Contribution> {
@@ -142,7 +153,7 @@ impl Plugin for ScenarioPlugin {
             .before_tool
             .as_ref()
             .and_then(|by_name| by_name.get(&call.name));
-        Ok(found.map(ResultJson::result))
+        found.map(ResultJson::result).transpose()
     }
 
     fn after_tool(
@@ -156,7 +167,7 @@ impl Plugin for ScenarioPlugin {
             .after_tool
             .as_ref()
             .and_then(|by_name| by_name.get(&call.name));
-        Ok(found.map(ResultJson::result).unwrap_or(result))
+        found.map(ResultJson::result).unwrap_or(Ok(result))
     }
 
     fn on_entry(&self, entry: &Entry, ctx: &mut Ctx) {
@@ -279,6 +290,7 @@ fn run(scenario: &Scenario) -> Result<(), String> {
     config.soft_limit = scenario.agent.soft_limit.unwrap_or(config.soft_limit);
     config.hard_limit = scenario.agent.hard_limit.unwrap_or(config.hard_limit);
     config.max_tokens = scenario.agent.max_tokens.unwrap_or(config.max_tokens);
+    config.parent = scenario.agent.parent.clone();
     config.plugins.push(Box::new(ScenarioPlugin {
         sections: scenario.sections.clone(),
         tools: scenario.tools.clone(),
@@ -326,6 +338,25 @@ fn run(scenario: &Scenario) -> Result<(), String> {
             store
                 .append("test", &session.header.id, &entry)
                 .map_err(|e| fail(e.to_string()))?;
+        } else if step.get("header").is_some() {
+            // Only the header of a new session, as a process that stopped before its context
+            // entry would leave.
+            let ids = store.list("test").map_err(|e| fail(e.to_string()))?;
+            let now = flatbed::ids::now_iso();
+            let header = Header {
+                version: 1,
+                id: flatbed::ids::new_session_id(&now, ids.last().map(String::as_str))
+                    .map_err(|e| fail(e.to_string()))?,
+                agent: "test".into(),
+                created_at: now,
+                parent: ids.last().map(|previous| ParentLink {
+                    session: previous.clone(),
+                    reason: "reset".into(),
+                    entry: None,
+                    agent: None,
+                }),
+            };
+            store.create(&header).map_err(|e| fail(e.to_string()))?;
         } else if let Some(index) = step.get("rewind").and_then(Value::as_u64) {
             let session = newest(&*store)?;
             let path = path_of(&session.entries);
@@ -378,17 +409,14 @@ fn compare_sessions(
         let session = store.read("test", id).map_err(|e| e.to_string())?;
         let mut expected = expected.as_slice();
         if let Some(header) = expected.first().and_then(|first| first.get("header")) {
-            let want = &header["parent"]["reason"];
-            let got = session
-                .header
-                .parent
-                .as_ref()
-                .map(|p| Value::from(p.reason.clone()));
-            if Some(want) != got.as_ref() {
-                return Err(format!(
-                    "sessions[{n}].header.parent.reason: expected {want}, got {got:?}"
-                ));
+            let want = &header["parent"];
+            let mut got =
+                serde_json::to_value(&session.header.parent).expect("a parent serialises");
+            // A scenario cannot know the id of a session the loop made, so it may leave it out.
+            if let (Some(got), None) = (got.as_object_mut(), want.get("session")) {
+                got.remove("session");
             }
+            difference(&format!("sessions[{n}].header.parent"), want, &got)?;
             expected = &expected[1..];
         }
         let actual: Vec<Value> = session

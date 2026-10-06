@@ -2,7 +2,7 @@
 //! and up to five hooks, each with a default that does nothing. A tool is a definition and a
 //! function. Both see a `Ctx`, through which they add to the session or queue events.
 
-use crate::agent::AgentConfig;
+use crate::agent::{AgentConfig, StopSignal};
 use crate::error::{Error, Result};
 use crate::types::{Block, Entry, EntryBody, Event, Section, Session, ToolCall, ToolDefinition};
 use serde_json::{Map, Value};
@@ -16,7 +16,8 @@ pub trait Plugin {
     }
 
     /// Before a tool call runs: a result to use instead of running it, or `None` to let it run.
-    /// An error here, or in `after_tool`, fails the run.
+    /// An error here, or in `after_tool`, gives the call the error result
+    /// `The <plugin> plugin failed: <message>`, and no later hook runs for it.
     fn before_tool(&self, _call: &ToolCall, _ctx: &mut Ctx) -> Result<Option<ToolResult>> {
         Ok(None)
     }
@@ -100,6 +101,9 @@ where
 pub struct Ctx<'a> {
     pub agent: &'a AgentConfig,
     pub session: &'a Session,
+    /// The run's stop signal, so that a long tool can stop when the run is stopped. It is never
+    /// set when the host gave none.
+    pub signal: StopSignal,
     pub(crate) outputs: Outputs,
     ended: bool,
 }
@@ -127,6 +131,7 @@ impl<'a> Ctx<'a> {
         Ctx {
             agent,
             session,
+            signal: StopSignal::new(),
             outputs: Outputs::default(),
             ended: false,
         }
