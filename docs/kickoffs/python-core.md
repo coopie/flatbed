@@ -24,3 +24,15 @@ Work for at most two hours. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Other agents are working in other worktrees at the same time, including one on the Rust core; touch only `python/`, the `python` section of `scripts/check.sh`, and the spec where it needs fixing. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+**What changed.** `python/` is the core in Python 3.13, standard library only: `types`, `store` (file and memory), `render`, `loop` (a `Runner` per agent, with `deliver` and `run`), `providers/faux` and `providers/anthropic` over urllib, plus `env`, a rough CLI (`python -m flatbed chat|view`) and `conformance.py`. It is built to the spec after core-fixes merged: all 24 scenarios pass. `scripts/check.sh python` runs ruff format, ruff check, unittest and the runner.
+
+**Choices.** The code is synchronous. Tool calls run one at a time, which the spec allows, and `StopSignal` wraps a `threading.Event`, so a stop also ends a backoff wait. Plugins are a dataclass of optional hook functions, not a base class. Tools are looked up in the frozen `context` entry, with their code from the plugins, as the spec says. TypeScript looks them up in the plugin map. Tests: the Anthropic translation both ways, a session fixture written by the TypeScript core, and the line shape Python writes. I also checked by hand that `node cli.ts view` reads a session Python wrote. The live test needs `FLATBED_LIVE=1` and skips otherwise. I did not run it, since the key is revoked.
+
+**Commands.** `scripts/check.sh python` printed `All checks passed!` twice, `Ran 12 tests ... OK (skipped=1)`, 24 `ok` lines and `== all checks passed`.
+
+**Spec fixes.** I made one: a conformance `crash` entry goes after the newest session's last entry, with a fresh `id` and `at`. Everything else I found unclear, core-fixes settled.
+
+**Left out.** Redacted thinking blocks are dropped. The OpenAI provider is not built, since the brief did not ask for it.
+
+**How it went.** The spec was enough to pass the first 14 scenarios without reading the TypeScript. I looked at `loop.ts` only to check needs-run and the Anthropic adapter. Building to the lead's note before core-fixes merged saved most of the rework. `newSessionId` in TypeScript accepts a random hex that sorts later in the same second, where the spec says to add one. Both sort correctly, but the spec could say "for example". A suggestion: say what a newest session holding only a header, after a crash between create and the first append, should do.
