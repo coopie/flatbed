@@ -32,9 +32,10 @@ export type ItemVerdict = { analysis: string; ok: boolean };
 /**
  * What a supervisor came back with. `given` answers every item of the spec, the model's and the
  * host's. `unavailable` answers nothing and says why: a verdict nobody gave is never a pass.
- * `callId` is the id of the tool call judged, when there was one.
+ * `callId` is the id of the tool call judged, when there was one. `supervisor` is the agent id of
+ * the check's session, when an agent gave it.
  */
-export type Verdict = { spec: string; callId?: string; model: string; usage: Usage } & (
+export type Verdict = { spec: string; callId?: string; supervisor?: string; model: string; usage: Usage } & (
   | { status: 'given'; items: Record<string, ItemVerdict>; summary: string }
   | { status: 'unavailable'; reason: string }
 );

@@ -13,12 +13,15 @@ export type SuperviseInput = {
   spec: Spec;
   /** The session's entries, header excluded, in file order. The supervisor reads their path. */
   entries: Entry[];
+  /** The id of the agent whose session it is. An agent supervisor names it in its own session's parent. */
+  agent?: string;
   /** The id of the session the entries come from. An agent supervisor links its own session to it. */
   session?: string;
   /** The call under review. Leave it out to audit the session as a whole. */
   call?: ReviewedCall;
   /** The host's answers, by item id, for every item the spec marks `answeredBy: "host"`, and no other. */
   answers?: Record<string, ItemVerdict>;
+  /** Stops the check, such as when the run that asked for it is stopped. The verdict is then unavailable. */
   signal?: AbortSignal;
 };
 
