@@ -1,0 +1,245 @@
+{
+  "name": "a parent for the first session",
+  "description": "The agent's configuration gives a parent, as for a dispatched sub-agent. Its first session's header carries that parent; the session after a reset points back to the first with reason reset and no agent.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000,
+    "parent": {
+      "agent": "boss",
+      "session": "2026-10-06T21-04-11Z-a3f9",
+      "reason": "dispatch",
+      "entry": "5c0e19a2"
+    }
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "reset",
+          "input": {
+            "reason": "done"
+          }
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Ready."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 12,
+        "output": 2
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "boss"
+        },
+        "text": "Do the task"
+      }
+    },
+    {
+      "run": {},
+      "expect": "reset"
+    },
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "boss"
+        },
+        "text": "Next"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "header": {
+            "parent": {
+              "agent": "boss",
+              "session": "2026-10-06T21-04-11Z-a3f9",
+              "reason": "dispatch",
+              "entry": "5c0e19a2"
+            }
+          }
+        },
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "boss"
+          },
+          "text": "Do the task"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "reset",
+                "input": {
+                  "reason": "done"
+                }
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "reset",
+            "content": [
+              {
+                "type": "text",
+                "text": "Session will reset after this turn."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "reset",
+          "by": "agent",
+          "reason": "done"
+        }
+      ],
+      [
+        {
+          "header": {
+            "parent": {
+              "reason": "reset"
+            }
+          }
+        },
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started after a reset: done"
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "boss"
+          },
+          "text": "Next"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Ready."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 12,
+              "output": 2
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ]
+  }
+}

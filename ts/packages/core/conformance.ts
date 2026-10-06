@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { createAgent } from './loop.ts';
 import { pathOf } from './render.ts';
 import { fauxProvider, type ScriptStep } from './providers/faux.ts';
-import { memoryStore, newEntryId } from './store.ts';
-import type { Entry, EntryBody, Event, Plugin, Section, Tool, ToolDefinition, ToolResult } from './types.ts';
+import { memoryStore, newEntryId, newSessionId } from './store.ts';
+import type { Entry, EntryBody, Event, ParentLink, Plugin, Section, Tool, ToolDefinition, ToolResult } from './types.ts';
 
 const SCENARIOS = fileURLToPath(new URL('../../../conformance/scenarios/', import.meta.url));
 const AGENT = 'test';
@@ -19,19 +19,21 @@ type Step =
   | { deliver: Event }
   | { run: { stop?: string }; expect?: string }
   | { crash: EntryBody }
-  | { rewind: number };
+  | { rewind: number }
+  | { header: Record<string, never> };
 
 /** What the test plugin does beyond giving sections and tools, as docs/spec/conformance.md describes. */
+type HookResult = ToolResult | { throw: string };
 type PluginHooks = {
-  beforeTool?: Record<string, ToolResult>;
-  afterTool?: Record<string, ToolResult>;
+  beforeTool?: Record<string, HookResult>;
+  afterTool?: Record<string, HookResult>;
   onEntry?: { custom: unknown };
   onSessionEnd?: { deliver: Event };
 };
 
 type Scenario = {
   name: string;
-  agent: { model: string; softLimit?: number; hardLimit?: number; maxTokens?: number };
+  agent: { model: string; softLimit?: number; hardLimit?: number; maxTokens?: number; parent?: ParentLink };
   sections?: Section[];
   tools?: (ToolDefinition & { behaviour: Behaviour })[];
   plugin?: PluginHooks;
@@ -57,13 +59,19 @@ function toolFor({ behaviour, ...definition }: ToolDefinition & { behaviour: Beh
   };
 }
 
+/** A hook's result, or the error `{"throw": "<message>"}` asks it to throw. */
+function hookResult(result: HookResult | undefined): ToolResult | undefined {
+  if (result !== undefined && 'throw' in result) throw new Error(result.throw);
+  return result;
+}
+
 function testPlugin(scenario: Scenario): Plugin {
   const hooks = scenario.plugin ?? {};
   return {
     name: 'test',
     context: () => ({ sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map(toolFor) }),
-    beforeTool: (call) => hooks.beforeTool?.[call.name],
-    afterTool: (call) => hooks.afterTool?.[call.name],
+    beforeTool: (call) => hookResult(hooks.beforeTool?.[call.name]),
+    afterTool: (call) => hookResult(hooks.afterTool?.[call.name]),
     async onEntry(entry, ctx) {
       if (hooks.onEntry && entry.type === 'message' && entry.message.role === 'tool') {
         await ctx.append({ type: 'custom', plugin: 'test', data: hooks.onEntry.custom });
@@ -106,6 +114,14 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
       const session = await current();
       const entry = { id: newEntryId(), parentId: session.entries.at(-1)?.id ?? null, at: new Date().toISOString(), ...step.crash } as Entry;
       await store.append(AGENT, session.header.id, entry);
+    } else if ('header' in step) {
+      // Only the header of a new session, as a process that stopped before its context entry would leave.
+      const previous = (await store.list(AGENT)).at(-1);
+      const now = new Date();
+      await store.create({
+        type: 'session', version: 1, id: newSessionId(now, previous), agent: AGENT, createdAt: now.toISOString(),
+        ...(previous === undefined ? {} : { parent: { session: previous, reason: 'reset' as const } }),
+      });
     } else {
       const target = pathOf((await current()).entries)[step.rewind];
       if (target === undefined) return `step ${i}: no entry at index ${step.rewind} of the path`;
@@ -119,10 +135,14 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
   for (const [s, id] of ids.entries()) {
     const { header, entries } = await store.read(AGENT, id);
     const expected = [...scenario.expect.sessions[s]!];
-    const first = expected[0] as { header?: { parent?: { reason?: string } } };
+    const first = expected[0] as { header?: { parent?: Partial<ParentLink> } };
     if (first.header !== undefined) {
       expected.shift();
-      const difference = firstDifference(header.parent?.reason, first.header.parent?.reason, `sessions[${s}].header.parent.reason`);
+      // A scenario cannot know the id of a session the loop made, so it may leave `session` out.
+      const want = first.header.parent;
+      const got = want !== undefined && !('session' in want) && header.parent !== undefined
+        ? (({ session: _session, ...rest }) => rest)(header.parent) : header.parent;
+      const difference = firstDifference(got, want, `sessions[${s}].header.parent`);
       if (difference) return difference;
     }
     for (const [e, entry] of entries.entries()) {

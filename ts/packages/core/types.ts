@@ -33,8 +33,11 @@ export type Header = {
   id: string;
   agent: string;
   createdAt: string;
-  parent?: { session: string; reason: 'reset' | 'fork' | 'dispatch'; entry?: string };
+  parent?: ParentLink;
 };
+
+/** Links a session to the one it came from. `agent` names the parent session's agent when it is another. */
+export type ParentLink = { session: string; reason: 'reset' | 'fork' | 'dispatch' | 'supervise'; entry?: string; agent?: string };
 
 type EntryBase = { id: string; parentId: string | null; at: string };
 export type ContextEntry = EntryBase & { type: 'context'; sections: Section[]; tools: ToolDefinition[] };
@@ -89,6 +92,8 @@ export type AgentConfig = {
   maxTokens?: number;
   /** Passed through to providers that take it. */
   effort?: string;
+  /** The parent of the agent's first session, such as the session that dispatched it. */
+  parent?: ParentLink;
 };
 
 export type PluginContext = {
@@ -100,7 +105,11 @@ export type PluginContext = {
   deliver(event: Event): void;
 };
 
-export type ToolContext = PluginContext & { requestReset(reason?: string): void };
+export type ToolContext = PluginContext & {
+  requestReset(reason?: string): void;
+  /** The run's stop signal, so that a long tool can stop when the run is stopped. */
+  signal: AbortSignal;
+};
 
 export type ToolResult = { content: (TextBlock | ImageBlock)[]; isError: boolean };
 
