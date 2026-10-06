@@ -24,3 +24,34 @@ Work for at most two hours. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Other agents are working in other worktrees at the same time, including one on the Python core; touch only `rust/`, the `rust` section of `scripts/check.sh`, and the spec where it needs fixing. Builds can be slow, so run them in the foreground one at a time and wait for them.
 
 ## Write-up
+
+The crate `flatbed` is in `rust/flatbed`, about 1,850 lines of library (types, file and memory stores, rendering, plugins and tools, the loop, faux and Anthropic providers), plus a rough CLI (`cargo run -- chat <agent>`, `view <file>`) and the conformance runner (`cargo run --bin conformance`). Dependencies: `serde`, `serde_json` and `ureq` 2, each with its reason in `Cargo.toml`.
+
+**Choices someone could make differently**
+
+- Blocking, with tools run one at a time. The loop is sequential, and threads would make every plugin `Send + Sync`.
+- A hook's `ctx` collects what it appends or delivers, and the loop writes it when the hook returns. No hook holds the session while it changes.
+- `run(&mut self)` is the in-process guard. Random ids and ISO times use the standard library, not `rand` or `chrono`.
+- The TypeScript fixture is a real session written by the TypeScript core with a throwaway script: thinking, a tool call, a custom entry, escaping and a reset. The test checks that every line round-trips to the same JSON.
+
+**Spec fixes**, in `416e2a3`:
+
+- `beforeTool` or `afterTool` throwing fails the run, as in TypeScript.
+- A custom entry appended during a call lands before the turn's `tool` messages.
+- A model naming no known provider fails the run before it touches the session.
+
+I also followed every core-fix change after merging `main`.
+
+**Commands**
+
+- `scripts/check.sh rust`: fmt, clippy and 7 tests passed, with the live check ignored. All 24 scenarios printed `ok`, then `== all checks passed`.
+- `cargo test --test live -- --ignored` without `FLATBED_LIVE`: printed `skipped`. I did not run it live.
+- The Rust CLI wrote a session with `faux/echo`, and the TypeScript `cli.ts view` printed it the same as Rust's `view`.
+
+**Left out:** full JSON Schema checks, streaming, concurrent tools, cancelling a request already in flight (the stop signal is checked between attempts and during backoff), and the OpenAI provider.
+
+**How it went:** the spec was enough for the loop. My unclear points were hook errors and where appended entries land, both now specced. Building against `core-fixes` before it merged saved rework.
+
+## Question for the lead
+
+Should a failing `beforeTool` or `afterTool` fail the run, as TypeScript does and the spec now says? The alternative is an error result the model sees. My best guess is to fail the run, because it is a plugin bug.
