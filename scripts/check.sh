@@ -23,8 +23,10 @@ check_python() {
 
 check_rust() {
   echo "== rust"
-  # The Rust implementation fills this in: cargo fmt --check, clippy, test, then its conformance runner.
-  echo "not built yet"
+  (cd rust && cargo fmt --check)
+  (cd rust && cargo clippy --quiet --all-targets -- -D warnings)
+  (cd rust && cargo test --quiet)
+  (cd rust && cargo run --quiet --bin conformance)
 }
 
 sections=("$@")

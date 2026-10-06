@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A very small agent harness: the flatbed core, in Rust."
 publish = false
+default-run = "flatbed"
 
 [dependencies]
 # Derives the JSON shapes in docs/spec/ for our types, instead of hand-written conversions.

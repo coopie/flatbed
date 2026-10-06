@@ -4,12 +4,12 @@
 
 use crate::error::{Error, Result};
 use crate::ids::{new_entry_id, new_session_id, now_iso};
-use crate::plugin::{Ctx, Outputs, Plugin, Tool, ToolResult};
+use crate::plugin::{Contribution, Ctx, Outputs, Plugin, Tool, ToolResult};
 use crate::providers::{Provider, Request};
 use crate::render::{path_of, render};
 use crate::store::Store;
 use crate::types::{
-    AssistantMessage, Entry, EntryBody, Event, Header, Message, ParentLink, Section, Session, Stop,
+    AssistantMessage, Entry, EntryBody, Event, Header, Message, ParentLink, Session, Stop,
     ToolCall, ToolDefinition, ToolMessage, Usage,
 };
 use serde_json::{json, Map, Value};
@@ -205,7 +205,7 @@ impl Agent {
                 .is_some_and(|(id, _)| *id == session.header.id);
             let mut outputs = Outputs::default();
             if !loaded {
-                let (_, code) = collect_context(config, session, &mut outputs)?;
+                let code = collect_context(config, session, &mut outputs)?.tools;
                 *tools = Some((session.header.id.clone(), code));
             }
             let mut run = Run::new(config, &**store, providers, queue, tools, newest.unwrap());
@@ -230,7 +230,10 @@ impl Agent {
             entries: Vec::new(),
         };
         let mut outputs = Outputs::default();
-        let (sections, code) = collect_context(config, &session, &mut outputs)?;
+        let Contribution {
+            sections,
+            tools: code,
+        } = collect_context(config, &session, &mut outputs)?;
         let definitions = code.iter().map(|tool| tool.definition()).collect();
         store.create(&session.header)?;
         *tools = Some((session.header.id.clone(), code));
@@ -258,18 +261,17 @@ fn collect_context(
     config: &AgentConfig,
     session: &Session,
     outputs: &mut Outputs,
-) -> Result<(Vec<Section>, Vec<Box<dyn Tool>>)> {
-    let mut sections = Vec::new();
-    let mut tools: Vec<Box<dyn Tool>> = Vec::new();
+) -> Result<Contribution> {
+    let mut joined = Contribution::default();
     for plugin in &config.plugins {
         let mut ctx = Ctx::new(config, session);
         let contribution = plugin.context(&mut ctx)?;
-        sections.extend(contribution.sections);
-        tools.extend(contribution.tools);
+        joined.sections.extend(contribution.sections);
+        joined.tools.extend(contribution.tools);
         outputs.merge(ctx.outputs);
     }
-    tools.push(Box::new(ResetTool));
-    Ok((sections, tools))
+    joined.tools.push(Box::new(ResetTool));
+    Ok(joined)
 }
 
 /// One run's view of the open session: the session as read at the start, plus everything the
