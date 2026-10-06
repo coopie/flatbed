@@ -24,3 +24,31 @@ Work for at most 75 minutes. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Leave `ts/packages/core` alone unless a fix truly needs it. The API key in `.env` is revoked; do not look for another, and never print a value from `.env`. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+All eight findings are fixed. `scripts/check.sh ts` passes, with new tests for 2, 3, 4 and 6, and every package README has been reread and rewritten where it changed. The work took about 40 minutes. `ts/packages/core` is unchanged.
+
+### What changed
+
+- **Supervisor.** `agentPass` makes a fresh agent for each check, `<id>-<hex4>`, with the core's agent `parent` (`reason: "supervise"`, the checked agent, session and head entry). The system prompt and the material are context sections, and the request is an event. The queue is gone. The guard catches a failing `answers` function or supervisor and records an unavailable verdict (`the check failed: <message>`, model `none`), passes `ctx.signal` and the checked agent's id, and escapes titles, analysis and guidance in a refusal. A call's fields render as `<field name="...">`. The package uses 2-space indentation, and the README's spec sections are cut by about half. `docs/decisions.md` has a new entry replacing the old "writes its own session start".
+- **Dispatch.** The sub-agent gets the agent `parent` with `agent` set, not a wrapped store. A waiting dispatch passes `ctx.signal`. The starting message says `report` is the only way back. Anything but a report is an error result: `The sub-agent <id> finished|reset its session|was stopped|hit an error without calling report, so it gave no answer.`, followed by its last text when it has one. The README says, at `wake`, that a result not waited for lives in the agent object's queue.
+- **MCP.** The plugin lists tools with a loose schema and checks each tool itself, because the MCP library rejects a whole list for one tool whose schema is not an object. It drops a tool with a repeated name (the first one listed keeps it), a name over 64 characters, or a non-object schema. The `mcp` section lists those and unreachable servers, and tells the model to say a tool is unavailable rather than guess. A tool kept from a frozen context while its server was down lists the server again at call time to find the server's own name. Each call passes `ctx.signal`.
+- **Docs.** Bodies, and timeline summaries, are escaped with the core's functions in sections and in `read_doc`. `edit_doc` accepts a passage quoted in its escaped form, and unescapes the replacement too in that case. `write_doc`'s description is two sentences.
+
+### Changes to public APIs
+
+- `SuperviseInput` gains optional `agent`, the checked agent's id.
+- `Verdict` gains optional `supervisor`, the agent id of an agent check.
+- `agentPass`'s `id` is now a prefix: sessions are under `<id>-<hex4>`, not `<id>`. A host that listed `store.list('supervisor')` must use `verdict.supervisor`.
+- The supervisor's session parent is now `reason: "supervise"`, not `dispatch`.
+- Dispatch: a sub-agent that does not report gives `isError: true` with new text. Before, its last text came back as a success.
+- `mcpPlugin()` throws for a server name that is not letters, digits and `-`, or that repeats.
+- The `mcp` section's text, and `renderCall`'s and `renderDoc`'s output, have changed.
+
+### Question for the lead
+
+Escaping document bodies means the agent sees `&amp;` for `&`. I made `edit_doc` accept either form, so edits keep working. A model may still copy `&amp;` into a `write_doc` body. Should `write_doc` unescape too, or should bodies stay raw in `read_doc`?
+
+### Suggestions
+
+- The guard's unavailable verdict uses `model: "none"` because `Verdict.model` is required. An optional model may read better.
+- `whyUnavailable` says "ran out of context" for any reset without a report, including the supervisor calling `reset` itself.
