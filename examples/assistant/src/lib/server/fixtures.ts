@@ -9,6 +9,8 @@ export type DemoPerson = {
   id: string;
   name: string;
   email: string;
+  /** The agent's own name. */
+  assistant: string;
   /** A line under the name on the sign-in page. */
   about: string;
   /** The profile document seeded for the agent. */
@@ -37,6 +39,7 @@ function ada(): DemoPerson {
     id: 'ada',
     name: 'Ada Brennan',
     email: me,
+    assistant: 'Moss',
     about: 'Runs a two-person ceramics studio. Her assistant is Moss.',
     profile: `# Ada Brennan
 
@@ -88,6 +91,7 @@ function kofi(): DemoPerson {
     id: 'kofi',
     name: 'Kofi Mensah',
     email: me,
+    assistant: 'Fen',
     about: 'A freelance architect working on house extensions. His assistant is Fen.',
     profile: `# Kofi Mensah
 

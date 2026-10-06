@@ -14,7 +14,8 @@ const MIGRATIONS = resolve(process.cwd(), 'migrations');
 
 export function connect(url: string, schema = 'assistant'): Sql {
   if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Not a schema name: ${schema}`);
-  return postgres(url, { connection: { search_path: schema }, onnotice: () => {}, max: 5 });
+  // No prepared statements: Supabase's transaction pooler gives each transaction any server it likes.
+  return postgres(url, { connection: { search_path: schema }, onnotice: () => {}, max: 5, prepare: false });
 }
 
 /** Creates the schema, then runs each migration file not yet run, in name order. */
