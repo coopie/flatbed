@@ -65,6 +65,20 @@ def tool_calls(message: AssistantMessage) -> list[ToolCall]:
     return [block for block in message["content"] if block["type"] == "toolCall"]
 
 
+def unanswered_calls(path: list[Entry]) -> list[ToolCall]:
+    """The calls of the last assistant message on the path that have no `tool` message after it."""
+    for index in range(len(path) - 1, -1, -1):
+        entry = path[index]
+        if entry["type"] == "message" and entry["message"]["role"] == "assistant":
+            answered = {
+                later["message"]["callId"]
+                for later in path[index + 1 :]
+                if later["type"] == "message" and later["message"]["role"] == "tool"
+            }
+            return [call for call in tool_calls(entry["message"]) if call["id"] not in answered]
+    return []
+
+
 def check_input(tool_input: object, schema: dict[str, Any]) -> str | None:
     """The least check the spec asks for: an object, with its required properties present."""
     if not isinstance(tool_input, dict):
@@ -118,17 +132,19 @@ class Runner:
         self._repair(session)
         self._deliver_queued(session)
 
-        # 4. Loop while the session needs a run.
+        # 4. Freeze the context: the last context entry on the path, for the whole run.
+        frozen = render(path_of(session.entries))
+
+        # 5. Loop while the session needs a run.
         while self._needs_run(session):
             if stop.is_set:
                 return self._stopped(session, stop)
 
-            rendered = render(path_of(session.entries))
             request = ProviderRequest(
                 model=self.model_name,
-                sections=rendered.sections,
-                tools=rendered.tools,
-                messages=rendered.messages,
+                sections=frozen.sections,
+                tools=frozen.tools,
+                messages=render(path_of(session.entries)).messages,
                 max_tokens=self.agent.max_tokens,
                 effort=self.agent.effort,
                 signal=stop,
@@ -158,7 +174,7 @@ class Runner:
                 if message["stop"] == "maxTokens":
                     result = error_result(CUT_OFF_TEXT)
                 else:
-                    result = self._run_tool(call, rendered.tools, tools, ctx)
+                    result = self._run_tool(call, frozen.tools, tools, ctx)
                 tool_message = {"role": "tool", "callId": call["id"], "name": call["name"], **result}
                 self._append(session, {"type": "message", "message": tool_message})
             if resets:
@@ -230,21 +246,14 @@ class Runner:
 
     def _repair(self, session: Session) -> None:
         """Gives every unanswered call of the last assistant message an error result."""
-        path = path_of(session.entries)
-        for index in range(len(path) - 1, -1, -1):
-            entry = path[index]
-            if entry["type"] == "message" and entry["message"]["role"] == "assistant":
-                answered = {
-                    later["message"]["callId"]
-                    for later in path[index + 1 :]
-                    if later["type"] == "message" and later["message"]["role"] == "tool"
-                }
-                for call in tool_calls(entry["message"]):
-                    if call["id"] not in answered:
-                        result = error_result(REPAIR_TEXT)
-                        tool_message = {"role": "tool", "callId": call["id"], "name": call["name"], **result}
-                        self._append(session, {"type": "message", "message": tool_message})
-                return
+        for call in unanswered_calls(path_of(session.entries)):
+            tool_message = {
+                "role": "tool",
+                "callId": call["id"],
+                "name": call["name"],
+                **error_result(REPAIR_TEXT),
+            }
+            self._append(session, {"type": "message", "message": tool_message})
 
     def _end_session(self, session: Session, by: str, reason: str | None) -> RunOutcome:
         entry: Entry = {"type": "reset", "by": by}
@@ -282,11 +291,18 @@ class Runner:
 
     def _deliver_queued(self, session: Session) -> None:
         queued, self._queue = self._queue, []
-        known = {entry["id"] for entry in session.entries}
         for event, parent_id in queued:
-            # A rewind target outside the open session, such as one in a session since reset, cannot
-            # be a parent here, so the event follows the head.
-            self._append(session, {"type": "event", **event}, parent_id if parent_id in known else None)
+            if parent_id is not None and not self._can_rewind_to(session, parent_id):
+                parent_id = None
+            self._append(session, {"type": "event", **event}, parent_id)
+
+    @staticmethod
+    def _can_rewind_to(session: Session, parent_id: str) -> bool:
+        """A rewind stays inside the open session and never leaves a call without its result."""
+        entries = session.entries
+        index = next((i for i, entry in enumerate(entries) if entry["id"] == parent_id), None)
+        # Parents come before their children in the file, so the path to the target ends at the target.
+        return index is not None and not unanswered_calls(path_of(entries[: index + 1]))
 
     def _context(self, session: Session) -> PluginContext:
         def append(body: Entry) -> None:

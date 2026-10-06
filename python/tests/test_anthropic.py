@@ -34,16 +34,16 @@ class ToAnthropic(unittest.TestCase):
         self.assertEqual(body["tools"][-1]["cache_control"], {"type": "ephemeral"})
         self.assertNotIn("output_config", body)
 
-    def test_cache_breakpoints_stop_at_four_with_the_tools_and_the_history_first(self):
+    def test_cache_breakpoints_stop_at_four_with_the_earliest_sections(self):
         sections = [{"name": f"s{i}", "text": f"Part {i}.", "cache": True} for i in range(5)]
         sections.append({"name": "empty", "text": ""})
         messages = [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}]
         body = to_anthropic(request(sections=sections, messages=messages, effort="low"))
         self.assertEqual(len(body["system"]), 5)  # The empty section is left out.
         marked = [block["text"] for block in body["system"] if "cache_control" in block]
-        self.assertEqual(marked, ["Part 3.", "Part 4."])
+        self.assertEqual(marked, ["Part 0.", "Part 1."])
         self.assertIn("cache_control", body["tools"][-1])
-        self.assertIn("cache_control", body["messages"][-1]["content"][-1])
+        self.assertEqual(body["cache_control"], {"type": "ephemeral"})  # The history.
         self.assertEqual(body["output_config"], {"effort": "low"})
 
     def test_a_tool_result_with_no_text_says_so(self):
@@ -110,7 +110,7 @@ class ToAnthropic(unittest.TestCase):
                     "content": [{"type": "text", "text": "x"}],
                     "is_error": False,
                 },
-                {"type": "text", "text": "<notice>Late.</notice>", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "<notice>Late.</notice>"},
             ],
         )
 

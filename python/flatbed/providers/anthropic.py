@@ -76,17 +76,16 @@ def to_anthropic(request: ProviderRequest) -> dict[str, Any]:
             for tool in request.tools
         ]
 
-    # The API allows four cache breakpoints. Spend one after the tool list and one at the end of the
-    # history, so each turn reads what the last one wrote, and the rest on the last sections marked
-    # `cache`, since a later breakpoint caches everything before it.
+    # The API allows four cache breakpoints. Spend one on the history, through the top-level
+    # `cache_control` the API applies to the last block it can cache, so each turn reads what the last
+    # one wrote; one on the last tool; and the rest on the earliest sections marked `cache`, which
+    # change least and so still match after a reset.
+    body["cache_control"] = EPHEMERAL
     breakpoints: list[dict[str, Any]] = []
     if request.tools:
         breakpoints.append(body["tools"][-1])
-    if body["messages"]:
-        breakpoints.append(body["messages"][-1]["content"][-1])
     marked = [block for section, block in zip(sections, body["system"], strict=True) if section.get("cache")]
-    room = MAX_BREAKPOINTS - len(breakpoints)
-    breakpoints.extend(marked[-room:] if room > 0 else [])
+    breakpoints.extend(marked[: MAX_BREAKPOINTS - 1 - len(breakpoints)])
     for block in breakpoints:
         block["cache_control"] = EPHEMERAL
 
@@ -168,7 +167,10 @@ def to_anthropic_assistant_block(block: Block) -> dict[str, Any] | None:
             # Thinking goes back only to the provider that made it.
             if block.get("provider") != "anthropic":
                 return None
-            return {"type": "thinking", "thinking": block["text"], "signature": block.get("signature", "")}
+            thinking = {"type": "thinking", "thinking": block["text"]}
+            if "signature" in block:
+                thinking["signature"] = block["signature"]
+            return thinking
         case _:
             return to_anthropic_block(block)
 

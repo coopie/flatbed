@@ -42,6 +42,40 @@ def make_tool(spec: dict[str, Any]) -> Tool:
     return Tool(name=spec["name"], description=spec["description"], input_schema=spec["inputSchema"], run=run)
 
 
+def make_plugin(scenario: dict[str, Any]) -> Plugin:
+    """The test plugin: the scenario's sections and tools, and any hooks its `plugin` field gives."""
+    tools = [make_tool(spec) for spec in scenario["tools"]]
+    hooks = scenario.get("plugin") or {}
+    before, after = hooks.get("beforeTool", {}), hooks.get("afterTool", {})
+
+    def on_entry(entry: dict[str, Any], ctx: Any) -> None:
+        if entry["type"] == "message" and entry["message"]["role"] == "tool":
+            ctx.append({"type": "custom", "plugin": "test", "data": hooks["onEntry"]["custom"]})
+
+    return Plugin(
+        name="test",
+        context=lambda ctx: ContextAddition(sections=scenario["sections"], tools=tools),
+        before_tool=(lambda call, ctx: before.get(call["name"])) if before else None,
+        after_tool=(lambda call, result, ctx: after.get(call["name"])) if after else None,
+        on_entry=on_entry if "onEntry" in hooks else None,
+        on_session_end=(
+            (lambda session, ctx: ctx.deliver(hooks["onSessionEnd"]["deliver"]))
+            if "onSessionEnd" in hooks
+            else None
+        ),
+    )
+
+
+def abort_step(who: str) -> Any:
+    """A scripted step that sets the stop signal while the call is in flight, then fails the call."""
+
+    def step(request: Any) -> Any:
+        request.signal.set(who)
+        raise RuntimeError("The request was cancelled.")
+
+    return step
+
+
 def first_difference(expected: Any, actual: Any, where: str = "") -> str | None:
     """Where two JSON values first differ, as a path such as `[1].message.content`, or None."""
     if isinstance(expected, dict) and isinstance(actual, dict):
@@ -68,19 +102,18 @@ def first_difference(expected: Any, actual: Any, where: str = "") -> str | None:
 def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
     """Runs one scenario and returns its first difference, or None when it passes."""
     store = FileStore(root)
-    tools = [make_tool(spec) for spec in scenario["tools"]]
-    plugin = Plugin(
-        name="test", context=lambda ctx: ContextAddition(sections=scenario["sections"], tools=tools)
-    )
     spec = scenario["agent"]
     agent = Agent(
         id="test",
         model=spec["model"],
-        plugins=[plugin],
+        plugins=[make_plugin(scenario)],
         soft_limit=spec["softLimit"],
         hard_limit=spec["hardLimit"],
+        max_tokens=spec.get("maxTokens", 8_192),
     )
-    faux = FauxProvider(scenario["script"])
+    faux = FauxProvider(
+        [abort_step(step["abort"]) if "abort" in step else step for step in scenario["script"]]
+    )
     runner = Runner(agent, store, {"faux": faux})
     rewind_to: str | None = None
     rewind_targets: set[str] = set()
