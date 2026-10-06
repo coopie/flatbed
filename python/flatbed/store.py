@@ -44,10 +44,10 @@ def new_session_id(now: datetime, previous: str | None = None) -> str:
     When the clock has not moved on since the previous session, take the previous id's time and add
     one to its hex part, so that a directory listing still sorts by age.
     """
-    session_id = f"{now.astimezone(UTC).strftime('%Y-%m-%dT%H-%M-%S')}Z-{secrets.token_hex(2)}"
-    if previous is None or session_id > previous:
-        return session_id
-    stem, _, hex_part = previous.rpartition("-")
+    time_part = f"{now.astimezone(UTC).strftime('%Y-%m-%dT%H-%M-%S')}Z"
+    stem, _, hex_part = (previous or "").rpartition("-")
+    if previous is None or time_part > stem:
+        return f"{time_part}-{secrets.token_hex(2)}"
     following = int(hex_part, 16) + 1
     if following > 0xFFFF:
         raise ValueError(f"Cannot make a session id after {previous}.")

@@ -51,7 +51,7 @@ class Usage(TypedDict):
     cacheWrite: NotRequired[int]
 
 
-type Stop = Literal["end", "toolUse", "maxTokens", "error"]
+type Stop = Literal["end", "toolUse", "maxTokens", "refusal", "error"]
 
 
 class UserMessage(TypedDict):

@@ -69,7 +69,9 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
     """Runs one scenario and returns its first difference, or None when it passes."""
     store = FileStore(root)
     tools = [make_tool(spec) for spec in scenario["tools"]]
-    plugin = Plugin(name="test", context=lambda ctx: ContextAddition(sections=scenario["sections"], tools=tools))
+    plugin = Plugin(
+        name="test", context=lambda ctx: ContextAddition(sections=scenario["sections"], tools=tools)
+    )
     spec = scenario["agent"]
     agent = Agent(
         id="test",
@@ -98,7 +100,12 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
             # Append straight to the newest session, as a crashed process would have.
             newest = store.list("test")[-1]
             entries = store.read("test", newest).entries
-            entry = {"type": step["crash"]["type"], "id": new_entry_id(), "parentId": entries[-1]["id"], "at": now_iso()}
+            entry = {
+                "type": step["crash"]["type"],
+                "id": new_entry_id(),
+                "parentId": entries[-1]["id"],
+                "at": now_iso(),
+            }
             entry.update(step["crash"])
             store.append("test", newest, entry)
         elif "rewind" in step:
@@ -124,9 +131,13 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
         for position, entry in enumerate(session.entries):
             rewound = entry["type"] == "event" and entry["parentId"] in rewind_targets
             if entry["parentId"] != previous and not rewound:
-                return f"session {number} entry {position} has parentId {entry['parentId']}, expected {previous}"
+                return (
+                    f"session {number} entry {position} has parentId {entry['parentId']}, expected {previous}"
+                )
             previous = entry["id"]
-        stripped = [{k: v for k, v in entry.items() if k not in ("id", "parentId", "at")} for entry in session.entries]
+        stripped = [
+            {k: v for k, v in entry.items() if k not in ("id", "parentId", "at")} for entry in session.entries
+        ]
         if found := first_difference(expected, stripped, f"session {number}"):
             return found
 

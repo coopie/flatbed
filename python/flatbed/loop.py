@@ -34,6 +34,7 @@ from .types import (
 
 SOFT_LIMIT_NOTICE = "This session is nearly full. Bring your notes up to date, then call reset."
 REPAIR_TEXT = "The harness stopped before this tool ran."
+CUT_OFF_TEXT = "The response was cut off before this call was complete."
 
 
 def _reset_run(tool_input: dict[str, Any], ctx: ToolContext) -> str:
@@ -150,9 +151,13 @@ class Runner:
 
             resets: list[str | None] = []
             ctx = ToolContext(**vars(self._context(session)), request_reset=resets.append)
-            # Calls run one after another; the spec allows them to run concurrently.
+            # Calls run one after another; the spec allows them to run concurrently. A response cut off
+            # by the token limit may hold a call with half its input, so none of its calls run.
             for call in tool_calls(message):
-                result = self._run_tool(call, rendered.tools, tools, ctx)
+                if message["stop"] == "maxTokens":
+                    result = error_result(CUT_OFF_TEXT)
+                else:
+                    result = self._run_tool(call, rendered.tools, tools, ctx)
                 tool_message = {"role": "tool", "callId": call["id"], "name": call["name"], **result}
                 self._append(session, {"type": "message", "message": tool_message})
             if resets:
@@ -242,7 +247,7 @@ class Runner:
 
     def _end_session(self, session: Session, by: str, reason: str | None) -> RunOutcome:
         entry: Entry = {"type": "reset", "by": by}
-        if reason is not None:
+        if reason:
             entry["reason"] = reason
         self._append(session, entry)
         for plugin in self.agent.plugins:
@@ -276,13 +281,17 @@ class Runner:
 
     def _deliver_queued(self, session: Session) -> None:
         queued, self._queue = self._queue, []
+        known = {entry["id"] for entry in session.entries}
         for event, parent_id in queued:
-            self._append(session, {"type": "event", **event}, parent_id)
+            # A rewind target outside the open session, such as one in a session since reset, cannot
+            # be a parent here, so the event follows the head.
+            self._append(session, {"type": "event", **event}, parent_id if parent_id in known else None)
 
     def _context(self, session: Session) -> PluginContext:
         def append(body: Entry) -> None:
-            if body.get("type") not in ("custom", "event"):
-                raise ValueError("A plugin may append only custom entries and events.")
+            # Events go through deliver, so that they arrive only at a delivery point.
+            if body.get("type") != "custom":
+                raise ValueError("A plugin may append only custom entries. Deliver events instead.")
             self._append(session, body)
 
         return PluginContext(agent=self.agent, session=session, append=append, deliver=self.deliver)
@@ -291,13 +300,18 @@ class Runner:
 
     @staticmethod
     def _needs_run(session: Session) -> bool:
-        """True when the last entry on the path, leaving out custom entries, is an event or a tool result."""
+        """True when the last entry on the path, leaving out custom and context entries, is a tool
+        result or an event from outside the harness. The harness's own notices need no answer, except
+        the soft-limit notice, which the model gets one turn to act on."""
         for entry in reversed(path_of(session.entries)):
-            if entry["type"] == "custom":
+            if entry["type"] in ("custom", "context"):
                 continue
-            return entry["type"] == "event" or (
-                entry["type"] == "message" and entry["message"]["role"] == "tool"
-            )
+            if entry["type"] == "message":
+                return entry["message"]["role"] == "tool"
+            if entry["type"] == "event":
+                from_harness = (entry.get("attrs") or {}).get("from") == "harness"
+                return not from_harness or entry["text"] == SOFT_LIMIT_NOTICE
+            return False
         return False
 
     @staticmethod
@@ -327,9 +341,11 @@ class Runner:
         if result is None:
             try:
                 output = tool.run(call["input"], ctx)
-                result = {"content": [{"type": "text", "text": output}], "isError": False} if isinstance(
-                    output, str
-                ) else output
+                result = (
+                    {"content": [{"type": "text", "text": output}], "isError": False}
+                    if isinstance(output, str)
+                    else output
+                )
             except Exception as error:
                 result = error_result(message_of(error))
         for plugin in self.agent.plugins:

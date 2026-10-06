@@ -17,8 +17,9 @@ check_ts() {
 
 check_python() {
   echo "== python"
-  # The Python implementation fills this in: ruff, unittest, then its conformance runner.
-  echo "not built yet"
+  (cd python && uv run --quiet ruff format --check . && uv run --quiet ruff check .)
+  (cd python && uv run --quiet python -m unittest discover -s tests -t .)
+  (cd python && uv run --quiet python conformance.py)
 }
 
 check_rust() {

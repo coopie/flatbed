@@ -17,7 +17,8 @@ from ..types import AssistantMessage, Block, Message, ProviderRequest
 API_URL = "https://api.anthropic.com/v1/messages"
 RETRIES = 3
 EPHEMERAL = {"type": "ephemeral"}
-STOPS = {"end_turn": "end", "tool_use": "toolUse", "max_tokens": "maxTokens"}
+MAX_BREAKPOINTS = 4
+STOPS = {"tool_use": "toolUse", "max_tokens": "maxTokens", "refusal": "refusal"}
 
 
 class AnthropicProvider:
@@ -61,20 +62,24 @@ def to_anthropic(request: ProviderRequest) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": request.model,
         "max_tokens": request.max_tokens,
-        "system": [
-            {"type": "text", "text": section["text"], **({"cache_control": EPHEMERAL} if section.get("cache") else {})}
-            for section in request.sections
-        ],
+        "system": [{"type": "text", "text": section["text"]} for section in request.sections],
         "messages": to_anthropic_messages(request.messages),
     }
+    # The API allows four cache breakpoints. The tools come first in its cache order, so the one after
+    # the tool list goes first, then one after each section marked `cache`, in order, while any are left.
+    breakpoints = MAX_BREAKPOINTS
     if request.tools:
         tools = [
             {"name": tool["name"], "description": tool["description"], "input_schema": tool["inputSchema"]}
             for tool in request.tools
         ]
-        # A cache breakpoint after the tool list.
         tools[-1]["cache_control"] = EPHEMERAL
+        breakpoints -= 1
         body["tools"] = tools
+    for section, block in zip(request.sections, body["system"], strict=True):
+        if section.get("cache") and breakpoints > 0:
+            block["cache_control"] = EPHEMERAL
+            breakpoints -= 1
     if request.output_schema is not None:
         body["output_config"] = {"format": {"type": "json_schema", "schema": request.output_schema}}
     return body
@@ -84,15 +89,23 @@ def to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
     def push(role: str, content: list[dict[str, Any]]) -> None:
-        # The API wants roles to alternate, so neighbouring messages of one role merge.
+        # The API wants roles to alternate, so neighbouring messages of one role merge. In a merged user
+        # message it wants every tool_result before any other block.
+        if not content:
+            return
         if out and out[-1]["role"] == role:
-            out[-1]["content"].extend(content)
+            merged = out[-1]["content"] + content
+            merged.sort(key=lambda block: block["type"] != "tool_result")
+            out[-1]["content"] = merged
         else:
             out.append({"role": role, "content": content})
 
     for message in messages:
         if message["role"] == "user":
-            push("user", [to_anthropic_block(block) for block in message["content"]])
+            push(
+                "user",
+                [to_anthropic_block(block) for block in message["content"] if not is_empty_text(block)],
+            )
         elif message["role"] == "tool":
             result = {
                 "type": "tool_result",
@@ -102,18 +115,30 @@ def to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
             }
             push("user", [result])
         else:
-            content = [api for block in message["content"] if (api := to_anthropic_assistant_block(block))]
-            # An assistant message left empty by a failed call has nothing to send, and the API rejects it.
-            if content:
-                push("assistant", content)
+            content = [
+                api
+                for block in message["content"]
+                if not is_empty_text(block) and (api := to_anthropic_assistant_block(block))
+            ]
+            # An assistant message left empty by a failed call has nothing to send, and the API
+            # rejects it; push leaves it out.
+            push("assistant", content)
     return out
+
+
+def is_empty_text(block: Block) -> bool:
+    # The API rejects an empty text block.
+    return block["type"] == "text" and not block["text"]
 
 
 def to_anthropic_block(block: Block) -> dict[str, Any]:
     if block["type"] == "text":
         return {"type": "text", "text": block["text"]}
     if block["type"] == "image":
-        return {"type": "image", "source": {"type": "base64", "media_type": block["mimeType"], "data": block["data"]}}
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": block["mimeType"], "data": block["data"]},
+        }
     raise ValueError(f"A {block['type']} block cannot go in a user message.")
 
 
@@ -145,7 +170,12 @@ def from_anthropic(response: Any, model: str) -> AssistantMessage:
                 content.append({"type": "text", "text": str(block["text"])})
             case "tool_use":
                 content.append(
-                    {"type": "toolCall", "id": str(block["id"]), "name": str(block["name"]), "input": block["input"]}
+                    {
+                        "type": "toolCall",
+                        "id": str(block["id"]),
+                        "name": str(block["name"]),
+                        "input": block["input"],
+                    }
                 )
             case "thinking":
                 content.append(
