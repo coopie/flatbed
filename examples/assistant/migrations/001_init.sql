@@ -54,3 +54,19 @@ create table outbox (
   input json not null,
   sent_at timestamptz not null default now()
 );
+
+-- Who may sign in. In demo mode, the two invented people; with Google, each allowed address that
+-- has signed in, with the token that lets the app read their mail and calendar.
+create table people (
+  id text primary key,
+  email text not null unique,
+  name text not null,
+  google_token json
+);
+
+-- Signed-in browsers: a random token in a cookie, pointing at a person.
+create table logins (
+  token text primary key,
+  person text not null references people (id),
+  created_at timestamptz not null default now()
+);
