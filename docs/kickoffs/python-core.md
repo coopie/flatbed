@@ -15,7 +15,7 @@ You are writing flatbed's core in Python, from the spec. It is a reference imple
 
 ## Done when
 
-`scripts/check.sh python` passes, every scenario prints `ok`, and the live check passed once.
+`scripts/check.sh python` passes, every scenario prints `ok`, and the live check is written and skips cleanly; the key in `.env` is revoked, so the lead runs it in the morning.
 
 ## Time and setting
 

@@ -19,7 +19,7 @@ Otherworldly's agent host already has a supervisor that works. Read `../otherwor
 
 ## Done when
 
-The tests pass with `node --test` and `tsc --noEmit`, the live check passed once, and the README shows a reader how to write and run a spec.
+The tests pass with `node --test` and `tsc --noEmit`, the live check is written and skips cleanly; the key in `.env` is revoked, so the lead runs it in the morning, and the README shows a reader how to write and run a spec.
 
 ## Time and setting
 

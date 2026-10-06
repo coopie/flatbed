@@ -15,7 +15,7 @@ You are writing flatbed's core in Rust, from the spec. It is a reference impleme
 
 ## Done when
 
-`scripts/check.sh rust` passes, every scenario prints `ok`, and the live check passed once.
+`scripts/check.sh rust` passes, every scenario prints `ok`, and the live check is written and skips cleanly; the key in `.env` is revoked, so the lead runs it in the morning.
 
 ## Time and setting
 

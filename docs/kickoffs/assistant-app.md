@@ -26,12 +26,12 @@ The app shows flatbed's layers working together: the core loop and sessions, the
   - the timeline
 - **Deploy.** A `Dockerfile` and `deploy.sh` for one Cloud Run service, reading secrets from Secret Manager. Write them and check the image builds if Docker is available; do not deploy.
 - **README** for the example: what it shows, how to run it locally in demo mode in a few commands, how to connect Google, and how to deploy.
-- **See your work.** Run the app and drive it end to end in demo mode with a real model at least once: send a message that leads to an email proposal, accept it, and see it in the fake outbox. Take screenshots of each page, light and dark, into `examples/assistant/screenshots/`, which the lead will use in a walkthrough. Check the layout at phone width.
+- **See your work.** The key in `.env` is revoked, so drive the app end to end in demo mode with the faux provider: add a `FLATBED_MODEL` setting (default `anthropic/claude-opus-5-5`) and a scripted faux mode for demos, then send a message that leads to an email proposal, accept it, and see it in the fake outbox. Take screenshots of each page, light and dark, into `examples/assistant/screenshots/`, which the lead will use in a walkthrough. Check the layout at phone width.
 - **Tests** at the boundaries: the Postgres stores pass the same behaviour the core's file store does, and a faux-driven run from message to proposal to decision to the outbox works without a browser.
 
 ## Done when
 
-The app runs locally in demo mode from the README's commands, the end-to-end run above worked with a real model, `scripts/check.sh` passes with the app's checks added, and the screenshots are in place.
+The app runs locally in demo mode from the README's commands, the end-to-end run above worked with the faux provider, `scripts/check.sh` passes with the app's checks added, and the screenshots are in place.
 
 ## Time and setting
 

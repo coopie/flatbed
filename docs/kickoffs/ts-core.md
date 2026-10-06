@@ -15,7 +15,7 @@ You are building flatbed's first implementation of the core, in TypeScript, toge
 
 ## Done when
 
-`scripts/check.sh ts` passes, the runner prints `ok` for every scenario, the live check passed at least once, and `chat` holds a short conversation. The spec matches what you built.
+`scripts/check.sh ts` passes, the runner prints `ok` for every scenario, the live check is written and skips cleanly, and `chat` holds a short conversation. The spec matches what you built.
 
 ## Time and setting
 
