@@ -34,3 +34,68 @@ Work for at most 75 minutes. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. The API key in `.env` is revoked; do not look for another, and never print a value from `.env`. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+All eleven findings are fixed in the spec, the TypeScript core and the conformance suite. `scripts/check.sh ts` passes, with 24 scenarios (10 new, 1 changed) and 4 new adapter tests. Nothing was tried against the real Anthropic API, since the key is revoked.
+
+### Spec changes, for the Python and Rust builders
+
+`loop.md`:
+
+- A session needs a run when the last entry on its path, ignoring `custom` and `context` entries, is a `tool` message or an event whose `attrs.from` is not `harness`. The one exception: after appending the soft-limit notice, the loop runs one more turn. A run that finds nothing to answer ends `idle` without calling the model or checking the stop signal.
+- A new step 4 freezes the context, and the tools it names, once per run. The later steps are renumbered.
+- The provider call passes the agent's `effort` when it is set.
+- When an assistant message stops with `maxTokens`, none of its calls run and plugins are not called. Each call gets an `isError` result: `The response was cut off before this call was complete.`
+- The loop adds the soft-limit notice when the session's entries, read from the store, hold no such notice yet. It searches all the entries, not only the path.
+- A reset with a missing or empty reason is stored without `reason`.
+
+`sessions.md`:
+
+- A rewind stays in the open session and never leaves a call unanswered. Delivery appends the event at the head instead when its parent is not in the open session, or when the path up to the parent lacks a result for a call of its last assistant message.
+- `stop` gains `refusal`. A stop reason a provider does not know maps to `end`.
+- A thinking block without a signature leaves `signature` out.
+- Harness events do not on their own make a session need a run.
+
+`plugins.md`:
+
+- `ctx.append` takes only `custom` entries and fails for anything else. Events always go through `deliver`.
+- An event delivered from `onSessionEnd` arrives after the next session's `Session started` notice.
+- Calls in a turn cut off by `maxTokens` never reach the plugins.
+
+`providers.md`:
+
+- The request gains an optional `effort`. Providers that take it pass it through; the rest ignore it.
+- Unlisted stop reasons map to `end`. An aborted signal also ends a backoff wait early.
+- The Anthropic adapter section was rewritten:
+  - In a merged user message, `tool_result` blocks come first.
+  - Empty text blocks are dropped everywhere. An empty tool result becomes `(no output)`.
+  - `effort` goes in `output_config.effort`.
+  - `refusal` maps to `refusal`.
+  - A request holds at most four cache breakpoints: the top-level `cache_control` for the history, one on the last tool when there are tools, and the rest on the earliest `cache: true` sections.
+- OpenAI sends `effort` as `reasoning_effort` and maps `content_filter` to `refusal`.
+
+`conformance.md`:
+
+- `agent.maxTokens`.
+- An optional `plugin` field gives the test plugin `beforeTool`, `afterTool`, `onEntry` and `onSessionEnd`.
+- A script entry `{"abort": "<who>"}` sets the stop signal while the call is in flight, then fails the call.
+
+### New or changed scenarios
+
+- Changed: 10 (stop).
+- New:
+  - 15: `onEntry` adds a `custom` entry after a tool result, and the run continues.
+  - 16: `beforeTool`.
+  - 17: `afterTool`.
+  - 18: `onSessionEnd` delivers to the next session.
+  - 19: stop during a model call.
+  - 20: repair partway through a turn's results.
+  - 21: reset with no reason, then with an empty reason.
+  - 22: escaping.
+  - 23: `maxTokens` cut-off.
+  - 24: a rewind to a call goes to the head.
+
+### Questions for the lead
+
+- I widened rewind validation from "not an assistant message with tool calls" to "leaves no call unanswered". This also rejects a target partway through a turn's results. A bad target falls back to the head, as finding 3 asks, rather than throwing. Throwing would happen mid-run, long after the host's `deliver` call.
+- The history breakpoint uses Anthropic's automatic caching (top-level `cache_control`), which the docs recommend for multi-turn conversations and which takes one of the four slots. I chose this over a block-level mark on the last message. It is untested against the live API.
+- For OpenAI, `effort` as `reasoning_effort` and `content_filter` as `refusal` go beyond the brief. Both are easy to drop.
