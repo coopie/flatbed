@@ -115,6 +115,9 @@ pre.code { background: var(--soft); padding: 16px 18px; overflow-x: auto; font-s
 .shots figure { margin: 0; padding: 14px; display: grid; gap: 8px; }
 .shots img { width: 100%; height: auto; border: 1px solid var(--line); display: block; }
 .shots figcaption { font-size: 0.8rem; }
+.shots img.dk { display: none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .shots img.lt { display: none; } :root:not([data-theme="light"]) .shots img.dk { display: block; } }
+:root[data-theme="dark"] .shots img.lt { display: none; } :root[data-theme="dark"] .shots img.dk { display: block; }
 
 /* Night */
 .waves { grid-template-columns: 7.5rem minmax(0, 1fr); }
@@ -162,6 +165,10 @@ cd python &amp;&amp; FLATBED_LIVE=1 uv run python -m unittest tests.test_live
 cd rust &amp;&amp; FLATBED_LIVE=1 cargo test --test live -- --ignored</pre></div>
       <div><h3>Decisions marked for review</h3><p>Choices made overnight are in <code>docs/decisions.md</code> with <em>for review</em> beside them. The ones that shape the core are: a harness notice alone never starts a run, a plugin hook that throws gives its call an error result, and providers are called over plain HTTP rather than through SDKs.</p></div>
       <div><h3>Codemode</h3><p>Nothing is built. <code>docs/codemode.md</code> sets out your idea: the script runs in an interpreter with no access to the host, and every tool call leaves it as a message the host runs through the same guards. It ends with two questions for you.</p></div>
+      <div><h3>Two stuck database connections</h3><p>The app builder's killed test runs left two connections on the Supabase database idle in a transaction, possibly holding an agent's lock. Ending them was refused when the builder tried, so I left them alone. If the demo hangs, end them from the Supabase SQL editor.</p>
+        <pre class="cmd">select pg_terminate_backend(pid) from pg_stat_activity
+where state = 'idle in transaction' and datname = current_database();</pre></div>
+      <div><h3>Small questions the builders left</h3><ul class="dash"><li>The docs plugin escapes document bodies, so the agent sees <code>&amp;amp;</code> for <code>&amp;</code>. <code>edit_doc</code> accepts either form. Should bodies go to the model raw instead?</li><li>When a <code>beforeTool</code> hook throws, no <code>afterTool</code> runs for that call. That's my choice, and the spec now says so.</li><li>An unavailable verdict records its model as <code>none</code>, because the field is required.</li></ul></div>
       <div><h3>Four calls only you can make</h3><p>WhatsApp or iMessage. A GitHub repo, public or private. A Google <em>web</em> OAuth client for Cloud Run, since perso's is a desktop client. And whether to run <code>examples/assistant/deploy.sh</code>, which I wrote but didn't run.</p></div>
     </div>
   </section>
@@ -214,7 +221,30 @@ cd rust &amp;&amp; FLATBED_LIVE=1 cargo test --test live -- --ignored</pre></div
 
   <section id="app">
     <h2 class="display">The example: a personal assistant</h2>
-    <p class="muted">The app is still being built.</p>
+        <div class="intro"><p>A small web app in <code>examples/assistant/</code> where each person has an assistant. It keeps its own documents, reads the person's mail and calendar, and proposes what to send, with its reasons, for the person to accept, edit or deny. Every flatbed layer shows up in it. The screenshots are from demo mode: two invented people with invented mail, and a scripted model in place of a real one.</p></div>
+    <div class="grid cols-2">
+      <div class="cell"><h3>How a proposal travels</h3><ol class="dash">
+        <li>Ada asks for a reply. The host delivers her message and runs her agent, under a Postgres lock so it never runs twice at once.</li>
+        <li>The agent searches the mail, reads the thread and checks the calendar, with the app's read tools.</li>
+        <li><code>propose_email</code> stores a proposal with the agent's reasons and returns at once. The supervisor's guard checks it in shadow mode and keeps the verdict as a <code>custom</code> entry beside the call.</li>
+        <li>Ada edits the subject and accepts. Her decision reaches the agent as an event naming what she changed, and the agent runs again.</li>
+        <li>Only an accepted proposal sends anything. In demo mode it goes to a fake outbox.</li>
+      </ol></div>
+      <div class="cell"><h3>Run it</h3><p>It needs Node 24, pnpm and <code>DATABASE_URL</code> in <code>.env</code>. No API key is needed in demo mode.</p>
+        <pre class="cmd">cd ts &amp;&amp; pnpm install &amp;&amp; cd ../examples/assistant
+FLATBED_MODEL=faux/demo pnpm dev</pre>
+        <p>Open localhost:5173, choose Ada Brennan and send the demo message. <code>examples/assistant/README.md</code> covers Google and Cloud Run.</p>
+        <p class="muted">Not done yet: the Docker image hasn't been built (Docker wasn't running), Google mode is untested, and no real model has run it.</p></div>
+    </div>
+    <div class="grid shots">
+      <figure><img class="lt" src="../examples/assistant/screenshots/proposals-pending-desktop-light.png" alt="The proposals page: an email to Priya Shah with the agent's reasons, editable fields, and the supervisor's five checks"><img class="dk" src="../examples/assistant/screenshots/proposals-pending-desktop-dark.png" alt=""><figcaption>Proposals: what the agent wants to send, why, and the supervisor's checklist.</figcaption></figure>
+      <figure><img class="lt" src="../examples/assistant/screenshots/chat-desktop-light.png" alt="The chat page: Ada's request, the agent's tool steps, and its replies"><img class="dk" src="../examples/assistant/screenshots/chat-desktop-dark.png" alt=""><figcaption>Chat: each tool call shows as a quiet step, streamed as it happens.</figcaption></figure>
+      <figure><img class="lt" src="../examples/assistant/screenshots/session-desktop-light.png" alt="One session as the model saw it: context sections, events, tool calls and results, and the supervisor's custom entry"><img class="dk" src="../examples/assistant/screenshots/session-desktop-dark.png" alt=""><figcaption>A session as the model saw it, including the supervisor's verdict, which the model never sees.</figcaption></figure>
+      <figure><img class="lt" src="../examples/assistant/screenshots/document-desktop-light.png" alt="Editing the people/ada document, with its version history"><img class="dk" src="../examples/assistant/screenshots/document-desktop-dark.png" alt=""><figcaption>Documents: the agent's memory, editable by the person, every version kept.</figcaption></figure>
+      <figure><img class="lt" src="../examples/assistant/screenshots/timeline-desktop-light.png" alt="The timeline page"><img class="dk" src="../examples/assistant/screenshots/timeline-desktop-dark.png" alt=""><figcaption>The timeline, pinned last in every session's context.</figcaption></figure>
+      <figure><img class="lt" src="../examples/assistant/screenshots/sessions-desktop-light.png" alt="The list of past sessions"><img class="dk" src="../examples/assistant/screenshots/sessions-desktop-dark.png" alt=""><figcaption>Past sessions, each linked to the one it reset from.</figcaption></figure>
+    </div>
+
   </section>
 
   <section id="night">
@@ -244,7 +274,7 @@ const WAVES = [
   ["23:47", "The review's eleven findings go to a fixer: mostly places the spec let two implementations differ."],
   ["23:54", "Core fixes merged, with 24 scenarios. Python and Rust pull them in and pass all 24 by 23:57. The supervisor guard and the example app are under way."],
   ["23:59", "A second review, of the plugins, finds what they worked around. I write the spec change myself so all three cores change together: 27 scenarios."],
-  ["after", "Plugin fixes, then the app, then a last review and this page."],
+  ["00:10", "Plugin fixes merged. The app lands at 00:40 with 36 screenshots; a last reviewer reads it while this page is written."],
 ];
 const LAYERS = [
   { name: "The app", where: "examples/assistant", what: "A SvelteKit app for two to four people on Postgres: chat, proposals with the supervisor's checklist, documents with history, past sessions as the model saw them, and the timeline. Demo mode runs with invented people, mail and calendar.", size: "see below" },
