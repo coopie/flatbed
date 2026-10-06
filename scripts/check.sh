@@ -17,14 +17,17 @@ check_ts() {
 
 check_python() {
   echo "== python"
-  # The Python implementation fills this in: ruff, unittest, then its conformance runner.
-  echo "not built yet"
+  (cd python && uv run --quiet ruff format --check . && uv run --quiet ruff check .)
+  (cd python && uv run --quiet python -m unittest discover -s tests -t .)
+  (cd python && uv run --quiet python conformance.py)
 }
 
 check_rust() {
   echo "== rust"
-  # The Rust implementation fills this in: cargo fmt --check, clippy, test, then its conformance runner.
-  echo "not built yet"
+  (cd rust && cargo fmt --check)
+  (cd rust && cargo clippy --quiet --all-targets -- -D warnings)
+  (cd rust && cargo test --quiet)
+  (cd rust && cargo run --quiet --bin conformance)
 }
 
 sections=("$@")

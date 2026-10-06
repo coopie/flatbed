@@ -35,7 +35,9 @@ test('waiting: the dispatch tool returns the report, and the sub-agent links bac
 
   const child = await only(await childId());
   assert.match(child.header.agent, /^boss\.researcher-[0-9a-f]{4}$/);
-  assert.deepEqual(child.header.parent, { session: boss.header.id, reason: 'dispatch', entry: assistantEntry(boss.entries).id });
+  assert.deepEqual(child.header.parent, { session: boss.header.id, reason: 'dispatch', entry: assistantEntry(boss.entries).id, agent: 'boss' });
+  // The message that starts the sub-agent says that report is the only way back.
+  assert.match(JSON.stringify(kid.requests[0]!.messages), /only way your answer reaches the agent that dispatched you/);
   assert.deepEqual(kid.requests[0]!.sections, [
     { name: 'soul', text: 'You look things up.' },
     { name: 'brief', text: '<brief>\nFind when the tide is high at Port Ness.\n</brief>' },
@@ -45,12 +47,23 @@ test('waiting: the dispatch tool returns the report, and the sub-agent links bac
   assert.deepEqual(child.entries.at(-1), { ...child.entries.at(-1), type: 'reset', by: 'agent', reason: 'reported' });
 });
 
-test('waiting: a sub-agent that stops without reporting gives back its last text', async () => {
-  const { parent, only } = setup([call('dispatch', { brief: 'Find the tide.' }), say('Noted.')], [say('I could not find a tide table.')]);
+test('waiting: a sub-agent that ends without reporting gives an error with its last text', async () => {
+  const { parent, only, childId } = setup([call('dispatch', { brief: 'Find the tide.' }), say('Noted.')], [say('I could not find a tide table.')]);
   await parent.run();
   const [result] = toolResults((await only('boss')).entries);
-  assert.deepEqual(result!.content, [{ type: 'text', text: 'I could not find a tide table.' }]);
-  assert.equal(result!.isError, false);
+  const id = await childId();
+  assert.deepEqual(result!.content, [
+    { type: 'text', text: `The sub-agent ${id} finished without calling report, so it gave no answer. Its last message said:\n\nI could not find a tide table.` },
+  ]);
+  assert.equal(result!.isError, true);
+});
+
+test('waiting: a sub-agent that resets without reporting gives an error', async () => {
+  const { parent, only, childId } = setup([call('dispatch', { brief: 'Find the tide.' }), say('Noted.')], [call('reset', { reason: 'lost my way' })]);
+  await parent.run();
+  const [result] = toolResults((await only('boss')).entries);
+  assert.deepEqual(result!.content, [{ type: 'text', text: `The sub-agent ${await childId()} reset its session without calling report, so it gave no answer.` }]);
+  assert.equal(result!.isError, true);
 });
 
 test('not waiting: the tool returns at once, then the report arrives as an event and the host is woken', async () => {

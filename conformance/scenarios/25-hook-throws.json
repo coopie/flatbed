@@ -1,0 +1,273 @@
+{
+  "name": "a plugin hook throws",
+  "description": "The test plugin's beforeTool throws for echo and its afterTool throws for shout. Each call gets an error result naming the plugin, and the run carries on.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "error": "The tool ran."
+      }
+    },
+    {
+      "name": "shout",
+      "description": "Shout the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    }
+  ],
+  "plugin": {
+    "beforeTool": {
+      "echo": {
+        "throw": "the approvals service is down"
+      }
+    },
+    "afterTool": {
+      "shout": {
+        "throw": "cannot redact"
+      }
+    }
+  },
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "echo",
+          "input": {
+            "text": "hi"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "shout",
+          "input": {
+            "text": "hey"
+          }
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Something went wrong."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 4
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Echo hi and shout hey"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "shout",
+              "description": "Shout the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Echo hi and shout hey"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "echo",
+                "input": {
+                  "text": "hi"
+                }
+              },
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "shout",
+                "input": {
+                  "text": "hey"
+                }
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "The test plugin failed: the approvals service is down"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "shout",
+            "content": [
+              {
+                "type": "text",
+                "text": "The test plugin failed: cannot redact"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Something went wrong."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 4
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ]
+  }
+}

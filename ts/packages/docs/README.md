@@ -13,14 +13,14 @@ A `DocStore` holds one agent's documents. It has four calls: `get`, `list`, `put
 When a session opens, the plugin adds these sections, in this order:
 
 1. `documents`: a short guide to how the documents work and how to keep them.
-2. Each pinned document, sorted by name, as `<doc name="..." summary="...">body</doc>`. The last one is marked `cache: true`.
+2. Each pinned document, sorted by name, as `<doc name="..." summary="...">body</doc>`, with the body escaped as the core escapes event text, so a body cannot close its element. The last one is marked `cache: true`.
 3. `timeline`: today's timeline document in full, after one summary line for each of the six days before it that has one.
 
 The order runs from stable to volatile, because providers cache the start of the context. The guide never changes, the pinned documents change when the agent edits or pins one, and the timeline changes every day. With the cache mark on the last pinned document, a new day pays again only for the timeline.
 
 The only time in the context is the session's day. The plugin takes it once, from the session header, so the same documents always give the same bytes, and a session resumed later still has the day it opened on. The current time reaches the agent through events.
 
-The agent gets six tools: `list_docs`, `read_doc`, `write_doc`, `edit_doc` (replace one exact passage), `pin_doc` (pin or unpin, from the next session) and `add_to_timeline`. Each answers in one line where it can. A failure is a result that says what to do differently.
+The agent gets six tools: `list_docs`, `read_doc`, `write_doc`, `edit_doc` (replace one exact passage), `pin_doc` (pin or unpin, from the next session) and `add_to_timeline`. `read_doc` shows a document escaped, as the context does, and `edit_doc` accepts a passage quoted in that form. Each answers in one line where it can. A failure is a result that says what to do differently.
 
 When a session ends, the plugin does nothing. The agent's own notes are its memory, and the guide tells it to bring them up to date before it resets.
 

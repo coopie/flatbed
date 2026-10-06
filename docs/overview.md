@@ -36,20 +36,21 @@ A lightly held plan, started on 6 October 2026.
 **Done**
 
 - The docs and the spec.
-- The core in TypeScript, with the conformance suite, the fake, Anthropic and OpenAI providers, and a rough CLI. The live check against Anthropic has not passed yet, because the key it was run with had been revoked.
-
-- The docs plugin, in `ts/packages/docs`, with a file store and an in-memory one.
+- The core in TypeScript, Python and Rust, each passing the same 27 conformance scenarios, with the fake and Anthropic providers and a rough CLI each; TypeScript also has an OpenAI-compatible provider. None has passed a live check against Anthropic yet, because the key in `.env` was revoked.
+- The docs plugin: documents pinned as context, and the timeline.
+- The supervisor: the spec format, one-call and agent runners, and the guard plugin.
+- The MCP plugin, with a Python MCP server as the example, and the dispatch plugin for sub-agents.
 
 **Now**
 
-- The supervisor library.
+- Fixes to the plugins from the second review.
+- The example app, with Google mail and calendar and the proposal screen.
+- A walkthrough of the whole stack, from the core to the app.
 
 **Next**
 
-- The MCP and dispatch plugins.
-- The Python and Rust implementations, against the suite.
-- The example app, with Google mail and calendar and the proposal screen.
-- A walkthrough of the whole stack, from the core to the app.
+- Live checks in all three languages once there is a working key.
+- Sam's calls on codemode, messaging, the GitHub repo and a Google web client for Cloud Run.
 
 **Later, if it earns its place**
 

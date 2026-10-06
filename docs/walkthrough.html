@@ -1,0 +1,345 @@
+<title>flatbed walkthrough</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Tinos:ital@0;1&display=swap">
+<style>
+/* Layout: one column of boxed sections on the aiding.agency grid; the stepper is the one interactive centre. */
+:root {
+  --bg: #ffffff; --fg: #0c0c0c; --muted: #6a6a6a; --line: #e2e2e2; --soft: #f5f5f4;
+  --display: "Times New Roman", Tinos, Times, serif;
+  --mono: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+  --track: -0.02em; --gutter: clamp(16px, 4vw, 48px); --max: 1120px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0b0b0b; --fg: #f1f1f0; --muted: #9b9b9b; --line: #272727; --soft: #141414; color-scheme: dark; } }
+:root[data-theme="dark"] { --bg: #0b0b0b; --fg: #f1f1f0; --muted: #9b9b9b; --line: #272727; --soft: #141414; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 0.9rem/1.7 var(--mono); -webkit-font-smoothing: antialiased; }
+p, h1, h2, h3, ul, ol, pre { margin: 0; }
+a { color: inherit; text-underline-offset: 4px; }
+:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+::selection { background: var(--fg); color: var(--bg); }
+code { font-family: var(--mono); font-size: 0.95em; background: var(--soft); padding: 0 4px; }
+
+.rainbow { height: 6px; background: linear-gradient(90deg, #ff2a2a 0 14.28%, #ff8a00 14.28% 28.56%, #ffe600 28.56% 42.84%, #1ec92a 42.84% 57.12%, #1f8bff 57.12% 71.4%, #4b2bff 71.4% 85.68%, #b026ff 85.68% 100%); }
+.wrap { max-width: var(--max); margin-inline: auto; padding-inline: var(--gutter); }
+.label { font: 500 0.72rem var(--mono); color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+.display { font-family: var(--display); font-weight: 400; letter-spacing: var(--track); text-wrap: balance; }
+.bracket { text-decoration: none; white-space: nowrap; }
+.bracket::before { content: "["; color: var(--muted); }
+.bracket::after { content: "]"; color: var(--muted); }
+.bracket:hover { text-decoration: underline; }
+.grid { display: grid; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+.grid > * { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); min-width: 0; }
+
+header.top { padding-block: 56px 32px; display: grid; gap: 20px; }
+header.top h1 { font-size: clamp(3rem, 9vw, 6.5rem); line-height: 0.95; }
+header.top .lede { max-width: 62ch; font-size: 0.95rem; }
+nav.sections { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.themes { display: flex; gap: 12px; }
+.themes button { font: inherit; background: none; border: 0; color: var(--fg); cursor: pointer; padding: 0; }
+.themes button[aria-pressed="true"] { text-decoration: underline; }
+
+section { padding-block: 48px; border-top: 1px solid var(--line); display: grid; gap: 24px; }
+section > h2 { font-size: clamp(1.9rem, 4.5vw, 2.8rem); line-height: 1.05; }
+.intro { max-width: 66ch; display: grid; gap: 10px; }
+.cell { padding: 18px 20px; display: grid; gap: 8px; align-content: start; }
+.cell h3 { font: 500 0.95rem var(--mono); }
+.cell p, .cell li { color: var(--fg); }
+.cell .muted, .muted { color: var(--muted); }
+.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 860px) { .cols-3, .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .cols-2, .cols-3, .cols-4 { grid-template-columns: 1fr; } }
+ul.plain { list-style: none; padding: 0; display: grid; gap: 6px; }
+ul.dash { padding-left: 1.2em; display: grid; gap: 6px; }
+.num { font-family: var(--display); font-size: 2.6rem; line-height: 1; letter-spacing: var(--track); font-variant-numeric: tabular-nums; }
+.tag { font: 500 0.7rem var(--mono); border: 1px solid var(--fg); padding: 1px 6px; letter-spacing: 0.04em; text-transform: uppercase; justify-self: start; }
+.tag.hollow { border-color: var(--line); color: var(--muted); }
+
+/* Morning list */
+.todo { counter-reset: todo; }
+.todo > div { padding: 16px 20px; display: grid; grid-template-columns: 2.2rem minmax(0, 1fr); gap: 4px 12px; }
+.todo > div::before { counter-increment: todo; content: counter(todo); font-family: var(--display); font-size: 1.6rem; line-height: 1.1; grid-row: span 2; }
+.todo h3 { font: 500 0.92rem var(--mono); }
+pre.cmd { background: var(--soft); padding: 10px 12px; overflow-x: auto; font-size: 0.82rem; line-height: 1.5; margin-top: 6px; }
+
+/* Layers */
+.layers { grid-template-columns: minmax(0, 1fr); }
+.layer { display: grid; grid-template-columns: 11rem minmax(0, 1fr) auto; gap: 16px; align-items: baseline; padding: 14px 20px; background: none; border: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; width: 100%; }
+.layer:hover { background: var(--soft); }
+.layer[aria-expanded="true"] { background: var(--fg); color: var(--bg); }
+.layer[aria-expanded="true"] .muted { color: var(--bg); opacity: 0.7; }
+.layer .name { font-family: var(--display); font-size: 1.35rem; letter-spacing: var(--track); }
+.layer-detail { padding: 18px 20px 22px; display: grid; gap: 10px; }
+@media (max-width: 640px) { .layer { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
+
+/* Stepper */
+.stepper { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 860px) { .stepper { grid-template-columns: minmax(0, 1fr); } }
+.pane { padding: 18px 20px; display: grid; gap: 12px; align-content: start; min-height: 30rem; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 20px; grid-column: 1 / -1; }
+.controls button { font: 500 0.85rem var(--mono); background: var(--fg); color: var(--bg); border: 1px solid var(--fg); padding: 7px 14px; cursor: pointer; }
+.controls button.ghost { background: var(--bg); color: var(--fg); }
+.controls button:disabled { opacity: 0.35; cursor: default; }
+.progress { display: flex; gap: 3px; flex: 1 1 200px; min-width: 0; }
+.progress span { flex: 1; height: 8px; background: var(--line); }
+.progress span.done { background: var(--fg); }
+.progress span.gap { flex: 0 0 8px; background: none; }
+.note { font-size: 0.95rem; max-width: 60ch; }
+.log { display: grid; gap: 4px; max-height: 26rem; overflow: auto; }
+.log .line { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 10px; padding: 4px 6px; font-size: 0.78rem; line-height: 1.45; }
+.log .line .t { color: var(--muted); }
+.log .line .j { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log .line.new { background: var(--fg); color: var(--bg); }
+.log .line.new .t { color: var(--bg); opacity: 0.75; }
+.log .line.head { color: var(--muted); }
+.log .sep { font-size: 0.72rem; color: var(--muted); padding: 8px 6px 2px; border-top: 1px dashed var(--line); margin-top: 6px; }
+.model { display: grid; gap: 8px; max-height: 26rem; overflow: auto; }
+.msg { border: 1px solid var(--line); padding: 8px 10px; display: grid; gap: 4px; }
+.msg .who { font: 500 0.7rem var(--mono); color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+.msg pre { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; line-height: 1.5; }
+.msg.sys { background: var(--soft); }
+.msg.fresh { border-color: var(--fg); }
+.empty { color: var(--muted); font-size: 0.85rem; }
+
+/* Code */
+pre.code { background: var(--soft); padding: 16px 18px; overflow-x: auto; font-size: 0.78rem; line-height: 1.55; }
+.code .c { color: var(--muted); }
+
+/* Screens */
+.shots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 640px) { .shots { grid-template-columns: 1fr; } }
+.shots figure { margin: 0; padding: 14px; display: grid; gap: 8px; }
+.shots img { width: 100%; height: auto; border: 1px solid var(--line); display: block; }
+.shots figcaption { font-size: 0.8rem; }
+
+/* Night */
+.waves { grid-template-columns: 7.5rem minmax(0, 1fr); }
+.waves > div { padding: 12px 16px; }
+.waves .when { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 0.8rem; }
+@media (max-width: 560px) { .waves { grid-template-columns: minmax(0, 1fr); } .waves .when { border-bottom: 0 !important; padding-bottom: 0; } }
+
+footer { padding-block: 40px 56px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.8rem; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="rainbow"></div>
+<div class="wrap">
+  <header class="top">
+    <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap" class="label">
+      <span>flatbed · overnight build · 6 to 7 October 2026</span>
+      <span class="themes" role="group" aria-label="Theme"><button type="button" data-t="system" aria-pressed="true">system</button><button type="button" data-t="light" aria-pressed="false">light</button><button type="button" data-t="dark" aria-pressed="false">dark</button></span>
+    </div>
+    <h1 class="display">flatbed</h1>
+    <p class="lede">A very small agent harness, specified in Markdown, built three times over, with plugins and a personal assistant on top. This page walks through what was built while you slept, layer by layer, and lists what needs you this morning.</p>
+    <nav class="sections" aria-label="Sections">
+      <a class="bracket" href="#morning">this morning</a>
+      <a class="bracket" href="#layers">the layers</a>
+      <a class="bracket" href="#session">a session, step by step</a>
+      <a class="bracket" href="#languages">three languages</a>
+      <a class="bracket" href="#plugins">plugins</a>
+      <a class="bracket" href="#app">the app</a>
+      <a class="bracket" href="#night">how the night went</a>
+    </nav>
+  </header>
+
+  <section id="morning">
+    <h2 class="display">This morning</h2>
+    <div class="grid cols-4">
+      <div class="cell"><span class="num">3</span><p>implementations of the core: TypeScript, Python and Rust</p></div>
+      <div class="cell"><span class="num">27</span><p>conformance scenarios, passed by all three</p></div>
+      <div class="cell"><span class="num">4</span><p>plugins and libraries: docs, supervisor, MCP, dispatch</p></div>
+      <div class="cell"><span class="num">0</span><p>live model calls. The API key in <code>perso/.env</code> is revoked</p></div>
+    </div>
+    <div class="intro"><p class="label">What needs you</p></div>
+    <div class="grid todo">
+      <div><h3>A working Anthropic key</h3><p>Everything is tested against the scripted fake model. Nothing has reached a real model yet. Put a key in <code>flatbed/.env</code> as <code>ANTHROPIC_API_KEY</code>, then run the three live checks. I didn't try any other key on the machine.</p>
+        <pre class="cmd">cd ts/packages/core &amp;&amp; FLATBED_LIVE=1 node --test live.test.ts
+cd python &amp;&amp; FLATBED_LIVE=1 uv run python -m unittest tests.test_live
+cd rust &amp;&amp; FLATBED_LIVE=1 cargo test --test live -- --ignored</pre></div>
+      <div><h3>Decisions marked for review</h3><p>Choices made overnight are in <code>docs/decisions.md</code> with <em>for review</em> beside them. The ones that shape the core are: a harness notice alone never starts a run, a plugin hook that throws gives its call an error result, and providers are called over plain HTTP rather than through SDKs.</p></div>
+      <div><h3>Codemode</h3><p>Nothing is built. <code>docs/codemode.md</code> sets out your idea: the script runs in an interpreter with no access to the host, and every tool call leaves it as a message the host runs through the same guards. It ends with two questions for you.</p></div>
+      <div><h3>Four calls only you can make</h3><p>WhatsApp or iMessage. A GitHub repo, public or private. A Google <em>web</em> OAuth client for Cloud Run, since perso's is a desktop client. And whether to run <code>examples/assistant/deploy.sh</code>, which I wrote but didn't run.</p></div>
+    </div>
+  </section>
+
+  <section id="layers">
+    <h2 class="display">The layers</h2>
+    <div class="intro"><p>Each layer only knows about the ones below it. The core never knows which plugins exist. Select a layer to see what it holds.</p></div>
+    <div class="grid layers" id="layerList"></div>
+  </section>
+
+  <section id="session">
+    <h2 class="display">A session, step by step</h2>
+    <div class="intro"><p>This is a real run, recorded from the TypeScript core with the docs plugin and the scripted fake model. Ada tells her assistant, Wren, something worth remembering. Wren writes it down, resets, and answers from its notes in a fresh session. On the left is the session file as it grows. On the right is what the model is sent on its next call.</p></div>
+    <div class="grid stepper">
+      <div class="controls">
+        <button type="button" class="ghost" id="prev">← back</button>
+        <button type="button" id="next">next →</button>
+        <div class="progress" id="progress" aria-hidden="true"></div>
+        <span class="label" id="count"></span>
+      </div>
+      <div class="controls" style="padding-top:0"><p class="note" id="note"></p></div>
+      <div class="pane"><p class="label">The session file, one JSON line per entry</p><div class="log" id="log"></div></div>
+      <div class="pane"><p class="label">What the model sees</p><div class="model" id="model"></div></div>
+    </div>
+  </section>
+
+  <section id="languages">
+    <h2 class="display">One spec, three languages</h2>
+    <div class="intro"><p>The spec in <code>docs/spec/</code> is the contract. The conformance suite in <code>conformance/scenarios/</code> drives each core with the fake model and compares the sessions that come out. The Python and Rust builders worked from the spec alone, and each fixed the spec wherever it was not enough.</p></div>
+    <div class="grid cols-3">
+      <div class="cell"><span class="tag">TypeScript</span><span class="num">1,160</span><p class="muted">lines in <code>ts/packages/core</code>, no runtime dependencies</p><ul class="dash"><li>async, tool calls run concurrently</li><li>Node 24 runs the source directly</li><li>faux, Anthropic and OpenAI providers</li></ul></div>
+      <div class="cell"><span class="tag">Python</span><span class="num">1,250</span><p class="muted">lines in <code>python/flatbed</code>, standard library only</p><ul class="dash"><li>synchronous, tools one at a time</li><li>urllib for HTTP</li><li>faux and Anthropic providers</li></ul></div>
+      <div class="cell"><span class="tag">Rust</span><span class="num">2,540</span><p class="muted">lines in <code>rust/flatbed</code>, serde and ureq</p><ul class="dash"><li>blocking, plugins as trait objects</li><li>hooks collect what they append</li><li>faux and Anthropic providers</li></ul></div>
+    </div>
+    <p class="muted">Each one reads the others' session files. <code>scripts/check.sh</code> runs every language's format, lint, types and tests, then the 27 scenarios against each.</p>
+    <div class="intro"><p class="label">The whole loop, in TypeScript</p></div>
+    <pre class="code" id="loopCode"></pre>
+  </section>
+
+  <section id="plugins">
+    <h2 class="display">Plugins and libraries</h2>
+    <div class="intro"><p>A plugin is an object with up to five hooks: <code>context</code>, <code>beforeTool</code>, <code>afterTool</code>, <code>onEntry</code> and <code>onSessionEnd</code>. Everything beyond the loop is built from them.</p></div>
+    <div class="grid cols-2">
+      <div class="cell"><h3>@flatbed/docs</h3><p>Documents in place of a system prompt. Pinned documents become the context, ordered from stable to volatile so the cache holds, with today's timeline last. Six tools to keep them. Every write keeps a version.</p><p class="muted">Hooks: context. 380 lines.</p></div>
+      <div class="cell"><h3>@flatbed/supervisor</h3><p>A supervisor spec is JSON: the task, a preamble on what is at stake, and a checklist. The verdict schema is derived from it, with the analysis before the yes or no. It runs as one model call or as a flatbed agent that investigates first. The guard checks tool calls in off, shadow or enforce mode.</p><p class="muted">Hooks: beforeTool. 720 lines.</p></div>
+      <div class="cell"><h3>@flatbed/mcp</h3><p>Tools from MCP servers, over stdio or HTTP, named <code>&lt;server&gt;__&lt;tool&gt;</code>. This is how a tool in any language joins an agent: <code>examples/mcp-python</code> is a unit converter in about 40 lines of Python, called from a TypeScript agent in the tests.</p><p class="muted">Hooks: context. 120 lines.</p></div>
+      <div class="cell"><h3>@flatbed/dispatch</h3><p>Sub-agents. The agent hands a brief to a sub-agent it is configured with, waits or carries on, and hears back through a <code>report</code> tool. The sub-agent's first session links to the call that started it. A depth limit stops sub-agents dispatching forever.</p><p class="muted">Hooks: context. 140 lines.</p></div>
+    </div>
+  </section>
+
+  <section id="app">
+    <h2 class="display">The example: a personal assistant</h2>
+    <p class="muted">The app is still being built.</p>
+  </section>
+
+  <section id="night">
+    <h2 class="display">How the night went</h2>
+    <div class="intro"><p>I wrote the docs and the spec, then worked in waves of builder agents, each in its own git worktree with a brief and a time limit, and a read-only reviewer after each wave. I merged, fixed small things, and wrote the next briefs.</p></div>
+    <div class="grid waves" id="waves"></div>
+    <div class="intro"><p class="label">What the write-ups said, under How it went</p></div>
+    <div class="grid cols-2">
+      <div class="cell"><h3>The spec was vague exactly where three implementations need to agree</h3><p>Error wording, attribute order, what counts as needing a run, where an appended entry lands. Most of the core builder's time went on pinning these down, and the Python and Rust builders each found more. The conformance suite is what made the disagreements visible.</p></div>
+      <div class="cell"><h3>Plugins found the gaps in the core</h3><p>The supervisor and dispatch each worked around the core to open a session with a parent, and four plugins copied the escaping. The second review named the smallest core change for each, and the follow-up made it in all three languages at once.</p></div>
+      <div class="cell"><h3>Reviews were worth their cost</h3><p>Each review took about four minutes and found real bugs: a <code>custom</code> entry could stop a run, an event could land between a call and its result, MCP names could break an agent for good, and a sub-agent could finish without reporting.</p></div>
+      <div class="cell"><h3>Changes for next time</h3><p>Check the API key before the first wave. Put the conformance format in the spec before the first builder starts, not after. Give packages one shared lockfile owner, since every parallel branch conflicted on it.</p></div>
+    </div>
+  </section>
+
+  <footer>Every path on this page is relative to <code>~/Documents/Programming/flatbed</code>. The repo is local only. Start with <code>AGENTS.md</code>.</footer>
+</div>
+<div class="rainbow"></div>
+
+<script>
+const STEPS = [{"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "context", "id": "551bb8a9", "parentId": null, "at": "2026-10-06T23:00:30.858Z", "sections": [{"name": "documents", "text": "<documents>\nYou keep a set of Markdown documents, and they are your memory. Each session starts with no memory of the last one: you know what is pinned below and what you can read with read_doc. Before a session ends, write down what the next one will need, because anything not written down is lost.\n\nPin a document when you need it in every session, such as who you are and how you work. Pinned documents follow this section. Leave the rest unpinned and find them with list_docs. A change to a document, or to what is pinned, reaches your context at the next session.\n\nGive every document a one-line summary that says what it is for, and a name like a path, such as people/tomas-reyes. Keep a document as the current state of its subject: rewrite a line when it stops being true rather than adding another.\n\nYour timeline has one document a day, named timeline/YYYY-MM-DD. You see today's in full and one summary line for each of the six days before it. When something happens that a later session would want to know, add a line with add_to_timeline, and keep the day's summary true.\n</documents>"}, {"name": "soul", "text": "<doc name=\"soul\" summary=\"Who you are and how you work\">\nYou are Wren, a personal assistant for Ada Lovell. You keep her diary straight and her inbox calm.\n</doc>", "cache": true}, {"name": "timeline", "text": "<timeline today=\"2026-10-07\">\nNothing on today's timeline yet.\n</timeline>"}], "tools": [{"name": "list_docs", "description": "List your documents, one line each with its summary. Use it to find a document before you read or write it, and before you start a new one, so you add to an existing document rather than making a second.", "inputSchema": {"type": "object", "properties": {"prefix": {"type": "string", "description": "Only names starting with this, such as people/"}}}}, {"name": "read_doc", "description": "Read one of your documents in full. Read a document before you change it, unless it is pinned and already in your context.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}, {"name": "write_doc", "description": "Write a whole document, creating it or replacing its body. Use it for a new document or a rewrite; use edit_doc to change a passage. The previous version is kept.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "Such as people/tomas-reyes"}, "body": {"type": "string", "description": "The whole Markdown body"}, "summary": {"type": "string", "description": "One line saying what the document is for. Required for a new document; leave it out to keep the current one."}}, "required": ["name", "body"]}}, {"name": "edit_doc", "description": "Change one passage of a document by replacing it exactly. Copy the passage from the document as it is now, with enough around it to occur only once. Use an empty replacement to delete it.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "passage": {"type": "string"}, "replacement": {"type": "string"}}, "required": ["name", "passage", "replacement"]}}, {"name": "pin_doc", "description": "Pin a document so it is in your context at the start of every session, or unpin it. Pin what you need every time; every pinned document costs room in every session.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "pinned": {"type": "boolean", "description": "true to pin, false to unpin"}}, "required": ["name", "pinned"]}}, {"name": "add_to_timeline", "description": "Add a line to today's timeline. Use it whenever something happens that a later session would want to know: what was asked, decided, sent or promised. Later sessions see only the day's summary, so keep it true as the day goes on.", "inputSchema": {"type": "object", "properties": {"line": {"type": "string", "description": "One line, such as \"Tomas Reyes asked to move Thursday's call to Friday.\""}, "summary": {"type": "string", "description": "One line for the whole day so far. Give it when the day has changed its shape; leave it out to keep the current one."}}, "required": ["line"]}}, {"name": "reset", "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}}}]}, "kind": "open", "note": "The run finds no open session, so it opens one. Every plugin's context hook adds sections and tools; the docs plugin adds its guide, the pinned soul and today's timeline. The core adds reset. This entry is frozen for the whole session."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "event", "id": "3f816549", "parentId": "551bb8a9", "at": "2026-10-06T23:00:30.858Z", "kind": "notice", "attrs": {"from": "harness"}, "text": "Session started."}, "kind": "open", "note": "The harness tells the agent why the session started. A notice from the harness never starts a run on its own."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "event", "id": "b035c367", "parentId": "3f816549", "at": "2026-10-06T23:00:30.858Z", "kind": "message", "attrs": {"from": "Ada"}, "text": "Remember that Tomas prefers calls before 10am."}, "kind": "deliver", "note": "The host delivers Ada's message. An event that is not from the harness is what makes a session need a run."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "message", "id": "4590057c", "parentId": "b035c367", "at": "2026-10-06T23:00:30.858Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll note that."}, {"type": "toolCall", "id": "c1", "name": "write_doc", "input": {"name": "people/tomas-reyes", "summary": "Tomas Reyes, Marlow Health: prefers calls before 10am", "body": "# Tomas Reyes\n\n- Prefers calls before 10am (Ada, 7 Oct 2026)."}}], "model": "faux/test", "usage": {"input": 1800, "output": 60}, "stop": "toolUse"}}, "kind": "model", "note": "The loop renders the path and asks the model. The answer is appended as it came back, in flatbed's own message format, with its usage."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "message", "id": "63c43b05", "parentId": "4590057c", "at": "2026-10-06T23:00:30.859Z", "message": {"role": "tool", "callId": "c1", "name": "write_doc", "content": [{"type": "text", "text": "Created people/tomas-reyes (version 1)."}], "isError": false}}, "kind": "tool", "note": "The loop runs the tool call through the plugins' beforeTool and afterTool hooks, and appends the result straight after the turn that asked for it."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "message", "id": "13c464f9", "parentId": "63c43b05", "at": "2026-10-06T23:00:30.859Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "c2", "name": "add_to_timeline", "input": {"line": "Ada said Tomas Reyes prefers calls before 10am; noted in people/tomas-reyes.", "summary": "Noted how Tomas Reyes likes his calls."}}], "model": "faux/test", "usage": {"input": 1900, "output": 30}, "stop": "toolUse"}}, "kind": "model", "note": "A tool result needs an answer, so the loop asks again. The agent writes the fact into today's timeline too."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "message", "id": "55707f07", "parentId": "13c464f9", "at": "2026-10-06T23:00:30.859Z", "message": {"role": "tool", "callId": "c2", "name": "add_to_timeline", "content": [{"type": "text", "text": "Added to timeline/2026-10-07."}], "isError": false}}, "kind": "tool", "note": "The docs plugin writes timeline/2026-10-07. It will be pinned at the end of the next session's context."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "message", "id": "f822de2f", "parentId": "55707f07", "at": "2026-10-06T23:00:30.859Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Noted: Tomas prefers calls before 10am."}], "model": "faux/test", "usage": {"input": 1950, "output": 15}, "stop": "end"}}, "kind": "model", "note": "Text and no tool calls: nothing needs an answer, so the run ends idle."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "event", "id": "a981dd34", "parentId": "f822de2f", "at": "2026-10-06T23:00:30.859Z", "kind": "message", "attrs": {"from": "Ada"}, "text": "That's all for today, thanks."}, "kind": "deliver", "note": "Later, a new message. The next run picks up the same session from the store."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "message", "id": "b5671c92", "parentId": "a981dd34", "at": "2026-10-06T23:00:30.859Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "c3", "name": "reset", "input": {"reason": "notes are up to date"}}], "model": "faux/test", "usage": {"input": 2000, "output": 12}, "stop": "toolUse"}}, "kind": "model", "note": "The agent has written down what matters, so it calls reset, the core's only tool."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "message", "id": "8743b851", "parentId": "b5671c92", "at": "2026-10-06T23:00:30.859Z", "message": {"role": "tool", "callId": "c3", "name": "reset", "content": [{"type": "text", "text": "Session will reset after this turn."}], "isError": false}}, "kind": "tool", "note": "The reset happens after the turn's results are appended, so a reset never sits between a call and its result."}, {"session": 0, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-6a31", "agent": "wren", "createdAt": "2026-10-06T23:00:30.856Z"}, "entry": {"type": "reset", "id": "69936048", "parentId": "8743b851", "at": "2026-10-06T23:00:30.859Z", "by": "agent", "reason": "notes are up to date"}, "kind": "reset", "note": "The session ends. Nothing follows a reset. Its file stays whole, and the next run opens a new one."}, {"session": 1, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-94d7", "agent": "wren", "createdAt": "2026-10-06T23:00:30.859Z", "parent": {"session": "2026-10-06T23-00-30Z-6a31", "reason": "reset"}}, "entry": {"type": "context", "id": "b9c69bf0", "parentId": null, "at": "2026-10-06T23:00:30.860Z", "sections": [{"name": "documents", "text": "<documents>\nYou keep a set of Markdown documents, and they are your memory. Each session starts with no memory of the last one: you know what is pinned below and what you can read with read_doc. Before a session ends, write down what the next one will need, because anything not written down is lost.\n\nPin a document when you need it in every session, such as who you are and how you work. Pinned documents follow this section. Leave the rest unpinned and find them with list_docs. A change to a document, or to what is pinned, reaches your context at the next session.\n\nGive every document a one-line summary that says what it is for, and a name like a path, such as people/tomas-reyes. Keep a document as the current state of its subject: rewrite a line when it stops being true rather than adding another.\n\nYour timeline has one document a day, named timeline/YYYY-MM-DD. You see today's in full and one summary line for each of the six days before it. When something happens that a later session would want to know, add a line with add_to_timeline, and keep the day's summary true.\n</documents>"}, {"name": "soul", "text": "<doc name=\"soul\" summary=\"Who you are and how you work\">\nYou are Wren, a personal assistant for Ada Lovell. You keep her diary straight and her inbox calm.\n</doc>", "cache": true}, {"name": "timeline", "text": "<timeline today=\"2026-10-07\">\n<doc name=\"timeline/2026-10-07\" summary=\"Noted how Tomas Reyes likes his calls.\">\n- Ada said Tomas Reyes prefers calls before 10am; noted in people/tomas-reyes.\n</doc>\n</timeline>"}], "tools": [{"name": "list_docs", "description": "List your documents, one line each with its summary. Use it to find a document before you read or write it, and before you start a new one, so you add to an existing document rather than making a second.", "inputSchema": {"type": "object", "properties": {"prefix": {"type": "string", "description": "Only names starting with this, such as people/"}}}}, {"name": "read_doc", "description": "Read one of your documents in full. Read a document before you change it, unless it is pinned and already in your context.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}, {"name": "write_doc", "description": "Write a whole document, creating it or replacing its body. Use it for a new document or a rewrite; use edit_doc to change a passage. The previous version is kept.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "Such as people/tomas-reyes"}, "body": {"type": "string", "description": "The whole Markdown body"}, "summary": {"type": "string", "description": "One line saying what the document is for. Required for a new document; leave it out to keep the current one."}}, "required": ["name", "body"]}}, {"name": "edit_doc", "description": "Change one passage of a document by replacing it exactly. Copy the passage from the document as it is now, with enough around it to occur only once. Use an empty replacement to delete it.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "passage": {"type": "string"}, "replacement": {"type": "string"}}, "required": ["name", "passage", "replacement"]}}, {"name": "pin_doc", "description": "Pin a document so it is in your context at the start of every session, or unpin it. Pin what you need every time; every pinned document costs room in every session.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "pinned": {"type": "boolean", "description": "true to pin, false to unpin"}}, "required": ["name", "pinned"]}}, {"name": "add_to_timeline", "description": "Add a line to today's timeline. Use it whenever something happens that a later session would want to know: what was asked, decided, sent or promised. Later sessions see only the day's summary, so keep it true as the day goes on.", "inputSchema": {"type": "object", "properties": {"line": {"type": "string", "description": "One line, such as \"Tomas Reyes asked to move Thursday's call to Friday.\""}, "summary": {"type": "string", "description": "One line for the whole day so far. Give it when the day has changed its shape; leave it out to keep the current one."}}, "required": ["line"]}}, {"name": "reset", "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}}}]}, "kind": "open", "note": "A new session, whose header links back to the one that reset. The docs plugin builds the context again from the documents as they are now: the timeline line written in the last session is in it."}, {"session": 1, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-94d7", "agent": "wren", "createdAt": "2026-10-06T23:00:30.859Z", "parent": {"session": "2026-10-06T23-00-30Z-6a31", "reason": "reset"}}, "entry": {"type": "event", "id": "bad40c76", "parentId": "b9c69bf0", "at": "2026-10-06T23:00:30.860Z", "kind": "notice", "attrs": {"from": "harness"}, "text": "Session started after a reset: notes are up to date"}, "kind": "open", "note": "The opening notice carries the reason the agent gave for its reset."}, {"session": 1, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-94d7", "agent": "wren", "createdAt": "2026-10-06T23:00:30.859Z", "parent": {"session": "2026-10-06T23-00-30Z-6a31", "reason": "reset"}}, "entry": {"type": "event", "id": "6514cd6b", "parentId": "bad40c76", "at": "2026-10-06T23:00:30.860Z", "kind": "message", "attrs": {"from": "Ada"}, "text": "When does Tomas like calls?"}, "kind": "deliver", "note": "Ada asks a question that only yesterday's notes can answer."}, {"session": 1, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-94d7", "agent": "wren", "createdAt": "2026-10-06T23:00:30.859Z", "parent": {"session": "2026-10-06T23-00-30Z-6a31", "reason": "reset"}}, "entry": {"type": "message", "id": "45f524f9", "parentId": "6514cd6b", "at": "2026-10-06T23:00:30.860Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "c4", "name": "read_doc", "input": {"name": "people/tomas-reyes"}}], "model": "faux/test", "usage": {"input": 2100, "output": 20}, "stop": "toolUse"}}, "kind": "model", "note": "The person's note isn't pinned, but the timeline says where it is, so the agent reads it."}, {"session": 1, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-94d7", "agent": "wren", "createdAt": "2026-10-06T23:00:30.859Z", "parent": {"session": "2026-10-06T23-00-30Z-6a31", "reason": "reset"}}, "entry": {"type": "message", "id": "c76a85b5", "parentId": "45f524f9", "at": "2026-10-06T23:00:30.860Z", "message": {"role": "tool", "callId": "c4", "name": "read_doc", "content": [{"type": "text", "text": "<doc name=\"people/tomas-reyes\" summary=\"Tomas Reyes, Marlow Health: prefers calls before 10am\">\n# Tomas Reyes\n\n- Prefers calls before 10am (Ada, 7 Oct 2026).\n</doc>"}], "isError": false}}, "kind": "tool", "note": "read_doc returns the document as the agent wrote it, rendered as a doc element."}, {"session": 1, "header": {"type": "session", "version": 1, "id": "2026-10-06T23-00-30Z-94d7", "agent": "wren", "createdAt": "2026-10-06T23:00:30.859Z", "parent": {"session": "2026-10-06T23-00-30Z-6a31", "reason": "reset"}}, "entry": {"type": "message", "id": "2111b055", "parentId": "c76a85b5", "at": "2026-10-06T23:00:30.860Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Before 10am. Shall I suggest 9:30 on Thursday?"}], "model": "faux/test", "usage": {"input": 2200, "output": 18}, "stop": "end"}}, "kind": "model", "note": "The agent answers from its own notes. A fresh context, no lost memory."}];
+const LOOP = "async function run(signal: AbortSignal | undefined): Promise<RunOutcome> {\n  // Read from the store on every run, since the host may have appended to it meanwhile.\n  const { session, tools } = await openSession();\n  await repair(session);\n  await deliverQueued(session);\n  const softLimit = config.softLimit ?? DEFAULT_SOFT_LIMIT;\n  const hardLimit = config.hardLimit ?? DEFAULT_HARD_LIMIT;\n  // The frozen context decides which tools exist; the plugins only supply their code.\n  const { context } = render(pathOf(session.entries));\n  const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, tools.get(t.name)!] as const] : [])));\n  // After the soft-limit notice, the loop runs one more turn so that the model can answer it.\n  let answerNotice = false;\n  // Tools see the run's stop signal, or one that is never set when the host gave none.\n  const toolSignal = signal ?? new AbortController().signal;\n\n  while (answerNotice || needsRun(session)) {\n    answerNotice = false;\n    if (signal?.aborted) return stopped(session, signal);\n\n    const { messages } = render(pathOf(session.entries));\n    let message: AssistantMessage;\n    try {\n      message = await provider!.complete({\n        model: config.model.slice(providerName.length + 1),\n        sections: context.sections,\n        tools: context.tools,\n        messages,\n        maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,\n        ...(config.effort === undefined ? {} : { effort: config.effort }),\n        signal,\n      });\n    } catch (error) {\n      if (signal?.aborted) return stopped(session, signal);\n      const failed: AssistantMessage = { role: 'assistant', content: [], model: config.model, usage: { input: 0, output: 0 }, stop: 'error' };\n      await append(session, { type: 'message', message: failed });\n      await append(session, notice(`The model call failed: ${messageOf(error)}`));\n      return 'error';\n    }\n    await append(session, { type: 'message', message });\n\n    const resets: (string | undefined)[] = [];\n    const ctx: ToolContext = { ...contextFor(session), requestReset: (reason) => void resets.push(reason), signal: toolSignal };\n    const calls = toolCalls(message);\n    // A response cut off by maxTokens may hold a call whose input is incomplete, so none of its calls run.\n    const results = message.stop === 'maxTokens'\n      ? calls.map(() => errorResult('The response was cut off before this call was complete.'))\n      : await Promise.all(calls.map((call) => runTool(call, frozen, ctx)));\n    for (const [i, call] of calls.entries()) {\n      await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });\n    }\n    if (resets.length > 0) return endSession(session, 'agent', resets[0]);\n\n    const { input, output, cacheRead = 0, cacheWrite = 0 } = message.usage;\n    const size = input + output + cacheRead + cacheWrite;\n    if (size > hardLimit) return endSession(session, 'harness', 'context budget');\n    if (size > softLimit && !session.entries.some(isSoftLimitNotice)) {\n      await append(session, notice(SOFT_LIMIT_NOTICE));\n      answerNotice = true;\n    }\n\n    await deliverQueued(session);\n  }\n  return 'idle';\n}";
+const WAVES = [
+  ["23:32", "Docs, the spec and every brief, from the gist's starting kit."],
+  ["23:35", "Wave 1: the TypeScript core with 14 scenarios, and the supervisor library. The API key turned out to be revoked, so live checks wait for you."],
+  ["23:42", "Both merged. A reviewer reads wave 1 while wave 2 starts: Python and Rust from the spec alone, the docs plugin, MCP and dispatch."],
+  ["23:47", "The review's eleven findings go to a fixer: mostly places the spec let two implementations differ."],
+  ["23:54", "Core fixes merged, with 24 scenarios. Python and Rust pull them in and pass all 24 by 23:57. The supervisor guard and the example app are under way."],
+  ["23:59", "A second review, of the plugins, finds what they worked around. I write the spec change myself so all three cores change together: 27 scenarios."],
+  ["after", "Plugin fixes, then the app, then a last review and this page."],
+];
+const LAYERS = [
+  { name: "The app", where: "examples/assistant", what: "A SvelteKit app for two to four people on Postgres: chat, proposals with the supervisor's checklist, documents with history, past sessions as the model saw them, and the timeline. Demo mode runs with invented people, mail and calendar.", size: "see below" },
+  { name: "Plugins", where: "ts/packages/{docs,supervisor,mcp,dispatch}", what: "Memory as documents, supervision, tools from MCP servers, and sub-agents. Each is a plain object of hooks and tools, with its own README and tests on the fake model.", size: "about 1,360 lines" },
+  { name: "Core", where: "ts/packages/core · python/flatbed · rust/flatbed", what: "The loop, the session store, rendering and the providers. One built-in tool, reset. It reads the session from the store on every run, so a crash or a second process is easy to recover from.", size: "1,160 / 1,250 / 2,540 lines" },
+  { name: "Spec", where: "docs/spec · conformance/scenarios", what: "Sessions, the loop, plugins and providers in five short Markdown pages, and 27 scenarios that every implementation must pass. The one place in flatbed for low-level detail, because three implementations must agree on it.", size: "5 pages, 27 scenarios" },
+];
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// Theme toggle, remembered per viewer.
+function setTheme(t) {
+  if (t === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
+  document.querySelectorAll(".themes button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.t === t)));
+  try { localStorage.setItem("flatbed-theme", t); } catch {}
+}
+document.querySelectorAll(".themes button").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.t)));
+try { const t = localStorage.getItem("flatbed-theme"); if (t) setTheme(t); } catch {}
+
+// Layers.
+let openLayer = 2;
+function drawLayers() {
+  $("layerList").innerHTML = LAYERS.map((l, i) => `
+    <div><button type="button" class="layer" aria-expanded="${i === openLayer}" data-i="${i}">
+      <span class="name">${l.name}</span><span class="muted">${esc(l.where)}</span><span class="muted">${esc(l.size)}</span>
+    </button>${i === openLayer ? `<div class="layer-detail"><p>${esc(l.what)}</p></div>` : ""}</div>`).join("");
+  document.querySelectorAll(".layer").forEach((b) => b.addEventListener("click", () => { openLayer = Number(b.dataset.i) === openLayer ? -1 : Number(b.dataset.i); drawLayers(); }));
+}
+drawLayers();
+
+// The stepper. Rendering follows docs/spec/sessions.md: events become XML in user messages, neighbours merge.
+function renderEvent(e) {
+  const attrs = Object.keys(e.attrs || {}).sort().map((k) => ` ${k}="${esc(e.attrs[k]).replace(/"/g, "&quot;")}"`).join("");
+  return `<${e.kind}${attrs}>${esc(e.text || "")}</${e.kind}>`;
+}
+function blockText(b) {
+  if (b.type === "text") return b.text;
+  if (b.type === "toolCall") return `→ ${b.name}(${JSON.stringify(b.input)})`;
+  return `[${b.type}]`;
+}
+function modelView(entries) {
+  let context = null; const msgs = [];
+  for (const e of entries) {
+    if (e.type === "context") context = e;
+    else if (e.type === "event") {
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "user") last.text += "\n" + renderEvent(e); else msgs.push({ role: "user", text: renderEvent(e), id: e.id });
+    } else if (e.type === "message") {
+      const m = e.message;
+      if (m.role === "tool") msgs.push({ role: "tool · " + m.name, text: m.content.map(blockText).join("\n"), id: e.id });
+      else msgs.push({ role: m.role, text: m.content.map(blockText).join("\n"), id: e.id });
+    }
+  }
+  return { context, msgs };
+}
+function shortLine(e) {
+  const { id, parentId, at, ...rest } = e;
+  if (e.type === "context") return JSON.stringify({ type: "context", sections: e.sections.map((s) => s.name), tools: e.tools.map((t) => t.name) });
+  return JSON.stringify(rest);
+}
+let step = 0;
+function drawStep() {
+  const s = STEPS[step];
+  const sessionSteps = STEPS.filter((x, i) => x.session === s.session && i <= step);
+  const entries = sessionSteps.map((x) => x.entry);
+  $("note").textContent = s.note;
+  $("count").textContent = `${step + 1} of ${STEPS.length}`;
+  $("prev").disabled = step === 0; $("next").disabled = step === STEPS.length - 1;
+  $("progress").innerHTML = STEPS.map((x, i) => (i > 0 && STEPS[i - 1].session !== x.session ? '<span class="gap"></span>' : "") + `<span class="${i <= step ? "done" : ""}"></span>`).join("");
+
+  const earlier = STEPS.filter((x) => x.session < s.session);
+  let log = "";
+  if (s.session > 0) log += `<div class="sep">session 1 ended with a reset · ${earlier.length} entries</div>`;
+  log += `<div class="line head"><span class="t">header</span><span class="j">${esc(JSON.stringify(s.header))}</span></div>`;
+  log += sessionSteps.map((x, i) => `<div class="line ${i === sessionSteps.length - 1 ? "new" : ""}"><span class="t">${x.entry.type}</span><span class="j">${esc(shortLine(x.entry))}</span></div>`).join("");
+  $("log").innerHTML = log;
+  const newLine = $("log").querySelector(".new"); if (newLine) newLine.scrollIntoView({ block: "nearest" });
+
+  const { context, msgs } = modelView(entries);
+  if (s.entry.type === "reset") { $("model").innerHTML = `<p class="empty">The session has ended. Nothing more is sent from it. The next run opens a new session with a fresh context.</p>`; return; }
+  let html = "";
+  if (context) html += `<div class="msg sys"><span class="who">system · frozen context</span>${context.sections.map((x) => `<pre><b>${esc(x.name)}</b>${x.cache ? " · cached up to here" : ""}\n${esc(x.text.length > 420 ? x.text.slice(0, 420) + " …" : x.text)}</pre>`).join("")}<pre class="muted">tools: ${context.tools.map((t) => t.name).join(", ")}</pre></div>`;
+  if (msgs.length === 0) html += `<p class="empty">No messages yet. A notice from the harness does not start a run on its own.</p>`;
+  html += msgs.map((m) => `<div class="msg ${m.id === s.entry.id ? "fresh" : ""}"><span class="who">${esc(m.role)}</span><pre>${esc(m.text)}</pre></div>`).join("");
+  $("model").innerHTML = html;
+}
+$("prev").addEventListener("click", () => { if (step > 0) { step--; drawStep(); } });
+$("next").addEventListener("click", () => { if (step < STEPS.length - 1) { step++; drawStep(); } });
+document.addEventListener("keydown", (e) => {
+  const r = $("session").getBoundingClientRect(); if (r.bottom < 0 || r.top > innerHeight) return;
+  if (e.key === "ArrowRight") $("next").click(); if (e.key === "ArrowLeft") $("prev").click();
+});
+drawStep();
+
+$("loopCode").textContent = LOOP;
+$("waves").innerHTML = WAVES.map(([w, t]) => `<div class="when">${w}</div><div>${esc(t)}</div>`).join("");
+</script>

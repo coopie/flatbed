@@ -1,0 +1,23 @@
+[project]
+name = "flatbed"
+version = "0.1.0"
+description = "The flatbed core in Python: an append-only session log, the loop, plugins and providers."
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff>=0.6"]
+
+[build-system]
+requires = ["uv_build>=0.8"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -24,3 +24,15 @@ Work for at most two hours. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Other agents are working in other worktrees at the same time, including one on the Rust core; touch only `python/`, the `python` section of `scripts/check.sh`, and the spec where it needs fixing. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+**What changed.** `python/` is the core in Python 3.13, standard library only: `types`, `store` (file and memory), `render`, `loop` (a `Runner` per agent, with `deliver` and `run`), `providers/faux` and `providers/anthropic` over urllib, plus `env`, a rough CLI (`python -m flatbed chat|view`) and `conformance.py`. All 24 scenarios pass, after core-fixes merged. `scripts/check.sh python` runs ruff format, ruff check, unittest and the runner.
+
+**Choices.** The code is synchronous. Tool calls run one at a time, which the spec allows, and `StopSignal` wraps a `threading.Event`, so a stop also ends a backoff wait. Plugins are a dataclass of optional hooks. Tools are looked up in the frozen `context` entry, with their code from the plugins, as the spec says. TypeScript looks them up in the plugin map. Tests cover the Anthropic translation, a session the TypeScript core wrote, and the lines Python writes; by hand, `node cli.ts view` read a Python session. The live test skips without `FLATBED_LIVE=1`; I did not run it.
+
+**Commands.** `scripts/check.sh python` printed `All checks passed!` twice, `Ran 12 tests ... OK (skipped=1)`, 24 `ok` lines and `== all checks passed`.
+
+**Spec fixes.** I made one: a conformance `crash` entry goes after the newest session's last entry, with a fresh `id` and `at`. Core-fixes settled the rest.
+
+**Left out.** Redacted thinking blocks are dropped. No OpenAI provider.
+
+**How it went.** The spec was enough for the first 14 scenarios; I read `loop.ts` only to check needs-run and the adapter. Building to the lead's note before core-fixes merged saved most of the rework. TypeScript's `newSessionId` keeps a later random hex in the same second rather than adding one; both sort correctly. The spec does not say what to do with a newest session that holds only a header, after a crash between create and the first append.

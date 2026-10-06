@@ -16,8 +16,10 @@ export function pathOf(entries: Entry[]): Entry[] {
   return path.reverse();
 }
 
-const escapeText = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-const escapeAttr = (text: string) => escapeText(text).replaceAll('"', '&quot;');
+/** Escapes `&`, `<` and `>`, for text inside an XML element. */
+export const escapeText = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+/** Escapes `&`, `<`, `>` and `"`, for an XML attribute value. */
+export const escapeAttr = (text: string) => escapeText(text).replaceAll('"', '&quot;');
 
 /** An event as an XML element, such as `<message from="Sam">Can you move my 3pm?</message>`. */
 export function renderEvent(event: Event): string {
