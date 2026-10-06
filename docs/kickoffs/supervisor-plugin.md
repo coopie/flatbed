@@ -4,7 +4,8 @@ You are taking `@flatbed/supervisor` from a library to something an agent uses. 
 
 ## Guidance
 
-- **Use the core's types.** Replace the provider and session types the library defined locally with `@flatbed/core`'s.
+- **Use the core.** Replace the types, `pathOf`, the escaping and the live test's stand-in provider that the library defined locally with `@flatbed/core`'s, so events render exactly as the core renders them.
+- **Fix what the wave 1 review found:** `prompt.ts` throws on a reset with no reason; add `blocked(spec, verdict)`, true for an `unavailable` verdict or any failed `block` item, and use it everywhere a host might use `failures()`; a host's answer must not silently replace the model's answer to a model item; and a verdict records the `callId` it judged, when there was one.
 - **The guard plugin.** The host gives it a map from tool name to spec, a mode and a `complete` function. Its `beforeTool` hook checks each call to a mapped tool against the session so far.
   - `off`: nothing is checked.
   - `shadow`: the verdict is recorded and the call runs.
