@@ -37,7 +37,8 @@ test('a message leads to a proposal, and an accepted proposal reaches the outbox
   equal(verdicts.length, 1);
   deepEqual([verdicts[0]!.mode, verdicts[0]!.verdict.status, verdicts[0]!.verdict.callId], ['shadow', 'given', proposal.callId]);
 
-  await host.decide(ada, proposal.id, { outcome: 'accepted', input: { subject: 'Winter show bowls' } });
+  const { run } = await host.decide(ada, proposal.id, { outcome: 'accepted', input: { subject: 'Winter show bowls' } });
+  await run;
   const [sent] = await host.outbox(ada);
   equal(sent?.input.subject, 'Winter show bowls');
   equal((await host.proposals(ada))[0]!.status, 'accepted');

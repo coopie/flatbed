@@ -170,13 +170,14 @@ export function createHost(options: HostOptions) {
 
     proposals: (who: Person) => listProposals(sql, who.id),
 
-    async decide(who: Person, id: string, decision: Decision) {
+    /** Sends what was accepted, then wakes the agent. `run` resolves when the agent is idle again. */
+    async decide(who: Person, id: string, decision: Decision): Promise<{ run: Promise<void> }> {
       const proposal = (await listProposals(sql, who.id)).find((p) => p.id === id);
       if (proposal === undefined) throw new Error(`No proposal ${id}.`);
       const event = await decide(sql, google(who.id), proposal, decision);
       const decided = (await listProposals(sql, who.id)).find((p) => p.id === id)!;
       publish(who.id, { type: 'proposal', proposal: decided });
-      return wake(who, event);
+      return { run: wake(who, event) };
     },
 
     async outbox(who: Person) {
