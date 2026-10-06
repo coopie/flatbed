@@ -29,7 +29,12 @@ Every other line is an **entry**:
 
 Entries form a tree through `parentId`. The **head** is the last entry in the file. The **path** is the list of entries from the root to the head, found by following `parentId` back from the head. The model only ever sees the path.
 
-Normally every entry's parent is the line before it, so the path is the whole file. To rewind or branch, a host appends a new entry whose parent is an earlier entry; the entries after that point stay in the file but leave the path. A host that never branches can ignore this, but every implementation must compute the path by parent links, not by line order.
+Normally every entry's parent is the line before it, so the path is the whole file. To rewind or branch, a host delivers an event whose parent is an earlier entry; the entries after that point stay in the file but leave the path. A host that never branches can ignore this, but every implementation must compute the path by parent links, not by line order.
+
+A rewind stays inside the open session, and never leaves a tool call without its result. Delivery appends the event at the head instead, as if no parent were given, when the parent it names:
+
+- is not an entry of the open session, such as an entry of an earlier session
+- would leave a call unanswered: the path up to and including it must hold a `tool` message for every call of its last assistant message, so the parent cannot be an assistant message with tool calls, or a `tool` message before the last result of its turn
 
 ## Entry types
 
@@ -57,14 +62,14 @@ A message to or from the model, in flatbed's own format.
 There are three roles:
 
 - **`user`**: `content` is a list of blocks. Hosts rarely write these directly; events are the usual way in.
-- **`assistant`**: `content`, plus `model` as `<provider>/<model-name>`, `usage` with `input` and `output` token counts (and `cacheRead` and `cacheWrite` when the provider reports them), and `stop`, one of `end`, `toolUse`, `maxTokens` or `error`.
+- **`assistant`**: `content`, plus `model` as `<provider>/<model-name>`, `usage` with `input` and `output` token counts (and `cacheRead` and `cacheWrite` when the provider reports them), and `stop`, one of `end`, `toolUse`, `maxTokens`, `refusal` or `error`. A provider maps a stop reason it does not know to `end`.
 - **`tool`**: the result of one tool call: `callId`, `name`, `content` as a list of blocks, and `isError`.
 
 Content blocks:
 
 - `{"type":"text","text":...}`
 - `{"type":"image","mimeType":"image/png","data":<base64>}`
-- `{"type":"thinking","text":...,"signature":...,"provider":...}`, where `signature` and `provider` are optional. A provider sends a thinking block back only to the provider that made it.
+- `{"type":"thinking","text":...,"signature":...,"provider":...}`, where `signature` and `provider` are optional. Leave `signature` out when the provider gave none. A provider sends a thinking block back only to the provider that made it.
 - `{"type":"toolCall","id":...,"name":...,"input":{...}}`, only in assistant messages.
 
 ### `event`
@@ -79,7 +84,7 @@ Something from outside the agent, for the model to see.
 - `attrs` is an optional map of string values.
 - `text` is the body, which may be empty.
 
-A notice from the harness to the agent, such as a budget warning, is an event of kind `notice` with `attrs.from` set to `harness`.
+A notice from the harness to the agent, such as a budget warning, is an event of kind `notice` with `attrs.from` set to `harness`. Events from the harness do not on their own make a session need a run, as [loop.md](loop.md) describes.
 
 ### `reset`
 
@@ -89,7 +94,7 @@ The session has ended.
 {"type":"reset","by":"agent","reason":"notes are up to date"}
 ```
 
-`by` is `agent` when the agent called the `reset` tool, or `harness` when the loop ended the session itself. `reason` is left out when the agent gave none. Nothing follows a reset. The next run opens a new session.
+`by` is `agent` when the agent called the `reset` tool, or `harness` when the loop ended the session itself. `reason` is left out when the agent gave none, or gave an empty string. Nothing follows a reset. The next run opens a new session.
 
 ### `custom`
 

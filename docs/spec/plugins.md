@@ -14,10 +14,14 @@ A plugin is a plain object with a `name` and any of five hooks. Every hook may b
 
 `ctx` gives a hook the agent, the open session, and two actions:
 
-- `append(entry)`, to add a `custom` entry or an `event` to the open session now, such as from `afterTool`
+- `append(entry)`, to add a `custom` entry to the open session now, such as from `afterTool`. It fails for any other type of entry.
 - `deliver(event)`, to queue an event for the next delivery point
 
-Nothing follows a reset, so `append` fails in `onSessionEnd`. Use `deliver` there instead: the event arrives at the start of the next session.
+Send events through `deliver`, never `append`. Delivery points come only after a turn's results, so an event never lands between a tool call and its result, which providers reject.
+
+Nothing follows a reset, so `append` fails in `onSessionEnd`. Use `deliver` there instead: the event arrives at the start of the next session, after its `Session started` notice.
+
+A `custom` entry never makes a session need a run, or stop needing one: the loop ignores it, as [loop.md](loop.md) describes.
 
 ## A tool
 
@@ -46,7 +50,7 @@ For each call in an assistant message:
 4. Otherwise call the tool's `run`. When it throws, the result is an error with the message.
 5. Pass the result through each plugin's `afterTool`.
 
-A call that fails at step 1 or 2 never reaches the plugins.
+A call that fails at step 1 or 2 never reaches the plugins. Nor does a call in a response cut off by `maxTokens`, which the loop answers without running, as [loop.md](loop.md) describes.
 
 The session's `context` entry decides which tools exist; the plugins supply their code. When a run resumes a session that an earlier process opened, the loop calls the `context` hooks again for the tools' code and ignores the sections.
 
