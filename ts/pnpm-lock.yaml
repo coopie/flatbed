@@ -17,6 +17,12 @@ importers:
 
   packages/core: {}
 
+  packages/docs:
+    dependencies:
+      '@flatbed/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/supervisor: {}
 
 packages:
