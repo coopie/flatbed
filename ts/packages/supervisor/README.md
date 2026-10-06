@@ -42,10 +42,10 @@ const spec = parseSpec(JSON.parse(await readFile('send-email.json', 'utf8')));
 const supervise = singlePass({ complete: (request) => provider.complete(request), model: 'claude-sonnet-5-5' });
 
 const verdict = await supervise({
-	spec,
-	entries,                                          // the session's entries, header excluded
-	call: { id: 'call_02', name: 'send_email', input }, // leave out to audit the whole session
-	answers: { written: { ok: true, analysis: 'The email has an address, a subject and a body.' } }
+  spec,
+  entries,                                          // the session's entries, header excluded
+  call: { id: 'call_02', name: 'send_email', input }, // leave out to audit the whole session
+  answers: { written: { ok: true, analysis: 'The email has an address, a subject and a body.' } }
 });
 
 if (blocked(spec, verdict)) sendBack(verdict);
@@ -71,10 +71,10 @@ Use an agent when the supervisor has to look something up, such as a document th
 
 ```ts
 const supervise = agentPass({
-	store,                                  // where the supervisor's sessions go
-	providers: { anthropic },
-	model: 'anthropic/claude-sonnet-5-5',
-	tools: [readDocTool]                    // read-only tools; it should look, not act
+  store,                                  // where the supervisor's sessions go
+  providers: { anthropic },
+  model: 'anthropic/claude-sonnet-5-5',
+  tools: [readDocTool]                    // read-only tools; it should look, not act
 });
 ```
 
@@ -86,10 +86,10 @@ An agent runner checks one call at a time, because the loop resumes an agent's n
 
 ```ts
 const guard = supervisorGuard({
-	specs: { send_email: sendEmailSpec },
-	mode: 'enforce',
-	supervise,
-	answers: (call) => ({ written: { ok: hasBody(call.input), analysis: 'Checked in code.' } })
+  specs: { send_email: sendEmailSpec },
+  mode: 'enforce',
+  supervise,
+  answers: (call) => ({ written: { ok: hasBody(call.input), analysis: 'Checked in code.' } })
 });
 const agent = createAgent({ id: 'assistant', model, plugins: [docs, email, guard] }, { store, providers });
 ```
