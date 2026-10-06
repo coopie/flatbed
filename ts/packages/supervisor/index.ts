@@ -1,8 +1,11 @@
 export { check } from './check.ts';
-export { parseSpec, verdictSchema, modelItems, failures } from './spec.ts';
+export { parseSpec, verdictSchema, modelItems, failures, blocked } from './spec.ts';
 export type { Spec, ChecklistItem, Severity, ItemVerdict, Verdict } from './spec.ts';
-export { pathOf, renderCall, renderMaterial, systemPrompt } from './prompt.ts';
-export type { ToolCall } from './prompt.ts';
+export { renderCall, renderMaterial, systemPrompt } from './prompt.ts';
+export type { ReviewedCall } from './prompt.ts';
 export { singlePass } from './run.ts';
-export type { Supervise, SuperviseInput, SinglePassOptions } from './run.ts';
-export type * from './types.ts';
+export type { Supervise, SuperviseInput, SinglePassOptions, Complete } from './run.ts';
+export { agentPass, REPORT_VERDICT } from './agent.ts';
+export type { AgentPassOptions } from './agent.ts';
+export { supervisorGuard, refusal } from './guard.ts';
+export type { GuardMode, GuardOptions, GuardRecord } from './guard.ts';

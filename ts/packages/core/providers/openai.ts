@@ -27,6 +27,7 @@ export function openaiRequest(request: ProviderRequest): Record<string, unknown>
     max_tokens: request.maxTokens,
     messages: [...(system ? [{ role: 'system', content: system }] : []), ...request.messages.flatMap(toOpenai)],
     ...(tools.length > 0 ? { tools } : {}),
+    ...(request.effort === undefined ? {} : { reasoning_effort: request.effort }),
     ...(request.outputSchema
       ? { response_format: { type: 'json_schema', json_schema: { name: 'output', schema: request.outputSchema, strict: true } } }
       : {}),
@@ -72,7 +73,8 @@ export function fromOpenai(response: OpenaiResponse, model: string): AssistantMe
     const input = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
     content.push({ type: 'toolCall', id: call.id, name: call.function.name, input });
   }
-  const stops: Record<string, Stop> = { tool_calls: 'toolUse', length: 'maxTokens' };
+  // Any other reason maps to end.
+  const stops: Record<string, Stop> = { tool_calls: 'toolUse', length: 'maxTokens', content_filter: 'refusal' };
   const cached = response.usage?.prompt_tokens_details?.cached_tokens;
   return {
     role: 'assistant',

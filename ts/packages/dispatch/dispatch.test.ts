@@ -16,6 +16,7 @@ function setup(parentScript: ScriptStep[], childScript: ScriptStep[], options: P
   const only = async (agent: string): Promise<Session> => store.read(agent, (await store.list(agent))[0]!);
   /** The sub-agent's id, from the custom entry the plugin keeps in the parent's session. */
   const childId = async () => ((await only('boss')).entries.find((e) => e.type === 'custom')! as { data: { agent: string } }).data.agent;
+  parent.deliver({ kind: 'message', attrs: { from: 'Sam' }, text: 'Please look into it.' });
   return { store, kid, parent, only, childId };
 }
 

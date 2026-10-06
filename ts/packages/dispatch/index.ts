@@ -106,6 +106,8 @@ export function dispatchPlugin(options: DispatchOptions): Plugin {
         { id, model: sub.model, plugins: [own, ...(sub.plugins ?? []), ...deeper], softLimit: sub.softLimit, hardLimit: sub.hardLimit, maxTokens: sub.maxTokens },
         { store, providers: options.providers },
       );
+      // A run needs something to answer, and the brief is a section, so the sub-agent is asked to start.
+      agent.deliver({ kind: 'message', attrs: { from: 'dispatcher' }, text: 'Work on your brief, then call report with your answer.' });
       const outcome = await agent.run();
       if (answer !== undefined) return { status: REPORTED, text: answer };
       const session = await options.store.read(id, (await options.store.list(id)).at(-1)!);
