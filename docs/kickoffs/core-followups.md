@@ -28,3 +28,28 @@ Work for at most 60 minutes. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Touch only the three cores, the conformance suite and the spec. The API key in `.env` is revoked; do not look for another, and never print a value from `.env`. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+All four changes are in TypeScript, Python and Rust. `scripts/check.sh` passes in full, and every implementation prints `ok` for all 27 scenarios. The work took about 40 minutes.
+
+### What changed
+
+- **A failing hook.** In all three cores, when `beforeTool` or `afterTool` throws, the call's result is `The <plugin> plugin failed: <message>`. Python also failed the run before this change, not only Rust and TypeScript. After a failure no other hook runs for that call, so a throwing `beforeTool` also skips every `afterTool`. A custom entry the hook appended before it threw stays in the session. `plugins.md` now says both of these things.
+- **A parent for the first session.** `AgentConfig` takes an optional `parent`, which goes into the first session's header only. `ParentLink` gains `agent` and the `supervise` reason in all three type definitions.
+- **`signal` on the tool context.** TypeScript: `ToolContext.signal` is an `AbortSignal`, or one that is never aborted when the host gave none. Python (`ToolContext.signal`) and Rust (`Ctx::signal`) carry their own `StopSignal` too, so the spec stays true for all three. `ts/packages/core/loop.test.ts` tests it: a tool stops when the host aborts during the call, and it gets an unset signal when the host gave none.
+- **A header-only session.** The run opens it in place and writes the missing `context` entry and the opening notice. The notice comes from the session before it: `Session started.` when there is none, otherwise the reset's reason.
+- `escapeText` and `escapeAttr` are exported from `@flatbed/core`. The plugins have not changed.
+
+### The conformance suite
+
+There are three new scenarios: `25-hook-throws`, `26-agent-parent` and `27-header-only`. The format in `conformance.md` changes in four places:
+
+- `{"throw": "<message>"}` can take the place of a hook result
+- `agent.parent`
+- a `{"header": {}}` step, which writes a new session's header and nothing else
+- the header check now compares the whole `parent` exactly, without `session` when the scenario leaves it out (the existing `{"reason": "reset"}` checks still work)
+
+The Rust runner's test plugin was named `scenario`. It is now `test`, as the spec says, because the new error text includes the plugin's name.
+
+### Question for the lead
+
+When `beforeTool` throws, should earlier plugins' `afterTool` still run, for example to redact? I chose not, because the error text has nothing from the tool to redact. The spec now says this.
