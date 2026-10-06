@@ -38,7 +38,7 @@ A tool is a name, a description, an input schema and a function:
 
 - Write the description to say when to call the tool, in the voice of [writing.md](../ways-of-working/writing.md).
 - `run` may return a string, which becomes one text block with `isError: false`.
-- `ctx` is the plugin context, plus `requestReset(reason)`.
+- `ctx` is the plugin context, plus `requestReset(reason)` and `signal`, the run's stop signal, so a long tool such as a sub-agent or a remote call can stop when the run is stopped.
 
 ## Running a tool call
 
@@ -50,7 +50,7 @@ For each call in an assistant message:
 4. Otherwise call the tool's `run`. When it throws, the result is an error with the message.
 5. Pass the result through each plugin's `afterTool`.
 
-When `beforeTool` or `afterTool` throws, the run fails with that error, as a store error does. A failing hook is a bug in the plugin, not something the model can act on. The next run's repair gives the turn's calls their error results.
+When `beforeTool` or `afterTool` throws, the result of that call is an error, `The <plugin> plugin failed: <message>`, where `<plugin>` is the plugin's name, and no later plugin's hook runs for it. The session stays consistent, every call keeps its own result, and the model learns that something went wrong rather than seeing a misleading repair on the next run.
 
 A custom entry that a tool, `beforeTool` or `afterTool` appends is written at once, so it lands before the turn's `tool` messages, which are appended together after the last call.
 

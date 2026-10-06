@@ -13,8 +13,9 @@ The first line is the **header**:
 ```
 
 - `id` is unique for the agent. Implementations make it from the UTC time to the second and four random hex characters, so a directory listing sorts by age. A new id must sort after the agent's previous session id: when the time has not moved on since that id, take its time and add one to its hex part.
-- `parent` is optional. It links a session to the one it came from, with `reason` set to `reset`, `fork` or `dispatch`, and an optional `entry` id for a fork or a dispatch.
-- For a dispatch, `parent.session` belongs to the agent that dispatched, not to this one, and `entry` is the assistant message that holds the dispatch call. The header does not name that agent: the `dispatch` plugin names each sub-agent after it, as its [README](../../ts/packages/dispatch/README.md) says.
+- `parent` is optional. It links a session to the one it came from, with `reason` set to `reset`, `fork`, `dispatch` or `supervise`, an optional `entry` id, and an optional `agent` when the parent session belongs to another agent.
+- For a dispatch, `parent.agent` and `parent.session` name the agent and session that dispatched, and `entry` is the assistant message that holds the dispatch call. For a supervisor's check, they name the session it checked.
+- A host sets the parent of an agent's first session through the agent's configuration, as [loop.md](loop.md) says. The loop sets `reason: "reset"` itself for every later session.
 
 Every other line is an **entry**:
 

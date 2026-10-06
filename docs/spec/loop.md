@@ -4,6 +4,10 @@ The loop is the whole harness. It asks the model for the next step, runs the too
 
 ## A run
 
+An agent's configuration may carry a `parent`, written into the header of the agent's first session only, so that a sub-agent or a supervisor links back to the session that started it.
+
+When the newest session holds a header and nothing else, because a process stopped between writing the two, the run treats it as open and writes the `context` entry and the opening notice it is missing.
+
 A host calls `run(agent)`, optionally with a stop signal that says who stopped the run. A run reads the session from the store each time, since the host may have appended to it between runs. A run:
 
 1. **Opens a session if none is open.** The agent's open session is its newest session, unless that session ends in a `reset`. To open one, collect sections and tools from every plugin's `context` hook in plugin order, add the core `reset` tool, write the header and a `context` entry, and append a `notice` event saying why the session started: `Session started.` for an agent's first, or `Session started after a reset: <reason>` after one, or `Session started after a reset.` when the reset gave no reason.
