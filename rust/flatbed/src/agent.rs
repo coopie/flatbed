@@ -33,6 +33,8 @@ pub struct AgentConfig {
     pub soft_limit: u64,
     pub hard_limit: u64,
     pub max_tokens: u32,
+    /// Passed to providers that take it, such as `low` or `high`.
+    pub effort: Option<String>,
 }
 
 impl AgentConfig {
@@ -44,6 +46,7 @@ impl AgentConfig {
             soft_limit: 120_000,
             hard_limit: 180_000,
             max_tokens: 8_192,
+            effort: None,
         }
     }
 }
@@ -446,6 +449,7 @@ impl<'a> Run<'a> {
             messages,
             max_tokens: self.agent.max_tokens,
             output_schema: None,
+            effort: self.agent.effort.clone(),
             signal: signal.cloned(),
         })
     }

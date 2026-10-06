@@ -26,6 +26,7 @@ fn request(messages: Vec<Message>, cached_sections: usize) -> Request {
         messages,
         max_tokens: 1024,
         output_schema: None,
+        effort: None,
         signal: None,
     }
 }
@@ -64,7 +65,6 @@ fn translates_messages_for_the_api() {
 
 #[test]
 fn caps_cache_breakpoints_at_four() {
-    let body = anthropic_request(&request(Vec::new(), 4));
     let marked = |list: &Value| {
         list.as_array()
             .unwrap()
@@ -72,12 +72,16 @@ fn caps_cache_breakpoints_at_four() {
             .filter(|b| b.get("cache_control").is_some())
             .count()
     };
-    assert_eq!(marked(&body["system"]), 4);
-    assert_eq!(marked(&body["tools"]), 0);
+    // One on the history, one after the tools, and the earliest two cached sections.
+    let body = anthropic_request(&request(Vec::new(), 4));
+    assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(marked(&body["tools"]), 1);
+    assert_eq!(marked(&body["system"]), 2);
+    assert!(body["system"][0].get("cache_control").is_some());
+    assert!(body["system"][3].get("cache_control").is_none());
 
     let body = anthropic_request(&request(Vec::new(), 1));
     assert_eq!(marked(&body["system"]), 1);
-    assert_eq!(marked(&body["tools"]), 1);
 }
 
 #[test]

@@ -19,6 +19,8 @@ pub struct Request {
     pub max_tokens: u32,
     /// A JSON Schema the response's text must match, for structured output.
     pub output_schema: Option<Value>,
+    /// How much effort the model should spend, such as `low` or `high`, for providers that take it.
+    pub effort: Option<String>,
     /// Checked between attempts. A blocking request cannot be cancelled once sent.
     pub signal: Option<StopSignal>,
 }

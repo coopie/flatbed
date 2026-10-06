@@ -1,6 +1,6 @@
 //! The Anthropic Messages API over plain HTTPS. Sections become system blocks, `tool` messages
-//! become `tool_result` blocks in user messages, and `outputSchema` becomes
-//! `output_config.format`.
+//! become `tool_result` blocks in user messages, and `outputSchema` and `effort` go in
+//! `output_config`. Empty text blocks are dropped everywhere, since the API rejects them.
 
 use super::{Provider, Request};
 use crate::error::{Error, Result};
@@ -83,67 +83,79 @@ fn truncate(text: &str, max: usize) -> &str {
 
 /// The request body. Public for the adapter's tests.
 pub fn anthropic_request(request: &Request) -> Value {
-    let mut system: Vec<Value> = request
-        .sections
-        .iter()
-        .map(|section| json!({"type": "text", "text": section.text}))
-        .collect();
+    let ephemeral = json!({"type": "ephemeral"});
     let mut tools: Vec<Value> = request
         .tools
         .iter()
         .map(|tool| json!({"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}))
         .collect();
-
-    // Breakpoints go after the tool list and after each cached section. The API reads tools
-    // before the system prompt, so when there are more than four, the earliest are dropped.
-    let mut breakpoints: Vec<&mut Value> = Vec::new();
     if let Some(last) = tools.last_mut() {
-        breakpoints.push(last);
+        last["cache_control"] = ephemeral.clone();
     }
-    for (block, section) in system.iter_mut().zip(&request.sections) {
-        if section.cache == Some(true) {
-            breakpoints.push(block);
-        }
-    }
-    let skip = breakpoints.len().saturating_sub(MAX_BREAKPOINTS);
-    for block in breakpoints.into_iter().skip(skip) {
-        block["cache_control"] = json!({"type": "ephemeral"});
-    }
+    // One breakpoint goes on the history, through the top-level `cache_control`, and one after
+    // the tools when there are any. The earliest sections marked `cache: true` get the rest.
+    let mut section_breakpoints = MAX_BREAKPOINTS - 1 - usize::from(!tools.is_empty());
+    let system: Vec<Value> = request
+        .sections
+        .iter()
+        .filter(|section| !section.text.is_empty())
+        .map(|section| {
+            let mut block = json!({"type": "text", "text": section.text});
+            if section.cache == Some(true) && section_breakpoints > 0 {
+                section_breakpoints -= 1;
+                block["cache_control"] = ephemeral.clone();
+            }
+            block
+        })
+        .collect();
 
     let mut body = json!({
         "model": request.model,
         "max_tokens": request.max_tokens,
-        "system": system,
+        "cache_control": ephemeral,
         "messages": anthropic_messages(&request.messages),
     });
+    if !system.is_empty() {
+        body["system"] = Value::Array(system);
+    }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
+    let mut output_config = Map::new();
     if let Some(schema) = &request.output_schema {
-        body["output_config"] = json!({"format": {"type": "json_schema", "schema": schema}});
+        output_config.insert(
+            "format".into(),
+            json!({"type": "json_schema", "schema": schema}),
+        );
+    }
+    if let Some(effort) = &request.effort {
+        output_config.insert("effort".into(), json!(effort));
+    }
+    if !output_config.is_empty() {
+        body["output_config"] = Value::Object(output_config);
     }
     body
 }
 
 /// flatbed's messages as the API's alternating user and assistant messages. Tool results move
-/// into user messages, ahead of any text there, since the API wants them first.
+/// into user messages, ahead of anything else there, since the API wants them first.
 fn anthropic_messages(messages: &[Message]) -> Vec<Value> {
     let mut out: Vec<(&str, Vec<Value>)> = Vec::new();
     for message in messages {
-        let (role, content, first) = match message {
-            Message::User(user) => (
-                "user",
-                user.content.iter().filter_map(api_block).collect(),
-                false,
-            ),
+        let (role, content): (&str, Vec<Value>) = match message {
+            Message::User(user) => ("user", user.content.iter().filter_map(api_block).collect()),
             Message::Tool(result) => {
+                let mut content: Vec<Value> = result.content.iter().filter_map(api_block).collect();
+                if content.is_empty() {
+                    content.push(json!({"type": "text", "text": "(no output)"}));
+                }
                 let block = json!({
                     "type": "tool_result",
                     "tool_use_id": result.call_id,
-                    "content": result.content.iter().filter_map(api_block).collect::<Vec<_>>(),
+                    "content": content,
                     "is_error": result.is_error,
                 });
-                ("user", vec![block], true)
+                ("user", vec![block])
             }
             Message::Assistant(assistant) => (
                 "assistant",
@@ -152,27 +164,21 @@ fn anthropic_messages(messages: &[Message]) -> Vec<Value> {
                     .iter()
                     .filter_map(api_assistant_block)
                     .collect(),
-                false,
             ),
         };
-        // An assistant message left empty by a failed call has nothing to send.
+        // A message left empty, such as the assistant message a failed call leaves, has nothing
+        // to send.
         if content.is_empty() {
             continue;
         }
         match out.last_mut() {
-            Some((last_role, blocks)) if *last_role == role => {
-                if first {
-                    let at = blocks
-                        .iter()
-                        .take_while(|b| b["type"] == "tool_result")
-                        .count();
-                    blocks.splice(at..at, content);
-                } else {
-                    blocks.extend(content);
-                }
-            }
+            Some((last_role, blocks)) if *last_role == role => blocks.extend(content),
             _ => out.push((role, content)),
         }
+    }
+    for (_, blocks) in &mut out {
+        // A stable sort keeps the order within tool results and within the rest.
+        blocks.sort_by_key(|block| block["type"] != "tool_result");
     }
     out.into_iter()
         .map(|(role, content)| json!({"role": role, "content": content}))
@@ -203,7 +209,11 @@ fn api_assistant_block(block: &Block) -> Option<Value> {
             signature,
             provider,
         } => (provider.as_deref() == Some("anthropic")).then(|| {
-            json!({"type": "thinking", "thinking": text, "signature": signature.clone().unwrap_or_default()})
+            let mut block = json!({"type": "thinking", "thinking": text});
+            if let Some(signature) = signature {
+                block["signature"] = json!(signature);
+            }
+            block
         }),
         other => api_block(other),
     }
@@ -232,7 +242,8 @@ pub fn from_anthropic(response: &Value, model: &str) -> Result<AssistantMessage>
             })),
             Some("thinking") => Some(Block::Thinking {
                 text: text(&block["thinking"]),
-                signature: Some(text(&block["signature"])),
+                // A missing signature is left out, never stored as an empty string.
+                signature: block["signature"].as_str().map(String::from),
                 provider: Some("anthropic".into()),
             }),
             _ => None,
