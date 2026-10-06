@@ -1,0 +1,11 @@
+{
+  "name": "@flatbed/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./index.ts" },
+  "scripts": {
+    "test": "node --test \"*.test.ts\"",
+    "conformance": "node conformance.ts"
+  }
+}

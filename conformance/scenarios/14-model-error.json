@@ -1,0 +1,98 @@
+{
+  "name": "model call fails",
+  "description": "The provider fails. The loop appends an empty assistant message with stop error and a notice giving the reason, and the run ends with error.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [],
+  "script": [],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Hi"
+      }
+    },
+    {
+      "run": {},
+      "expect": "error"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Hi"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [],
+            "model": "faux/test",
+            "usage": {
+              "input": 0,
+              "output": 0
+            },
+            "stop": "error"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "The model call failed: No more scripted responses."
+        }
+      ]
+    ]
+  }
+}

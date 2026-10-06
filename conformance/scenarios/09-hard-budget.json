@@ -1,0 +1,171 @@
+{
+  "name": "hard budget",
+  "description": "Usage passes the hard limit, and the harness ends the session itself after the turn's tool results.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 100,
+    "hardLimit": 1000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "echo",
+          "input": {
+            "text": "x"
+          }
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 990,
+        "output": 20
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Hi"
+      }
+    },
+    {
+      "run": {},
+      "expect": "reset"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Hi"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "echo",
+                "input": {
+                  "text": "x"
+                }
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 990,
+              "output": 20
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "x"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "reset",
+          "by": "harness",
+          "reason": "context budget"
+        }
+      ]
+    ]
+  }
+}

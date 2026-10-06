@@ -1,0 +1,311 @@
+{
+  "name": "rewind",
+  "description": "The host rewinds to the first answer and sends a new message from there. The later entries stay in the file but leave the path, so the model does not see them.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Answer A."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 10,
+        "output": 2
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Answer B."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 2
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Answer C."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 2
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "A"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    },
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "B"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    },
+    {
+      "rewind": 3
+    },
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "C"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "A"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Answer A."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 2
+            },
+            "stop": "end"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "B"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Answer B."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 2
+            },
+            "stop": "end"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "C"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Answer C."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 2
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "requests": [
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">A</message>"
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">A</message>"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Answer A."
+            }
+          ],
+          "model": "faux/test",
+          "usage": {
+            "input": 10,
+            "output": 2
+          },
+          "stop": "end"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">B</message>"
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">A</message>"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Answer A."
+            }
+          ],
+          "model": "faux/test",
+          "usage": {
+            "input": 10,
+            "output": 2
+          },
+          "stop": "end"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">C</message>"
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}
