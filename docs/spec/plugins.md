@@ -50,6 +50,10 @@ For each call in an assistant message:
 4. Otherwise call the tool's `run`. When it throws, the result is an error with the message.
 5. Pass the result through each plugin's `afterTool`.
 
+When `beforeTool` or `afterTool` throws, the run fails with that error, as a store error does. A failing hook is a bug in the plugin, not something the model can act on. The next run's repair gives the turn's calls their error results.
+
+A custom entry that a tool, `beforeTool` or `afterTool` appends is written at once, so it lands before the turn's `tool` messages, which are appended together after the last call.
+
 A call that fails at step 1 or 2 never reaches the plugins. Nor does a call in a response cut off by `maxTokens`, which the loop answers without running, as [loop.md](loop.md) describes.
 
 The session's `context` entry decides which tools exist; the plugins supply their code. When a run resumes a session that an earlier process opened, the loop calls the `context` hooks again for the tools' code and ignores the sections.
