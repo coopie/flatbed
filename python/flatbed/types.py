@@ -7,6 +7,7 @@ TypedDicts below say which keys they carry, with the spec's own field names.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
@@ -171,6 +172,8 @@ class Agent:
     soft_limit: int = 120_000
     hard_limit: int = 180_000
     max_tokens: int = 8_192
+    # Passed to providers that take it, such as Anthropic's `output_config.effort`. Optional.
+    effort: str | None = None
 
 
 @dataclass
@@ -193,13 +196,19 @@ class StopSignal:
 
     def __init__(self) -> None:
         self.who: str | None = None
+        self._event = threading.Event()
 
     def set(self, who: str) -> None:
         self.who = who
+        self._event.set()
 
     @property
     def is_set(self) -> bool:
-        return self.who is not None
+        return self._event.is_set()
+
+    def wait(self, seconds: float) -> bool:
+        """Waits up to `seconds`, and returns True as soon as the signal is set."""
+        return self._event.wait(seconds)
 
 
 @dataclass
@@ -211,6 +220,7 @@ class ProviderRequest:
     messages: list[Message]
     max_tokens: int = 8_192
     output_schema: JsonSchema | None = None
+    effort: str | None = None
     signal: StopSignal | None = None
 
 

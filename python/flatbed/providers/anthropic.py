@@ -51,37 +51,52 @@ class AnthropicProvider:
                     raise RuntimeError(failure) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
                 failure = f"Network error: {error}"
-            if attempt == RETRIES or (request.signal and request.signal.is_set):
+            if attempt == RETRIES:
                 raise RuntimeError(f"{failure} (after {attempt} retries)")
-            time.sleep(2**attempt)
+            # Back off, but give up at once when the host stops the run.
+            if request.signal is not None and request.signal.wait(2**attempt):
+                raise RuntimeError(f"{failure} (stopped while waiting to retry)")
+            if request.signal is None:
+                time.sleep(2**attempt)
         raise AssertionError("unreachable")
 
 
 def to_anthropic(request: ProviderRequest) -> dict[str, Any]:
     """The request body for the Messages API."""
+    sections = [section for section in request.sections if section["text"]]
     body: dict[str, Any] = {
         "model": request.model,
         "max_tokens": request.max_tokens,
-        "system": [{"type": "text", "text": section["text"]} for section in request.sections],
+        "system": [{"type": "text", "text": section["text"]} for section in sections],
         "messages": to_anthropic_messages(request.messages),
     }
-    # The API allows four cache breakpoints. The tools come first in its cache order, so the one after
-    # the tool list goes first, then one after each section marked `cache`, in order, while any are left.
-    breakpoints = MAX_BREAKPOINTS
     if request.tools:
-        tools = [
+        body["tools"] = [
             {"name": tool["name"], "description": tool["description"], "input_schema": tool["inputSchema"]}
             for tool in request.tools
         ]
-        tools[-1]["cache_control"] = EPHEMERAL
-        breakpoints -= 1
-        body["tools"] = tools
-    for section, block in zip(request.sections, body["system"], strict=True):
-        if section.get("cache") and breakpoints > 0:
-            block["cache_control"] = EPHEMERAL
-            breakpoints -= 1
+
+    # The API allows four cache breakpoints. Spend one after the tool list and one at the end of the
+    # history, so each turn reads what the last one wrote, and the rest on the last sections marked
+    # `cache`, since a later breakpoint caches everything before it.
+    breakpoints: list[dict[str, Any]] = []
+    if request.tools:
+        breakpoints.append(body["tools"][-1])
+    if body["messages"]:
+        breakpoints.append(body["messages"][-1]["content"][-1])
+    marked = [block for section, block in zip(sections, body["system"], strict=True) if section.get("cache")]
+    room = MAX_BREAKPOINTS - len(breakpoints)
+    breakpoints.extend(marked[-room:] if room > 0 else [])
+    for block in breakpoints:
+        block["cache_control"] = EPHEMERAL
+
+    output_config: dict[str, Any] = {}
     if request.output_schema is not None:
-        body["output_config"] = {"format": {"type": "json_schema", "schema": request.output_schema}}
+        output_config["format"] = {"type": "json_schema", "schema": request.output_schema}
+    if request.effort is not None:
+        output_config["effort"] = request.effort
+    if output_config:
+        body["output_config"] = output_config
     return body
 
 
@@ -110,7 +125,10 @@ def to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
             result = {
                 "type": "tool_result",
                 "tool_use_id": message["callId"],
-                "content": [to_anthropic_block(block) for block in message["content"]],
+                "content": [
+                    to_anthropic_block(block) for block in message["content"] if not is_empty_text(block)
+                ]
+                or [{"type": "text", "text": "(no output)"}],
                 "is_error": message["isError"],
             }
             push("user", [result])
@@ -178,14 +196,10 @@ def from_anthropic(response: Any, model: str) -> AssistantMessage:
                     }
                 )
             case "thinking":
-                content.append(
-                    {
-                        "type": "thinking",
-                        "text": str(block["thinking"]),
-                        "signature": str(block.get("signature", "")),
-                        "provider": "anthropic",
-                    }
-                )
+                thinking: Any = {"type": "thinking", "text": str(block["thinking"]), "provider": "anthropic"}
+                if isinstance(block.get("signature"), str):
+                    thinking["signature"] = block["signature"]
+                content.append(thinking)
             # Other blocks, such as redacted thinking, are left out.
 
     flatbed_usage: Any = {"input": usage["input_tokens"], "output": usage.get("output_tokens", 0)}

@@ -130,6 +130,7 @@ class Runner:
                 tools=rendered.tools,
                 messages=rendered.messages,
                 max_tokens=self.agent.max_tokens,
+                effort=self.agent.effort,
                 signal=stop,
             )
             try:

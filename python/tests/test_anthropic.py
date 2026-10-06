@@ -34,11 +34,32 @@ class ToAnthropic(unittest.TestCase):
         self.assertEqual(body["tools"][-1]["cache_control"], {"type": "ephemeral"})
         self.assertNotIn("output_config", body)
 
-    def test_cache_breakpoints_stop_at_four(self):
+    def test_cache_breakpoints_stop_at_four_with_the_tools_and_the_history_first(self):
         sections = [{"name": f"s{i}", "text": f"Part {i}.", "cache": True} for i in range(5)]
-        body = to_anthropic(request(sections=sections))
-        marked = [block for block in body["system"] if "cache_control" in block]
-        self.assertEqual(len(marked), 3)  # Plus the one after the tool list.
+        sections.append({"name": "empty", "text": ""})
+        messages = [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}]
+        body = to_anthropic(request(sections=sections, messages=messages, effort="low"))
+        self.assertEqual(len(body["system"]), 5)  # The empty section is left out.
+        marked = [block["text"] for block in body["system"] if "cache_control" in block]
+        self.assertEqual(marked, ["Part 3.", "Part 4."])
+        self.assertIn("cache_control", body["tools"][-1])
+        self.assertIn("cache_control", body["messages"][-1]["content"][-1])
+        self.assertEqual(body["output_config"], {"effort": "low"})
+
+    def test_a_tool_result_with_no_text_says_so(self):
+        messages = [
+            {
+                "role": "tool",
+                "callId": "c1",
+                "name": "echo",
+                "content": [{"type": "text", "text": ""}],
+                "isError": False,
+            }
+        ]
+        body = to_anthropic(request(messages=messages))
+        self.assertEqual(
+            body["messages"][0]["content"][0]["content"], [{"type": "text", "text": "(no output)"}]
+        )
 
     def test_tool_results_go_first_in_a_user_message_and_empty_messages_are_left_out(self):
         messages = [
@@ -89,7 +110,7 @@ class ToAnthropic(unittest.TestCase):
                     "content": [{"type": "text", "text": "x"}],
                     "is_error": False,
                 },
-                {"type": "text", "text": "<notice>Late.</notice>"},
+                {"type": "text", "text": "<notice>Late.</notice>", "cache_control": {"type": "ephemeral"}},
             ],
         )
 
