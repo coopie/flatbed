@@ -27,3 +27,23 @@ Work for at most 90 minutes. When you reach it, stop and write up what you have.
 Sam is asleep and nobody will answer questions: use the Question for the lead section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Other agents are working in other worktrees at the same time; change `ts/packages/core` only when you must, and then say so in the write-up. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+New package `@flatbed/docs` in `ts/packages/docs`. A `DocStore` with four calls (`get`, `list`, `put`, `history`), a memory store and a file store (one JSONL file per document, one version per line). `docsPlugin({ store, seeds, today })` adds the guide, the pinned documents sorted by name with `cache: true` on the last, then the timeline. It has six tools: `list_docs`, `read_doc`, `write_doc`, `edit_doc`, `pin_doc` and `add_to_timeline`. It also includes an invented soul and note-taking guidelines in `seeds/` (`exampleSeeds()`), the README, and a line in the overview's *Where we are*. I did not change the core.
+
+Choices someone could make differently:
+
+- The session's day comes from the session header's `createdAt`, so a session resumed by a later process keeps its day. `add_to_timeline` writes to that day too, not to the clock's day.
+- Pin and unpin are one tool, `pin_doc` with `pinned: true|false`.
+- Names are lower case, with no segment starting with a dot. The file store checks this as well.
+- The plugin runs its own writes one at a time, because calls in one turn run at once. The store assumes one writer per agent.
+- `write_doc` refuses `timeline/` names, and the first line of a day becomes its summary until the agent gives one.
+
+Command: `scripts/check.sh ts` printed `== all checks passed`. The new suite ran 5 tests, all passing: section order, an edit reaching the next session, the timeline, seeds and the file store.
+
+Left out on purpose: deleting documents, search, size caps on the context, and a decisions entry.
+
+**How it went**: no problems. The brief and the spec were enough, and the Otherworldly files were good to read. I wanted an `exactOptionalPropertyTypes` note: supervisor sets it and the root tsconfig does not, so packages differ.
+
+## Question for the lead
+
+Should the timeline write to the day the session opened (my guess, built) or to the clock's day at each call? They differ only for a session that runs past midnight.
