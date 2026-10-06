@@ -1,0 +1,14 @@
+[package]
+name = "flatbed"
+version = "0.1.0"
+edition = "2021"
+description = "A very small agent harness: the flatbed core, in Rust."
+publish = false
+
+[dependencies]
+# Derives the JSON shapes in docs/spec/ for our types, instead of hand-written conversions.
+serde = { version = "1", features = ["derive"] }
+# Reads and writes session lines, and carries data passing through, such as tool input.
+serde_json = "1"
+# A blocking HTTPS client for the Anthropic provider, so the loop needs no async runtime.
+ureq = { version = "2", default-features = false, features = ["tls"] }
