@@ -168,7 +168,7 @@ cd rust &amp;&amp; FLATBED_LIVE=1 cargo test --test live -- --ignored</pre></div
       <div><h3>Two stuck database connections</h3><p>The app builder's killed test runs left two connections on the Supabase database idle in a transaction, possibly holding an agent's lock. Ending them was refused when the builder tried, so I left them alone. If the demo hangs, end them from the Supabase SQL editor.</p>
         <pre class="cmd">select pg_terminate_backend(pid) from pg_stat_activity
 where state = 'idle in transaction' and datname = current_database();</pre></div>
-      <div><h3>Small questions the builders left</h3><ul class="dash"><li>The docs plugin escapes document bodies, so the agent sees <code>&amp;amp;</code> for <code>&amp;</code>. <code>edit_doc</code> accepts either form. Should bodies go to the model raw instead?</li><li>When a <code>beforeTool</code> hook throws, no <code>afterTool</code> runs for that call. That's my choice, and the spec now says so.</li><li>An unavailable verdict records its model as <code>none</code>, because the field is required.</li></ul></div>
+      <div><h3>Small questions the builders left</h3><ul class="dash"><li>The docs plugin escapes document bodies, so the agent sees <code>&amp;amp;</code> for <code>&amp;</code>. <code>edit_doc</code> accepts either form. Should bodies go to the model raw instead?</li><li>When a <code>beforeTool</code> hook throws, no <code>afterTool</code> runs for that call. That's my choice, and the spec now says so.</li><li>An unavailable verdict records its model as <code>none</code>, because the field is required.</li><li>In the app, a send that fails puts the proposal back to pending. If Gmail sent it but the answer was lost, a retry would send twice. A <code>failed</code> state that needs a deliberate retry may be safer.</li><li>The built app refuses demo mode without <code>DEMO=1</code>, so <code>node build</code> locally needs it too. <code>pnpm dev</code> doesn't.</li><li>The app finds the call id of a proposal by matching its input, because a tool isn't told its call id. A <code>callId</code> on the tool context would remove that.</li></ul></div>
       <div><h3>Four calls only you can make</h3><p>WhatsApp or iMessage. A GitHub repo, public or private. A Google <em>web</em> OAuth client for Cloud Run, since perso's is a desktop client. And whether to run <code>examples/assistant/deploy.sh</code>, which I wrote but didn't run.</p></div>
     </div>
   </section>
@@ -234,7 +234,7 @@ where state = 'idle in transaction' and datname = current_database();</pre></div
         <pre class="cmd">cd ts &amp;&amp; pnpm install &amp;&amp; cd ../examples/assistant
 FLATBED_MODEL=faux/demo pnpm dev</pre>
         <p>Open localhost:5173, choose Ada Brennan and send the demo message. <code>examples/assistant/README.md</code> covers Google and Cloud Run.</p>
-        <p class="muted">Not done yet: the Docker image hasn't been built (Docker wasn't running), Google mode is untested, and no real model has run it.</p></div>
+        <p class="muted">Not done yet: the Docker image hasn't been built (Docker wasn't running), Google mode is untested, and no real model has run it. After its review it claims a proposal before sending, checks the allow-list on every request, and fails closed in production.</p></div>
     </div>
     <div class="grid shots">
       <figure><img class="lt" src="../examples/assistant/screenshots/proposals-pending-desktop-light.png" alt="The proposals page: an email to Priya Shah with the agent's reasons, editable fields, and the supervisor's five checks"><img class="dk" src="../examples/assistant/screenshots/proposals-pending-desktop-dark.png" alt=""><figcaption>Proposals: what the agent wants to send, why, and the supervisor's checklist.</figcaption></figure>
@@ -255,7 +255,7 @@ FLATBED_MODEL=faux/demo pnpm dev</pre>
     <div class="grid cols-2">
       <div class="cell"><h3>The spec was vague exactly where three implementations need to agree</h3><p>Error wording, attribute order, what counts as needing a run, where an appended entry lands. Most of the core builder's time went on pinning these down, and the Python and Rust builders each found more. The conformance suite is what made the disagreements visible.</p></div>
       <div class="cell"><h3>Plugins found the gaps in the core</h3><p>The supervisor and dispatch each worked around the core to open a session with a parent, and four plugins copied the escaping. The second review named the smallest core change for each, and the follow-up made it in all three languages at once.</p></div>
-      <div class="cell"><h3>Reviews were worth their cost</h3><p>Each review took about four minutes and found real bugs: a <code>custom</code> entry could stop a run, an event could land between a call and its result, MCP names could break an agent for good, and a sub-agent could finish without reporting.</p></div>
+      <div class="cell"><h3>Reviews were worth their cost</h3><p>Each review took about three minutes and found real bugs: a <code>custom</code> entry could stop a run, an event could land between a call and its result, MCP names could break an agent for good, a sub-agent could finish without reporting, and a double click could send an email twice.</p></div>
       <div class="cell"><h3>Changes for next time</h3><p>Check the API key before the first wave. Put the conformance format in the spec before the first builder starts, not after. Give packages one shared lockfile owner, since every parallel branch conflicted on it.</p></div>
     </div>
   </section>
@@ -274,7 +274,8 @@ const WAVES = [
   ["23:47", "The review's eleven findings go to a fixer: mostly places the spec let two implementations differ."],
   ["23:54", "Core fixes merged, with 24 scenarios. Python and Rust pull them in and pass all 24 by 23:57. The supervisor guard and the example app are under way."],
   ["23:59", "A second review, of the plugins, finds what they worked around. I write the spec change myself so all three cores change together: 27 scenarios."],
-  ["00:10", "Plugin fixes merged. The app lands at 00:40 with 36 screenshots; a last reviewer reads it while this page is written."],
+  ["00:10", "Plugin fixes merged. The app lands at 00:40 with 36 screenshots."],
+  ["00:45", "A review of the app finds a double send on a double click, a wake that could be lost, a pool that could deadlock, and sign-in gaps. A fixer closes all of them, with tests for the two races. Everything passes: 27 scenarios in each language."],
 ];
 const LAYERS = [
   { name: "The app", where: "examples/assistant", what: "A SvelteKit app for two to four people on Postgres: chat, proposals with the supervisor's checklist, documents with history, past sessions as the model saw them, and the timeline. Demo mode runs with invented people, mail and calendar.", size: "see below" },

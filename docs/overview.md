@@ -40,17 +40,18 @@ A lightly held plan, started on 6 October 2026.
 - The docs plugin: documents pinned as context, and the timeline.
 - The supervisor: the spec format, one-call and agent runners, and the guard plugin.
 - The MCP plugin, with a Python MCP server as the example, and the dispatch plugin for sub-agents.
+- The example app in `examples/assistant`, in demo mode, reviewed and fixed. Google mode and the Docker image are untested.
+- An interactive walkthrough, [walkthrough.html](walkthrough.html).
 
 **Now**
 
-- Fixes to the plugins from the second review.
-- The example app, with Google mail and calendar and the proposal screen.
-- A walkthrough of the whole stack, from the core to the app.
+- Sam's review of the overnight build. Start with [walkthrough.html](walkthrough.html) and the entries marked *for review* in the decisions.
 
 **Next**
 
-- Live checks in all three languages once there is a working key.
-- Sam's calls on codemode, messaging, the GitHub repo and a Google web client for Cloud Run.
+- Live checks in all three languages once there is a working key, then a real model through the example app.
+- Sam's calls on codemode, messaging, the GitHub repo, a Google web client and deploying to Cloud Run.
+- A `callId` on the tool context, so the app need not match a proposal to its call by input.
 
 **Later, if it earns its place**
 
