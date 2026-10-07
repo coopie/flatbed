@@ -36,7 +36,7 @@ A lightly held plan, started on 6 October 2026.
 **Done**
 
 - The docs and the spec.
-- The core in TypeScript, Python and Rust, each passing the same 27 conformance scenarios, with the fake and Anthropic providers and a rough CLI each; TypeScript also has an OpenAI-compatible provider. None has passed a live check against Anthropic yet, because the key in `.env` was revoked.
+- The core in TypeScript, Python and Rust, each passing the same 27 conformance scenarios, with the fake and Anthropic providers and a rough CLI each; TypeScript also has an OpenAI-compatible provider. TypeScript and Python run a turn's tool calls together, at most `maxConcurrentTools` at once; Rust runs them one at a time. Python is async throughout and has passed the live check against Anthropic.
 - The docs plugin: documents pinned as context, and the timeline.
 - The supervisor: the spec format, one-call and agent runners, and the guard plugin.
 - The MCP plugin, with a Python MCP server as the example, and the dispatch plugin for sub-agents.

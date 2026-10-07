@@ -29,7 +29,7 @@ Write code a reader can follow from top to bottom. Let the code say what it does
 ## Stack
 
 - **TypeScript** in `ts/`, a pnpm workspace of small packages named `@flatbed/<name>`. Strict mode, and erasable syntax only (no enums, no parameter properties, no namespaces), so Node 24 runs the source directly. `tsc --noEmit` checks types and `node --test` runs the tests.
-- **Python** in `python/`, managed with uv. Python 3.13, the standard library first, `ruff` for format and lint, `unittest` for tests.
+- **Python** in `python/`, managed with uv. Python 3.13 with `asyncio`, the standard library first and `httpx` for async HTTP, `ruff` for format and lint, `unittest` for tests.
 - **Rust** in `rust/`, a Cargo workspace on the stable toolchain. `cargo fmt`, `cargo clippy` and `cargo test`.
 - **The example app** in `examples/assistant/`: SvelteKit on Node, plain CSS on the tokens in `docs/design.md`, Postgres for storage.
 

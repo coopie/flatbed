@@ -123,3 +123,13 @@ Entries marked *for review* were made overnight on 6 October 2026 while Sam was 
 **Because:** the core now gives an agent's first session a parent and has a `supervise` reason, and a section is not escaped, so the runner no longer needs to write the store itself. An agent per check means two checks can never share a session, even from two guards on one store.
 
 **Rules out:** listing every check under one agent id. A host finds a check's session from its verdict.
+
+## Async Python, with httpx *(for review)*
+
+7 October 2026.
+
+**Chose:** the Python core is `asyncio` throughout: the loop, providers, hooks and tools are coroutines, and a turn's tool calls run with `asyncio.gather` under a semaphore of `max_concurrent_tools`. Hooks and tools may still be plain functions; the loop awaits what is awaitable. The Anthropic provider uses `httpx.AsyncClient`, a new client per call. Stores stay synchronous file I/O.
+
+**Because:** Sam wants idiomatic modern Python that runs tools together, as TypeScript does. The standard library has no async HTTP client, and httpx saves writing one. Appending one line to a local file is fast enough not to need a thread.
+
+**Rules out:** calling `Runner.run` from synchronous code without `asyncio.run`, and a store that blocks for long, such as a remote database, without wrapping it in `asyncio.to_thread`.
