@@ -8,6 +8,7 @@ Runs every scenario in conformance/scenarios/ against a temporary file store wit
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tempfile
@@ -55,9 +56,9 @@ def make_plugin(scenario: dict[str, Any]) -> Plugin:
             raise RuntimeError(result["throw"])
         return result
 
-    def on_entry(entry: dict[str, Any], ctx: Any) -> None:
+    async def on_entry(entry: dict[str, Any], ctx: Any) -> None:
         if entry["type"] == "message" and entry["message"]["role"] == "tool":
-            ctx.append({"type": "custom", "plugin": "test", "data": hooks["onEntry"]["custom"]})
+            await ctx.append({"type": "custom", "plugin": "test", "data": hooks["onEntry"]["custom"]})
 
     return Plugin(
         name="test",
@@ -106,7 +107,7 @@ def first_difference(expected: Any, actual: Any, where: str = "") -> str | None:
     return None
 
 
-def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
+async def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
     """Runs one scenario and returns its first difference, or None when it passes."""
     store = FileStore(root)
     spec = scenario["agent"]
@@ -134,7 +135,7 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
             stop = StopSignal()
             if "stop" in step["run"]:
                 stop.set(step["run"]["stop"])
-            outcome = runner.run(stop)
+            outcome = await runner.run(stop)
             if "expect" in step and outcome != step["expect"]:
                 return f"step {index} ended {outcome}, expected {step['expect']}"
         elif "crash" in step:
@@ -206,13 +207,13 @@ def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
     return None
 
 
-def main() -> int:
+async def main() -> int:
     failures = 0
     for path in sorted(SCENARIOS.glob("*.json")):
         scenario = json.loads(path.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as root:
             try:
-                difference = run_scenario(scenario, Path(root))
+                difference = await run_scenario(scenario, Path(root))
             except Exception as error:
                 difference = f"raised {type(error).__name__}: {error}"
         if difference is None:
@@ -224,4 +225,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(asyncio.run(main()))

@@ -9,6 +9,7 @@ defaults to `anthropic/claude-sonnet-5-5`; `faux/echo` answers offline by echoin
 from ANTHROPIC_API_KEY in .env at the repo root.
 """
 
+import asyncio
 import getpass
 import json
 import os
@@ -68,7 +69,7 @@ def print_entry(entry, ctx) -> None:
         print(f"[reset by {entry['by']}{': ' + entry['reason'] if entry.get('reason') else ''}]")
 
 
-def chat(agent_id: str) -> None:
+async def chat(agent_id: str) -> None:
     model = os.environ.get("FLATBED_MODEL", "anthropic/claude-sonnet-5-5")
     providers: dict[str, Provider] = {"faux": FauxProvider([echo_step] * 1000)}
     if api_key := read_env("ANTHROPIC_API_KEY"):
@@ -83,13 +84,13 @@ def chat(agent_id: str) -> None:
     print(f"Talking to {agent_id} on {model}. Sessions are in {DATA / agent_id}/. Press Ctrl-D to leave.")
     while True:
         try:
-            line = input("> ")
+            line = await asyncio.to_thread(input, "> ")
         except EOFError:
             print()
             return
         if line.strip():
             runner.deliver({"kind": "message", "attrs": {"from": getpass.getuser()}, "text": line})
-            runner.run()
+            await runner.run()
 
 
 def view(file: str) -> None:
@@ -109,7 +110,7 @@ def view(file: str) -> None:
 def main(args: list[str]) -> int:
     match args:
         case ["chat", agent_id]:
-            chat(agent_id)
+            asyncio.run(chat(agent_id))
         case ["view", file]:
             view(file)
         case _:

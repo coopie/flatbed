@@ -1,4 +1,4 @@
-"""The Anthropic Messages API over plain HTTP, with urllib from the standard library.
+"""The Anthropic Messages API over plain HTTP, with httpx's async client.
 
 Sections become system blocks, `tool` messages become `tool_result` blocks inside user messages, and
 `output_schema` becomes `output_config.format`. docs/spec/providers.md is the contract.
@@ -6,11 +6,10 @@ Sections become system blocks, `tool` messages become `tool_result` blocks insid
 
 from __future__ import annotations
 
-import json
-import time
-import urllib.error
-import urllib.request
+import asyncio
 from typing import Any
+
+import httpx
 
 from ..types import AssistantMessage, Block, Message, ProviderRequest
 
@@ -27,38 +26,40 @@ class AnthropicProvider:
         self.url = url
         self.timeout = timeout
 
-    def complete(self, request: ProviderRequest) -> AssistantMessage:
-        response = self._post(to_anthropic(request), request)
+    async def complete(self, request: ProviderRequest) -> AssistantMessage:
+        response = await self._post(to_anthropic(request), request)
         return from_anthropic(response, request.model)
 
-    def _post(self, body: dict[str, Any], request: ProviderRequest) -> Any:
+    async def _post(self, body: dict[str, Any], request: ProviderRequest) -> Any:
         """POSTs the body, retrying rate limits, server errors and network failures with backoff."""
-        data = json.dumps(body).encode()
-        headers = {
-            "content-type": "application/json",
-            "x-api-key": self._api_key,
-            "anthropic-version": "2023-06-01",
-        }
-        for attempt in range(RETRIES + 1):
-            try:
-                http_request = urllib.request.Request(self.url, data=data, headers=headers, method="POST")
-                with urllib.request.urlopen(http_request, timeout=self.timeout) as response:
-                    return json.load(response)
-            except urllib.error.HTTPError as error:
-                # The error body is the API's message; it never holds the request's headers.
-                failure = f"HTTP {error.code}: {error.read().decode(errors='replace')[:500]}"
-                if error.code != 429 and error.code < 500:
-                    raise RuntimeError(failure) from None
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
-                failure = f"Network error: {error}"
-            if attempt == RETRIES:
-                raise RuntimeError(f"{failure} (after {attempt} retries)")
-            # Back off, but give up at once when the host stops the run.
-            if request.signal is not None and request.signal.wait(2**attempt):
-                raise RuntimeError(f"{failure} (stopped while waiting to retry)")
-            if request.signal is None:
-                time.sleep(2**attempt)
+        headers = {"x-api-key": self._api_key, "anthropic-version": "2023-06-01"}
+        # A client per call: a model call takes seconds, so pooling saves little, and a client never
+        # outlives the event loop it was made on.
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for attempt in range(RETRIES + 1):
+                try:
+                    response = await client.post(self.url, json=body, headers=headers)
+                    if response.is_success:
+                        return response.json()
+                    # The error body is the API's message; it never holds the request's headers.
+                    failure = f"HTTP {response.status_code}: {response.text[:500]}"
+                    if response.status_code != 429 and response.status_code < 500:
+                        raise RuntimeError(failure)
+                except httpx.TransportError as error:
+                    failure = f"Network error: {message_of(error)}"
+                if attempt == RETRIES:
+                    raise RuntimeError(f"{failure} (after {attempt} retries)")
+                # Back off, but give up at once when the host stops the run.
+                if request.signal is None:
+                    await asyncio.sleep(2**attempt)
+                elif await request.signal.wait(2**attempt):
+                    raise RuntimeError(f"{failure} (stopped while waiting to retry)")
         raise AssertionError("unreachable")
+
+
+def message_of(error: BaseException) -> str:
+    # httpx's timeouts can carry an empty message.
+    return str(error) or type(error).__name__
 
 
 def to_anthropic(request: ProviderRequest) -> dict[str, Any]:

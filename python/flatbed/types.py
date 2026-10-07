@@ -7,12 +7,14 @@ TypedDicts below say which keys they carry, with the spec's own field names.
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 type JsonSchema = dict[str, Any]
+# Hooks and tools may be coroutines or plain functions; the loop awaits what is awaitable.
+type MaybeAwaitable[T] = T | Awaitable[T]
 
 # Content blocks and messages, as docs/spec/sessions.md describes.
 
@@ -137,7 +139,7 @@ class Tool:
     description: str
     input_schema: JsonSchema
     # Called with the input and a ToolContext. Returns a ToolResult, or a string for one text block.
-    run: Callable[[dict[str, Any], ToolContext], ToolResult | str]
+    run: Callable[[dict[str, Any], ToolContext], MaybeAwaitable[ToolResult | str]]
 
     def definition(self) -> ToolDefinition:
         return {"name": self.name, "description": self.description, "inputSchema": self.input_schema}
@@ -153,14 +155,15 @@ class ContextAddition:
 
 @dataclass
 class Plugin:
-    """A plugin is a name and any of five hooks. A hook left as None is skipped."""
+    """A plugin is a name and any of five hooks. A hook left as None is skipped. A hook may be an
+    `async def` or a plain function."""
 
     name: str
-    context: Callable[[PluginContext], ContextAddition | None] | None = None
-    before_tool: Callable[[ToolCall, ToolContext], ToolResult | None] | None = None
-    after_tool: Callable[[ToolCall, ToolResult, ToolContext], ToolResult | None] | None = None
-    on_entry: Callable[[Entry, PluginContext], object] | None = None
-    on_session_end: Callable[[Session, PluginContext], object] | None = None
+    context: Callable[[PluginContext], MaybeAwaitable[ContextAddition | None]] | None = None
+    before_tool: Callable[[ToolCall, ToolContext], MaybeAwaitable[ToolResult | None]] | None = None
+    after_tool: Callable[[ToolCall, ToolResult, ToolContext], MaybeAwaitable[ToolResult | None]] | None = None
+    on_entry: Callable[[Entry, PluginContext], MaybeAwaitable[object]] | None = None
+    on_session_end: Callable[[Session, PluginContext], MaybeAwaitable[object]] | None = None
 
 
 @dataclass
@@ -172,6 +175,8 @@ class Agent:
     soft_limit: int = 120_000
     hard_limit: int = 180_000
     max_tokens: int = 8_192
+    # How many of a turn's tool calls run at once.
+    max_concurrent_tools: int = 4
     # Passed to providers that take it, such as Anthropic's `output_config.effort`. Optional.
     effort: str | None = None
     # The parent of the agent's first session, such as the session that dispatched it: `session`,
@@ -183,8 +188,8 @@ class Agent:
 class PluginContext:
     agent: Agent
     session: Session
-    # Adds a `custom` entry, or an `event`, to the open session now.
-    append: Callable[[Entry], None]
+    # Adds a `custom` entry to the open session now. Await it.
+    append: Callable[[Entry], Awaitable[None]]
     # Queues an event for the next delivery point.
     deliver: Callable[[Event], None]
 
@@ -197,11 +202,15 @@ class ToolContext(PluginContext):
 
 
 class StopSignal:
-    """Set by the host, from any thread, to stop a run at its next turn. It records who stopped it."""
+    """Set by the host to stop a run. It records who stopped it.
+
+    Set it from the run's event loop; from another thread, use `loop.call_soon_threadsafe`. A stop ends
+    a model call in flight at once, and otherwise takes effect at the run's next turn.
+    """
 
     def __init__(self) -> None:
         self.who: str | None = None
-        self._event = threading.Event()
+        self._event = asyncio.Event()
 
     def set(self, who: str) -> None:
         self.who = who
@@ -211,9 +220,33 @@ class StopSignal:
     def is_set(self) -> bool:
         return self._event.is_set()
 
-    def wait(self, seconds: float) -> bool:
+    async def wait(self, seconds: float) -> bool:
         """Waits up to `seconds`, and returns True as soon as the signal is set."""
-        return self._event.wait(seconds)
+        try:
+            async with asyncio.timeout(seconds):
+                await self._event.wait()
+        except TimeoutError:
+            return False
+        return True
+
+    async def unless_set[T](self, work: Awaitable[T]) -> T:
+        """Awaits `work`, but cancels it and raises `Stopped` as soon as the signal is set."""
+        task = asyncio.ensure_future(work)
+        waiter = asyncio.ensure_future(self._event.wait())
+        try:
+            await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+            cut_short = not task.done()
+            if cut_short:
+                task.cancel()
+        if cut_short:
+            raise Stopped(f"Stopped by {self.who}.")
+        return task.result()
+
+
+class Stopped(Exception):
+    """Raised when a stop signal cuts work short."""
 
 
 @dataclass
@@ -232,7 +265,7 @@ class ProviderRequest:
 class Provider(Protocol):
     """A provider turns a request into one API's format and the response back into a message."""
 
-    def complete(self, request: ProviderRequest) -> AssistantMessage: ...
+    async def complete(self, request: ProviderRequest) -> AssistantMessage: ...
 
 
 type RunOutcome = Literal["idle", "reset", "stopped", "error"]

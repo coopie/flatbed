@@ -24,7 +24,7 @@ class FauxProvider:
         self.steps = list(script)
         self.requests: list[ProviderRequest] = []
 
-    def complete(self, request: ProviderRequest) -> AssistantMessage:
+    async def complete(self, request: ProviderRequest) -> AssistantMessage:
         self.requests.append(copy.deepcopy(dataclasses.replace(request, signal=None)))
         if not self.steps:
             raise RuntimeError("No more scripted responses.")

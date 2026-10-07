@@ -14,8 +14,8 @@ LIVE = os.environ.get("FLATBED_LIVE") == "1"
 
 
 @unittest.skipUnless(LIVE, "set FLATBED_LIVE=1 to call Anthropic")
-class LiveAnthropic(unittest.TestCase):
-    def test_the_model_calls_a_tool_and_answers(self):
+class LiveAnthropic(unittest.IsolatedAsyncioTestCase):
+    async def test_the_model_calls_a_tool_and_answers(self):
         api_key = read_env("ANTHROPIC_API_KEY")
         if not api_key:
             self.skipTest("no ANTHROPIC_API_KEY in .env")
@@ -39,7 +39,7 @@ class LiveAnthropic(unittest.TestCase):
         runner = Runner(agent, store, {"anthropic": AnthropicProvider(api_key)})
         runner.deliver({"kind": "message", "attrs": {"from": "Ana"}, "text": "Please echo the word pumpkin."})
 
-        self.assertEqual(runner.run(), "idle")
+        self.assertEqual(await runner.run(), "idle")
         entries = store.read("live", store.list("live")[-1]).entries
         results = [e["message"] for e in entries if e["type"] == "message" and e["message"]["role"] == "tool"]
         self.assertEqual(results[0]["content"][0]["text"].lower(), "pumpkin")
