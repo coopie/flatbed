@@ -21,7 +21,7 @@ check_assistant() {
   # Its dependencies come with the ts workspace's install. The tests skip without DATABASE_URL.
   (cd ts && pnpm install --frozen-lockfile --silent)
   (cd examples/assistant && pnpm run --silent check)
-  (cd examples/assistant && node --test "test/*.test.ts")
+  (cd examples/assistant && pnpm run --silent test)
 }
 
 check_python() {

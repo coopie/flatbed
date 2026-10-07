@@ -8,7 +8,7 @@
     "build": "vite build",
     "start": "node build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --threshold error",
-    "test": "node --test \"test/*.test.ts\""
+    "test": "node --test --test-timeout=60000 \"test/*.test.ts\""
   },
   "dependencies": {
     "@flatbed/core": "workspace:*",

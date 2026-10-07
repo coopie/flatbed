@@ -18,7 +18,7 @@ export const POOL_SIZE = 10;
 export function connect(url: string, schema = 'assistant'): Sql {
   if (!/^[a-z_][a-z0-9_]*$/.test(schema)) throw new Error(`Not a schema name: ${schema}`);
   // No prepared statements: Supabase's transaction pooler gives each transaction any server it likes.
-  return postgres(url, { connection: { search_path: schema }, onnotice: () => {}, max: POOL_SIZE, prepare: false });
+  return postgres(url, { connection: { search_path: schema }, onnotice: () => {}, max: POOL_SIZE, prepare: false, connect_timeout: 10 });
 }
 
 /** Creates the schema, then runs each migration file not yet run, in name order. */
