@@ -23,3 +23,13 @@ Work for at most 75 minutes. When you reach it, stop and write up what you have.
 Sam is around today; if a choice would change the shape of the work, add a `## Question for the lead` section and carry on with your best guess. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Never print a value from `.env`. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+**What changed.** The Python core is `asyncio` throughout: `await runner.run()`, async providers, hooks, tools, conformance runner, CLI and tests. A turn's calls run with `asyncio.gather`, each under `asyncio.Semaphore(max_concurrent_tools)`, results appended in call order. `StopSignal` wraps an `asyncio.Event`; `stop.unless_set(...)` cancels a model call in flight, which also ends a backoff wait. The Anthropic provider uses `httpx.AsyncClient`; translation is unchanged. TypeScript gains `maxConcurrentTools` (default 4), a 15-line limiter in `loop.ts`, and a unit test. Python has the same test plus one for a stop cancelling a model call. Decisions, overview and the stack line are updated.
+
+**Choices.** Plain functions are still accepted: one `settled()` helper awaits whatever is awaitable. Stores stay synchronous: one line appended to a local file is fast. The provider opens a client per call, so no client outlives its event loop; pooling would save a TLS handshake per turn. `StopSignal.set` must run on the loop's thread. `PluginContext.append` is now a coroutine. No conformance change: no scenario needed the limit.
+
+**Commands.** `scripts/check.sh ts`, `python`, `rust`: all passed, 27/27 scenarios each; Python 14 tests, 1 skipped. `FLATBED_LIVE=1 uv run python -m unittest tests.test_live`: OK in 5.4s. The full `scripts/check.sh` failed in `assistant`: the Postgres tests read `DATABASE_URL` from `.env`, got `EADDRNOTAVAIL`, and one hung for 25 minutes. That is outside this change; the app's `pnpm run check` passes with 0 errors.
+
+**Left out.** Rust stays one at a time. `walkthrough.html` still says Python is synchronous on urllib; it is a snapshot.
+
+**How it went.** Smooth; the code was easy to convert. The assistant tests cost 25 minutes: they should time out quickly when the database is unreachable, and `check.sh` could say which section failed.
