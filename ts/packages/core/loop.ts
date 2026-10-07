@@ -13,6 +13,7 @@ import type {
 export const DEFAULT_SOFT_LIMIT = 120_000;
 export const DEFAULT_HARD_LIMIT = 180_000;
 export const DEFAULT_MAX_TOKENS = 8_192;
+export const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 export const SOFT_LIMIT_NOTICE = 'This session is nearly full. Bring your notes up to date, then call reset.';
 
 export const resetTool: Tool = {
@@ -222,6 +223,8 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     let answerNotice = false;
     // Tools see the run's stop signal, or one that is never set when the host gave none.
     const toolSignal = signal ?? new AbortController().signal;
+    // Calls run together, but no more than this many at once.
+    const limit = limiter(config.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS);
 
     while (answerNotice || needsRun(session)) {
       answerNotice = false;
@@ -254,7 +257,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       // A response cut off by maxTokens may hold a call whose input is incomplete, so none of its calls run.
       const results = message.stop === 'maxTokens'
         ? calls.map(() => errorResult('The response was cut off before this call was complete.'))
-        : await Promise.all(calls.map((call) => runTool(call, frozen, ctx)));
+        : await Promise.all(calls.map((call) => limit(() => runTool(call, frozen, ctx))));
       for (const [i, call] of calls.entries()) {
         await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
       }
@@ -293,6 +296,25 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
         running = false;
       }
     },
+  };
+}
+
+/** Runs the functions it is given, at most `size` at a time, in the order they were given. */
+function limiter(size: number) {
+  if (!(size >= 1)) throw new Error(`maxConcurrentTools must be at least 1, not ${size}.`);
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= size) await new Promise<void>((resolve) => waiting.push(resolve));
+    else active += 1;
+    try {
+      return await fn();
+    } finally {
+      // Hand the slot straight to the next waiter, or give it back.
+      const next = waiting.shift();
+      if (next) next();
+      else active -= 1;
+    }
   };
 }
 

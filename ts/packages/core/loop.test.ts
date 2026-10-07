@@ -54,3 +54,33 @@ test('a tool sees a signal that is never set when the host gives none', async ()
   equal(await agent.run(), 'idle');
   equal(aborted, false);
 });
+
+test('no more than maxConcurrentTools calls run at once, and results keep call order', async () => {
+  let active = 0;
+  let most = 0;
+  const tool: Tool = {
+    name: 'wait',
+    description: 'Wait a moment.',
+    inputSchema: { type: 'object' },
+    run: async (input) => {
+      active += 1;
+      most = Math.max(most, active);
+      // Later calls finish first, so that call order and finishing order differ.
+      await new Promise((resolve) => setTimeout(resolve, 20 - Number(input.n) * 3));
+      active -= 1;
+      return `done ${input.n}`;
+    },
+  };
+  const calls = [0, 1, 2, 3, 4].map((n) => ({ type: 'toolCall' as const, id: `c${n}`, name: 'wait', input: { n } }));
+  const store = memoryStore();
+  const plugin: Plugin = { name: 'test', context: () => ({ tools: [tool] }) };
+  const providers = { faux: fauxProvider([{ content: calls }, { content: [{ type: 'text', text: 'Done.' }] }]) };
+  const agent = createAgent({ id: 'a', model: 'faux/test', plugins: [plugin], maxConcurrentTools: 2 }, { store, providers });
+  agent.deliver({ kind: 'message', text: 'Go' });
+  equal(await agent.run(), 'idle');
+
+  equal(most, 2);
+  const { entries } = await store.read('a', (await store.list('a'))[0]!);
+  const results = entries.flatMap((e) => (e.type === 'message' && e.message.role === 'tool' ? [e.message.content[0]] : []));
+  deepEqual(results, [0, 1, 2, 3, 4].map((n) => ({ type: 'text', text: `done ${n}` })));
+});
