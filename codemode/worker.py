@@ -8,6 +8,7 @@ named in the `start` message.
 """
 
 import asyncio
+import contextlib
 import datetime
 import json
 import sys
@@ -20,6 +21,34 @@ from pydantic_monty import AsyncMonty, CollectString, MontyError, MontyRuntimeEr
 MAX_SUSPENSIONS = 10_000
 DEFAULT_MAX_MEMORY = 64 * 1024 * 1024
 MAX_OUTPUT_BYTES = 100_000
+# The most bytes in one message, either way, not counting its newline. docs/codemode.md explains why.
+MAX_MESSAGE_BYTES = 1024 * 1024
+
+
+class TooLarge(Exception):
+    """A message would pass MAX_MESSAGE_BYTES."""
+
+
+STRICT = json.JSONEncoder(allow_nan=False)
+# Only for measuring a value before taking its repr: it accepts NaN, and anything else as text.
+LENIENT = json.JSONEncoder(default=str)
+
+
+def encode(message: Any, encoder: json.JSONEncoder = STRICT) -> str:
+    """The message as one line of JSON, built piece by piece so that a message too large to send is
+    given up on once it passes the cap, rather than built in full outside Monty's memory limit.
+
+    Raises ValueError for a value JSON cannot hold, such as NaN, and TooLarge past the cap.
+    """
+    pieces: list[str] = []
+    size = 0
+    for piece in encoder.iterencode(message):
+        # ASCII only, since `ensure_ascii` is on, so characters are bytes.
+        size += len(piece)
+        if size > MAX_MESSAGE_BYTES:
+            raise TooLarge
+        pieces.append(piece)
+    return "".join(pieces)
 
 
 class Worker:
@@ -28,9 +57,23 @@ class Worker:
         self.next_id = 0
         self.running: asyncio.Future[Any] | None = None
 
-    def send(self, message: dict[str, Any]) -> None:
-        sys.stdout.write(json.dumps(message) + "\n")
+    def send(self, line: str) -> None:
+        sys.stdout.write(line + "\n")
         sys.stdout.flush()
+
+    def finish(self, message: dict[str, Any]) -> None:
+        """Sends `done` or `error`, as an `error` about the limit when it would pass the cap."""
+        try:
+            self.send(encode(message))
+        except TooLarge:
+            self.too_large(message["output"])
+
+    def too_large(self, output: str) -> None:
+        error = f"The script's result is larger than the {MAX_MESSAGE_BYTES}-byte limit for a message."
+        try:
+            self.send(encode({"type": "error", "output": output, "error": error}))
+        except TooLarge:
+            self.send(encode({"type": "error", "output": "", "error": error}))
 
     def tool(self, name: str, params: list[str]):
         """An async function the script calls by the tool's name. It sends a `call` and awaits its `result`."""
@@ -43,11 +86,19 @@ class Worker:
                 if key in tool_input:
                     raise TypeError(f"{name}() got multiple values for argument '{key}'")
                 tool_input[key] = value
+            call_id = str(self.next_id + 1)
+            try:
+                line = encode({"type": "call", "id": call_id, "name": name, "input": tool_input})
+            except TooLarge:
+                raise ValueError(
+                    f"{name}() was given more than the {MAX_MESSAGE_BYTES}-byte limit for a message."
+                ) from None
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{name}() takes only values JSON can hold: {error}") from None
             self.next_id += 1
-            call_id = str(self.next_id)
             future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
             self.pending[call_id] = future
-            self.send({"type": "call", "id": call_id, "name": name, "input": tool_input})
+            self.send(line)
             result = await future
             if result.get("isError"):
                 raise RuntimeError(result.get("text", ""))
@@ -87,30 +138,42 @@ class Worker:
                 )
                 value = await self.running
         except (MontyRuntimeError, MontySyntaxError) as error:
-            self.send({"type": "error", "output": printed.output, "error": error.display("traceback")})
+            self.finish({"type": "error", "output": printed.output, "error": error.display("traceback")})
         except MontyError as error:
-            self.send({"type": "error", "output": printed.output, "error": str(error)})
+            self.finish({"type": "error", "output": printed.output, "error": str(error)})
         except asyncio.CancelledError:
             return
         else:
-            self.send({"type": "done", "output": printed.output, "value": describe(value)})
+            try:
+                self.finish({"type": "done", "output": printed.output, "value": describe(value)})
+            except TooLarge:
+                self.too_large(printed.output)
         finally:
             results.cancel()
 
 
 def describe(value: Any) -> str | None:
-    """The script's return value as text: a string as it is, other values as JSON where they can be."""
+    """The script's return value as text: a string as it is, other values as JSON where they can be.
+
+    NaN and Infinity are not JSON, so a value holding them comes back as its repr. A value too large
+    for a message is given up on at the cap, and `finish` reports it.
+    """
     if value is None or isinstance(value, str):
         return value
     try:
-        return json.dumps(value)
+        return encode(value)
     except (TypeError, ValueError):
+        # Measured first, since a repr is built in full. A value with no JSON shape at all, such as
+        # a list that holds itself, is left to repr.
+        with contextlib.suppress(TypeError, ValueError):
+            encode(value, LENIENT)
         return repr(value)
 
 
 async def main() -> None:
     loop = asyncio.get_running_loop()
-    reader = asyncio.StreamReader()
+    # A little over the cap, so that a `start` or `result` at the cap still fits with its newline.
+    reader = asyncio.StreamReader(limit=MAX_MESSAGE_BYTES + 2)
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     first = await reader.readline()
     if not first:
