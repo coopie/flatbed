@@ -517,3 +517,16 @@ async fn nan_and_infinity_never_reach_the_host_as_invalid_json() {
     );
     assert!(nested(&found).is_empty());
 }
+
+#[test]
+fn parameters_keep_the_order_of_the_schema_with_required_ones_first() {
+    let tool = ToolDefinition {
+        name: "search".into(),
+        description: "Search.".into(),
+        input_schema: json!({"type": "object", "properties": {"zone": {"type": "string"}, "query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]}),
+    };
+    assert_eq!(
+        flatbed_codemode::signature(&tool),
+        "async def search(query: str, zone: str = None, limit: int = None) -> str:\n    \"\"\"Search.\"\"\""
+    );
+}

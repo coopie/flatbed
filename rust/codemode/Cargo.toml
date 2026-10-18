@@ -10,7 +10,9 @@ flatbed = { path = "../flatbed" }
 async-trait = "0.1.92"
 # Sends the process group a kill, so that Monty's interpreter process ends with the worker.
 libc = "0.2.191"
-serde_json = "1"
+# `preserve_order`, so that a schema's `properties` keep their order, which sets the order of a
+# script's positional arguments, as in TypeScript and Python.
+serde_json = { version = "1", features = ["preserve_order"] }
 # `process` to start the worker, and the rest to talk to it and enforce its deadline.
 tokio = { version = "1.53.3", features = ["process", "io-util", "time", "sync", "macros", "rt"] }
 

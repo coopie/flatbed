@@ -103,7 +103,7 @@ The tool result the model sees is `output` without its last newline, then `value
 | A malformed `call` | `The codemode worker sent a call it cannot make: <the line's first 200 characters>` |
 | The `start` message would pass the cap | `The script is too long: a message to the worker may be at most 1048576 bytes.` |
 
-A `result` the host could not send for the cap reads `The result of <name> is larger than the 1048576-byte limit for a message.`
+A `result` the host could not send for the cap reads `The result of <name> is larger than the 1048576-byte limit for a message.` A call the host could not run at all, such as one whose tool panicked in Rust, is answered and recorded with an error result, so that the script never waits for an answer that will not come.
 
 #### What the session records
 
