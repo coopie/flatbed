@@ -1,0 +1,233 @@
+{
+  "name": "an error from onEntry is ignored",
+  "description": "The test plugin's onEntry hook throws after each tool message. The error is ignored, so both results of the turn are appended and the run goes on as usual.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    }
+  ],
+  "plugin": {
+    "onEntry": {
+      "throw": "The watcher is down."
+    }
+  },
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "echo",
+          "input": {
+            "text": "one"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "echo",
+          "input": {
+            "text": "two"
+          }
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Done."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 3
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Echo twice"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Echo twice"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "echo",
+                "input": {
+                  "text": "one"
+                }
+              },
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "echo",
+                "input": {
+                  "text": "two"
+                }
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "one"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "two"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Done."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 3
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ]
+  }
+}

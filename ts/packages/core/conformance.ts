@@ -14,9 +14,10 @@ import type { AgentConfig, Entry, EntryBody, Event, ParentLink, Plugin, Section,
 const SCENARIOS = fileURLToPath(new URL('../../../conformance/scenarios/', import.meta.url));
 const AGENT = 'test';
 
-type Behaviour =
-  | { echo: string } | { text: string } | { error: string } | { reset: string } | { deliver: Event }
-  | { sleep: number; text: string } | { waitForStop: string };
+/** What a tool does, after waiting `sleep` milliseconds and appending a custom entry with `append`'s data, when given. */
+type Behaviour = { sleep?: number; append?: unknown } & (
+  | { echo: string } | { text: string } | { error: string } | { reset: string } | { deliver: Event } | { waitForStop: string }
+);
 type Step =
   | { deliver: Event }
   | { run: { stop?: string; stopAfter?: number }; expect?: string | { error: string } }
@@ -27,9 +28,10 @@ type Step =
 /** What the test plugin does beyond giving sections and tools, as docs/spec/conformance.md describes. */
 type HookResult = ToolResult | { throw: string };
 type PluginHooks = {
+  context?: { append: unknown } | { throw: string };
   beforeTool?: Record<string, HookResult>;
   afterTool?: Record<string, HookResult>;
-  onEntry?: { custom: unknown };
+  onEntry?: { custom: unknown } | { throw: string };
   onSessionEnd?: { deliver: Event };
 };
 
@@ -67,11 +69,9 @@ function toolFor({ behaviour, ...definition }: ToolDefinition & { behaviour: Beh
 }
 
 async function behave(behaviour: Behaviour, input: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  if (behaviour.sleep !== undefined) await new Promise((resolve) => setTimeout(resolve, behaviour.sleep));
+  if (behaviour.append !== undefined) await ctx.append({ type: 'custom', plugin: 'test', data: behaviour.append });
   if ('echo' in behaviour) return String(input[behaviour.echo]);
-  if ('sleep' in behaviour) {
-    await new Promise((resolve) => setTimeout(resolve, behaviour.sleep));
-    return behaviour.text;
-  }
   if ('waitForStop' in behaviour) {
     if (!ctx.signal.aborted) await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
     return behaviour.waitForStop;
@@ -96,13 +96,18 @@ function testPlugin(scenario: Scenario, running: Running): Plugin {
   const hooks = scenario.plugin ?? {};
   return {
     name: 'test',
-    context: () => ({ sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map((tool) => toolFor(tool, running)) }),
+    async context(ctx) {
+      if (hooks.context !== undefined && 'throw' in hooks.context) throw new Error(hooks.context.throw);
+      // `append` fails here, and the hook carries on.
+      if (hooks.context !== undefined) await ctx.append({ type: 'custom', plugin: 'test', data: hooks.context.append }).catch(() => {});
+      return { sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map((tool) => toolFor(tool, running)) };
+    },
     beforeTool: (call) => hookResult(hooks.beforeTool?.[call.name]),
     afterTool: (call) => hookResult(hooks.afterTool?.[call.name]),
     async onEntry(entry, ctx) {
-      if (hooks.onEntry && entry.type === 'message' && entry.message.role === 'tool') {
-        await ctx.append({ type: 'custom', plugin: 'test', data: hooks.onEntry.custom });
-      }
+      if (hooks.onEntry === undefined || entry.type !== 'message' || entry.message.role !== 'tool') return;
+      if ('throw' in hooks.onEntry) throw new Error(hooks.onEntry.throw);
+      await ctx.append({ type: 'custom', plugin: 'test', data: hooks.onEntry.custom });
     },
     onSessionEnd(_session, ctx) {
       if (hooks.onSessionEnd) ctx.deliver(hooks.onSessionEnd.deliver);

@@ -1,0 +1,223 @@
+{
+  "name": "calls that append at once take turns",
+  "description": "Two calls run together, and each appends a custom entry as soon as it starts. The appends take turns, so each entry's parent is the entry before it, and the results follow.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "note",
+      "description": "Make a note.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "append": {
+          "noted": true
+        },
+        "text": "Noted."
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "note",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "note",
+          "input": {}
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Done."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 3
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Note twice"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "note",
+              "description": "Make a note.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Note twice"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "note",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "note",
+                "input": {}
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "custom",
+          "plugin": "test",
+          "data": {
+            "noted": true
+          }
+        },
+        {
+          "type": "custom",
+          "plugin": "test",
+          "data": {
+            "noted": true
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "note",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "note",
+            "content": [
+              {
+                "type": "text",
+                "text": "Noted."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Done."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 3
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ]
+  }
+}
