@@ -36,7 +36,9 @@ const agent = createAgent(
 );
 ```
 
-`withCodemode` returns your plugins followed by the codemode plugin. It wraps their `context` hooks to find the code for the tools a script may call, since the core does not yet give a tool a way to run another call through the loop. Each nested call takes a slot of up to `maxConcurrentTools`, separate from the slot `run_script` itself holds.
+`withCodemode` returns your plugins followed by the codemode plugin. It wraps their `context` hooks to see the tools they add, since codemode needs the allowed tools' descriptions and schemas to describe them to the model, and a `context` hook sees nothing of other plugins' tools.
+
+`run_script` runs each nested call with the core's `ctx.runTool`. Nested calls share the turn's limit of `maxConcurrentTools` with the model's own calls, and `run_script` gives up its own place while it waits for them, so a script works with a limit of 1 or with `toolExecution: serial`, where its calls run one at a time.
 
 Which tools to allow is open: [docs/codemode.md](../../../docs/codemode.md) asks whether tools that send or change something should be callable from a script at all. Until that is settled, list only tools you would be content to see called many times in one turn.
 
