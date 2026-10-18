@@ -19,6 +19,8 @@ A plugin is a plain object with a `name` and any of five hooks. Every hook is as
 
 Send events through `deliver`, never `append`. Delivery points come only after a turn's results, so an event never lands between a tool call and its result, which providers reject.
 
+A session's first entry is its `context` entry, so `append` fails in the `context` hook too.
+
 Nothing follows a reset, so `append` fails in `onSessionEnd`. Use `deliver` there instead: the event arrives at the start of the next session, after its `Session started` notice.
 
 A `custom` entry never makes a session need a run, or stop needing one: the loop ignores it, as [loop.md](loop.md) describes.
