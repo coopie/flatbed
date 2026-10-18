@@ -29,3 +29,26 @@ A read-only comparison of the three cores found Python's stop design the best of
 Work for at most 90 minutes; stop and write up what you have when you reach it. Sam is around today. If a choice would change the shape of the work, add a `## Question for the lead` section with your best guess and carry on. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main` (merging `main` into your branch is expected). The Anthropic key in `.env` works; never print a value from it. Touch only `python/`, the `python` section of `scripts/check.sh`, and the spec where it is unclear, saying so in the write-up. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+The Python core now follows the 18 October spec. The changes:
+
+- The host API uses the spec's names: `AgentConfig`, and `Agent(config, store=, providers=)` with `deliver(event, parent_id=)` and `run(stop=)`. It also adds `tool_execution` (`concurrent` or `serial`) and `max_concurrent_tools`.
+- `StopSignal.set` works from any thread. It wakes each waiter on that waiter's own loop. Calls in a turn wait their turn for a slot, in call order. A call that has not started when the stop is set does not start, and gets the repair text. The loop already abandoned hung model calls through `unless_set`, and still does.
+- Stores are async, and `FileStore` does its file I/O with `asyncio.to_thread`. Entries are added under an `asyncio.Lock`, so that calls running together cannot both build on the same head entry.
+- There is an OpenAI provider. Both providers take `api_key`, `base_url` and `timeout`, and share one POST with the spec's retry rules (`providers/http.py`).
+- The conformance runner handles every new format addition, and gives each scenario 10 seconds. The needs-run check now looks past stop notices that follow the soft-limit notice.
+
+Choices someone could have made differently:
+
+- When two hosts set the stop, the first one is recorded, as with `AbortController`.
+- A `stopAfter` stop is set from a `threading.Timer`, so the suite tests that a stop works from another thread.
+- The `hang` fake ignores its own cancellation as well as the stop.
+- The default base URLs match TypeScript: Anthropic's has no `/v1`, and OpenAI's ends in `/v1`. The spec does not say this. I did not change the spec.
+
+Commands and output:
+
+- `scripts/check.sh python` printed `ok` for all 37 scenarios, 21 tests ran with the live test skipped, and it ended with `== all checks passed`.
+- `FLATBED_LIVE=1 uv run python -m unittest tests.test_live` ran 1 test, `OK`.
+- I did not live-test the OpenAI provider, because there is no key. Unit tests cover how it translates requests and responses.
+
+**How it went**: smoothly. The brief and the spec were clear. The 18 October entry in `docs/decisions.md` supersedes the earlier line saying file appends need no thread, and that older entry still names `Runner`. It is history, so I left it. An OpenAI key in `.env` would let the new adapter be checked live.

@@ -6,60 +6,27 @@ Sections become system blocks, `tool` messages become `tool_result` blocks insid
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-import httpx
-
 from ..types import AssistantMessage, Block, Message, ProviderRequest
+from .http import post_json
 
-API_URL = "https://api.anthropic.com/v1/messages"
-RETRIES = 3
+BASE_URL = "https://api.anthropic.com"
 EPHEMERAL = {"type": "ephemeral"}
 MAX_BREAKPOINTS = 4
 STOPS = {"tool_use": "toolUse", "max_tokens": "maxTokens", "refusal": "refusal"}
 
 
 class AnthropicProvider:
-    def __init__(self, api_key: str, url: str = API_URL, timeout: float = 600) -> None:
+    def __init__(self, api_key: str, base_url: str = BASE_URL, timeout: float = 600) -> None:
         self._api_key = api_key
-        self.url = url
+        self.url = f"{base_url.rstrip('/')}/v1/messages"
         self.timeout = timeout
 
     async def complete(self, request: ProviderRequest) -> AssistantMessage:
-        response = await self._post(to_anthropic(request), request)
-        return from_anthropic(response, request.model)
-
-    async def _post(self, body: dict[str, Any], request: ProviderRequest) -> Any:
-        """POSTs the body, retrying rate limits, server errors and network failures with backoff."""
         headers = {"x-api-key": self._api_key, "anthropic-version": "2023-06-01"}
-        # A client per call: a model call takes seconds, so pooling saves little, and a client never
-        # outlives the event loop it was made on.
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(RETRIES + 1):
-                try:
-                    response = await client.post(self.url, json=body, headers=headers)
-                    if response.is_success:
-                        return response.json()
-                    # The error body is the API's message; it never holds the request's headers.
-                    failure = f"HTTP {response.status_code}: {response.text[:500]}"
-                    if response.status_code != 429 and response.status_code < 500:
-                        raise RuntimeError(failure)
-                except httpx.TransportError as error:
-                    failure = f"Network error: {message_of(error)}"
-                if attempt == RETRIES:
-                    raise RuntimeError(f"{failure} (after {attempt} retries)")
-                # Back off, but give up at once when the host stops the run.
-                if request.signal is None:
-                    await asyncio.sleep(2**attempt)
-                elif await request.signal.wait(2**attempt):
-                    raise RuntimeError(f"{failure} (stopped while waiting to retry)")
-        raise AssertionError("unreachable")
-
-
-def message_of(error: BaseException) -> str:
-    # httpx's timeouts can carry an empty message.
-    return str(error) or type(error).__name__
+        response = await post_json(self.url, to_anthropic(request), headers, self.timeout, request.signal)
+        return from_anthropic(response, request.model)
 
 
 def to_anthropic(request: ProviderRequest) -> dict[str, Any]:

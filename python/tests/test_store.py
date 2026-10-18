@@ -11,15 +11,15 @@ from flatbed.store import new_session_id
 FIXTURE = Path(__file__).parent / "fixtures" / "ts-session.jsonl"
 
 
-class ReadsTypeScriptSessions(unittest.TestCase):
-    def test_a_session_written_by_the_typescript_core_reads_and_renders(self):
+class ReadsTypeScriptSessions(unittest.IsolatedAsyncioTestCase):
+    async def test_a_session_written_by_the_typescript_core_reads_and_renders(self):
         # The fixture was written by ts/packages/core with the faux provider: one tool call, then an answer.
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "fixture").mkdir()
             (Path(root) / "fixture" / FIXTURE.name).write_bytes(FIXTURE.read_bytes())
             store = FileStore(root)
-            [session_id] = store.list("fixture")
-            session = store.read("fixture", session_id)
+            [session_id] = await store.list("fixture")
+            session = await store.read("fixture", session_id)
 
         self.assertEqual(session.header["agent"], "fixture")
         rendered = render(path_of(session.entries))
@@ -31,15 +31,15 @@ class ReadsTypeScriptSessions(unittest.TestCase):
         self.assertEqual(rendered.messages[1]["content"][0]["text"], "Let me echo — café.")
         self.assertEqual([m["role"] for m in rendered.messages], ["user", "assistant", "tool", "assistant"])
 
-    def test_a_session_written_by_python_has_the_same_line_shape(self):
+    async def test_a_session_written_by_python_has_the_same_line_shape(self):
         # Compact JSON with raw UTF-8, as JSON.stringify writes, so either core reads the other's files.
         source = FIXTURE.read_text(encoding="utf-8").splitlines()
         with tempfile.TemporaryDirectory() as root:
             store = FileStore(root)
-            session = FileStore(FIXTURE.parent.parent).read("fixtures", FIXTURE.stem)
-            store.create(session.header)
+            session = await FileStore(FIXTURE.parent.parent).read("fixtures", FIXTURE.stem)
+            await store.create(session.header)
             for entry in session.entries:
-                store.append(session.header["agent"], session.header["id"], entry)
+                await store.append(session.header["agent"], session.header["id"], entry)
             written_file = Path(root) / "fixture" / f"{session.header['id']}.jsonl"
             written = written_file.read_text(encoding="utf-8").splitlines()
         self.assertEqual(written, source)

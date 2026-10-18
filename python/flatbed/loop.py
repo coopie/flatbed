@@ -1,22 +1,22 @@
 """The loop, which is the whole harness.
 
 A run asks the model for the next step, runs the tools it calls, and appends everything to the
-session, until nothing new needs an answer. docs/spec/loop.md is the contract, and `Runner.run`
-follows its numbered steps in order. docs/spec/plugins.md says how a tool call runs.
+session, until nothing new needs an answer. docs/spec/loop.md is the contract, and `Agent.run`
+follows its numbered steps in order. docs/spec/plugins.md says how a tool call runs, and
+docs/spec/host.md what a host sees.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable
 from datetime import UTC, datetime
 from typing import Any
 
 from .render import path_of, render
 from .store import Store, new_entry_id, new_session_id, now_iso
 from .types import (
-    Agent,
+    AgentConfig,
     AssistantMessage,
     ContextAddition,
     Entry,
@@ -61,14 +61,14 @@ async def settled[T](value: MaybeAwaitable[T]) -> T:
     return await value if inspect.isawaitable(value) else value
 
 
-async def limited[T](slots: asyncio.Semaphore, work: Awaitable[T]) -> T:
-    """Awaits `work` once a slot is free."""
-    async with slots:
-        return await work
-
-
 def notice(text: str) -> Entry:
     return {"type": "event", "kind": "notice", "attrs": {"from": "harness"}, "text": text}
+
+
+def is_stop_notice(entry: Entry) -> bool:
+    return (
+        entry["kind"] == "notice" and entry["text"].startswith("Stopped by ") and entry["text"].endswith(".")
+    )
 
 
 def error_result(text: str) -> ToolResult:
@@ -112,35 +112,41 @@ def plugin_failed(plugin: str, error: BaseException) -> ToolResult:
     return error_result(f"The {plugin} plugin failed: {message_of(error)}")
 
 
-class Runner:
-    """Runs one agent against a store, with a provider for each provider name in its models.
+class Agent:
+    """One agent: its configuration, the store that keeps its sessions, and a provider for each
+    provider name in its models.
 
     The host queues events with `deliver` and calls `run` when it wants the agent to answer.
     """
 
-    def __init__(self, agent: Agent, store: Store, providers: dict[str, Provider]) -> None:
-        provider_name, _, model_name = agent.model.partition("/")
+    def __init__(self, config: AgentConfig, *, store: Store, providers: dict[str, Provider]) -> None:
+        provider_name, _, model_name = config.model.partition("/")
         if provider_name not in providers or not model_name:
-            raise ValueError(f"No provider for the model {agent.model}.")
-        if agent.max_concurrent_tools < 1:
+            raise ValueError(f"No provider for the model {config.model}.")
+        if config.max_concurrent_tools < 1:
             raise ValueError("max_concurrent_tools must be at least 1.")
-        self.agent = agent
+        if config.tool_execution not in ("concurrent", "serial"):
+            raise ValueError(f"tool_execution must be concurrent or serial, not {config.tool_execution}.")
+        self.config = config
         self.store = store
         self.provider = providers[provider_name]
         self.model_name = model_name
         self._queue: list[tuple[Event, str | None]] = []
         self._running = False
+        # Calls running together may append at once. Each append reads the head and writes after it,
+        # so they take turns.
+        self._appending = asyncio.Lock()
         # The tools' code for the open session, so a run does not call the context hooks again.
         self._tools: tuple[str, dict[str, Tool]] | None = None
 
-    def deliver(self, event: Event, parent_id: str | None = None) -> None:
+    def deliver(self, event: Event, *, parent_id: str | None = None) -> None:
         """Queue an event for the next delivery point. Give `parent_id` to rewind to that entry."""
         self._queue.append((event, parent_id))
 
-    async def run(self, stop: StopSignal | None = None) -> RunOutcome:
+    async def run(self, *, stop: StopSignal | None = None) -> RunOutcome:
         # A simple in-process guard. A host on several machines uses its own lock.
         if self._running:
-            raise RuntimeError(f"Agent {self.agent.id} is already running.")
+            raise RuntimeError(f"Agent {self.config.id} is already running.")
         self._running = True
         try:
             return await self._run(stop or StopSignal())
@@ -153,8 +159,6 @@ class Runner:
         # 2. Repair calls left without a result. 3. Deliver waiting events.
         await self._repair(session)
         await self._deliver_queued(session)
-        # Calls in a turn run together, at most this many at once.
-        slots = asyncio.Semaphore(self.agent.max_concurrent_tools)
 
         # 4. Freeze the context: the last context entry on the path, for the whole run.
         frozen = render(path_of(session.entries))
@@ -169,8 +173,8 @@ class Runner:
                 sections=frozen.sections,
                 tools=frozen.tools,
                 messages=render(path_of(session.entries)).messages,
-                max_tokens=self.agent.max_tokens,
-                effort=self.agent.effort,
+                max_tokens=self.config.max_tokens,
+                effort=self.config.effort,
                 signal=stop,
             )
             try:
@@ -182,7 +186,7 @@ class Runner:
                 failed: AssistantMessage = {
                     "role": "assistant",
                     "content": [],
-                    "model": self.agent.model,
+                    "model": self.config.model,
                     "usage": {"input": 0, "output": 0},
                     "stop": "error",
                 }
@@ -196,24 +200,24 @@ class Runner:
 
             calls = tool_calls(message)
             # A response cut off by the token limit may hold a call with half its input, so none of its
-            # calls run. Otherwise they run together, and gather keeps the results in call order.
+            # calls run.
             if message["stop"] == "maxTokens":
                 results = [error_result(CUT_OFF_TEXT) for _ in calls]
             else:
-                results = await asyncio.gather(
-                    *(limited(slots, self._run_tool(call, frozen.tools, tools, ctx)) for call in calls)
-                )
+                results = await self._run_calls(calls, frozen.tools, tools, ctx)
             for call, result in zip(calls, results, strict=True):
                 tool_message = {"role": "tool", "callId": call["id"], "name": call["name"], **result}
                 await self._append(session, {"type": "message", "message": tool_message})
+            if calls and stop.is_set:
+                return await self._stopped(session, stop)
             if resets:
                 return await self._end_session(session, "agent", resets[0])
 
             usage = message["usage"]
             size = usage["input"] + usage["output"] + usage.get("cacheRead", 0) + usage.get("cacheWrite", 0)
-            if size > self.agent.hard_limit:
+            if size > self.config.hard_limit:
                 return await self._end_session(session, "harness", "context budget")
-            if size > self.agent.soft_limit and not self._has_soft_notice(session):
+            if size > self.config.soft_limit and not self._has_soft_notice(session):
                 await self._append(session, notice(SOFT_LIMIT_NOTICE))
 
             await self._deliver_queued(session)
@@ -225,8 +229,8 @@ class Runner:
         """The agent's newest session, unless it ends in a reset; otherwise a new one. A newest
         session that holds only its header, because a process stopped after writing it, is opened
         in place."""
-        ids = self.store.list(self.agent.id)
-        newest = self.store.read(self.agent.id, ids[-1]) if ids else None
+        ids = await self.store.list(self.config.id)
+        newest = await self.store.read(self.config.id, ids[-1]) if ids else None
         last = newest.entries[-1] if newest and newest.entries else None
         if newest is not None and last is not None and last["type"] != "reset":
             if self._tools is not None and self._tools[0] == newest.header["id"]:
@@ -240,13 +244,13 @@ class Runner:
         if newest is not None and header_only:
             # A process stopped after writing the header. The session before it says why it starts.
             session = newest
-            previous = self.store.read(self.agent.id, ids[-2]).entries if len(ids) > 1 else []
+            previous = (await self.store.read(self.config.id, ids[-2])).entries if len(ids) > 1 else []
             last = previous[-1] if previous else None
         else:
             session = Session(header=self._new_header(ids), entries=[])
         sections, tools = await self._collect_context(session)
         if not header_only:
-            self.store.create(session.header)
+            await self.store.create(session.header)
         definitions = [tool.definition() for tool in tools.values()]
         await self._append(session, {"type": "context", "sections": sections, "tools": definitions})
         if last is None or last["type"] != "reset":
@@ -266,20 +270,20 @@ class Runner:
             "type": "session",
             "version": 1,
             "id": new_session_id(now, ids[-1] if ids else None),
-            "agent": self.agent.id,
+            "agent": self.config.id,
             "createdAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         }
         if ids:
             header["parent"] = {"session": ids[-1], "reason": "reset"}
-        elif self.agent.parent is not None:
-            header["parent"] = dict(self.agent.parent)
+        elif self.config.parent is not None:
+            header["parent"] = dict(self.config.parent)
         return header
 
     async def _collect_context(self, session: Session) -> tuple[list[Any], dict[str, Tool]]:
         """Calls every plugin's `context` hook, and adds the core `reset` tool after their tools."""
         sections: list[Any] = []
         tools: dict[str, Tool] = {}
-        for plugin in self.agent.plugins:
+        for plugin in self.config.plugins:
             added = (
                 plugin.context and await settled(plugin.context(self._context(session)))
             ) or ContextAddition()
@@ -307,7 +311,7 @@ class Runner:
         if reason:
             entry["reason"] = reason
         await self._append(session, entry)
-        for plugin in self.agent.plugins:
+        for plugin in self.config.plugins:
             if plugin.on_session_end:
                 await settled(plugin.on_session_end(session, self._context(session)))
         return "reset"
@@ -320,18 +324,19 @@ class Runner:
 
     async def _append(self, session: Session, body: Entry, parent_id: str | None = None) -> Entry:
         """Appends an entry after the head, or after `parent_id` to rewind, and tells the plugins."""
-        if session.entries and session.entries[-1]["type"] == "reset":
-            raise RuntimeError("Nothing may follow a reset.")
-        taken = {entry["id"] for entry in session.entries}
-        entry_id = new_entry_id()
-        while entry_id in taken:
+        async with self._appending:
+            if session.entries and session.entries[-1]["type"] == "reset":
+                raise RuntimeError("Nothing may follow a reset.")
+            taken = {entry["id"] for entry in session.entries}
             entry_id = new_entry_id()
-        head = session.entries[-1]["id"] if session.entries else None
-        entry = {"type": body["type"], "id": entry_id, "parentId": parent_id or head, "at": now_iso()}
-        entry.update((key, value) for key, value in body.items() if key != "type")
-        self.store.append(self.agent.id, session.header["id"], entry)
-        session.entries.append(entry)
-        for plugin in self.agent.plugins:
+            while entry_id in taken:
+                entry_id = new_entry_id()
+            head = session.entries[-1]["id"] if session.entries else None
+            entry = {"type": body["type"], "id": entry_id, "parentId": parent_id or head, "at": now_iso()}
+            entry.update((key, value) for key, value in body.items() if key != "type")
+            await self.store.append(self.config.id, session.header["id"], entry)
+            session.entries.append(entry)
+        for plugin in self.config.plugins:
             if plugin.on_entry:
                 await settled(plugin.on_entry(entry, self._context(session)))
         return entry
@@ -358,7 +363,7 @@ class Runner:
                 raise ValueError("A plugin may append only custom entries. Deliver events instead.")
             await self._append(session, body)
 
-        return PluginContext(agent=self.agent, session=session, append=append, deliver=self.deliver)
+        return PluginContext(agent=self.config, session=session, append=append, deliver=self.deliver)
 
     # Checks.
 
@@ -366,15 +371,22 @@ class Runner:
     def _needs_run(session: Session) -> bool:
         """True when the last entry on the path, leaving out custom and context entries, is a tool
         result or an event from outside the harness. The harness's own notices need no answer, except
-        the soft-limit notice, which the model gets one turn to act on."""
+        the soft-limit notice, which the model gets one turn to act on. A stop does not take that turn
+        away, so stop notices after the soft-limit notice are looked past."""
+        after_stop = False
         for entry in reversed(path_of(session.entries)):
             if entry["type"] in ("custom", "context"):
                 continue
             if entry["type"] == "message":
-                return entry["message"]["role"] == "tool"
+                return entry["message"]["role"] == "tool" and not after_stop
             if entry["type"] == "event":
-                from_harness = (entry.get("attrs") or {}).get("from") == "harness"
-                return not from_harness or entry["text"] == SOFT_LIMIT_NOTICE
+                if (entry.get("attrs") or {}).get("from") != "harness":
+                    return not after_stop
+                if entry["text"] == SOFT_LIMIT_NOTICE:
+                    return True
+                if is_stop_notice(entry):
+                    after_stop = True
+                    continue
             return False
         return False
 
@@ -384,6 +396,29 @@ class Runner:
             entry["type"] == "event" and entry["kind"] == "notice" and entry["text"] == SOFT_LIMIT_NOTICE
             for entry in session.entries
         )
+
+    async def _run_calls(
+        self,
+        calls: list[ToolCall],
+        definitions: list[ToolDefinition],
+        code: dict[str, Tool],
+        ctx: ToolContext,
+    ) -> list[ToolResult]:
+        """Runs a turn's calls by the agent's `tool_execution`, and returns their results in call order.
+
+        Calls queue for a slot in call order. Serial execution is one slot. Once the stop is set, a call
+        that has not started does not start: it gets the same result as a call a crash left unanswered.
+        """
+        serial = self.config.tool_execution == "serial"
+        slots = asyncio.Semaphore(1 if serial else self.config.max_concurrent_tools)
+
+        async def run_one(call: ToolCall) -> ToolResult:
+            async with slots:
+                if ctx.signal.is_set:
+                    return error_result(REPAIR_TEXT)
+                return await self._run_tool(call, definitions, code, ctx)
+
+        return await asyncio.gather(*(run_one(call) for call in calls))
 
     async def _run_tool(
         self, call: ToolCall, definitions: list[ToolDefinition], code: dict[str, Tool], ctx: ToolContext
@@ -399,7 +434,7 @@ class Runner:
             return error_result(f"Invalid input for {call['name']}: {problem}.")
 
         result: ToolResult | None = None
-        for plugin in self.agent.plugins:
+        for plugin in self.config.plugins:
             try:
                 if (
                     plugin.before_tool
@@ -418,7 +453,7 @@ class Runner:
                 )
             except Exception as error:
                 result = error_result(message_of(error))
-        for plugin in self.agent.plugins:
+        for plugin in self.config.plugins:
             try:
                 if plugin.after_tool:
                     result = await settled(plugin.after_tool(call, result, ctx)) or result

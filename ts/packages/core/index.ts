@@ -5,3 +5,4 @@ export { fileStore, memoryStore, newEntryId, newSessionId, parseSession } from '
 export { fauxProvider, type FauxProvider, type ScriptStep } from './providers/faux.ts';
 export { anthropicProvider } from './providers/anthropic.ts';
 export { openaiProvider } from './providers/openai.ts';
+export { type ProviderOptions } from './providers/http.ts';

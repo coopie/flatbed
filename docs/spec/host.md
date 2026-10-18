@@ -22,7 +22,7 @@ An agent's configuration holds:
 
 ## The calls
 
-- **`createAgent(config, {store, providers})`** makes an agent. It fails at once, before anything is stored, when the model's provider is not in `providers` or `maxConcurrentTools` is below 1. In Python and Rust the type is `Agent` and the constructor is the language's own, such as `Agent(config, store=..., providers=...)`; its configuration type is `AgentConfig` in all three.
+- **`createAgent(config, {store, providers})`** makes an agent. It fails at once, before anything is stored, when the model's provider is not in `providers`, `maxConcurrentTools` is below 1, or `toolExecution` is neither `concurrent` nor `serial`. In Python and Rust the type is `Agent` and the constructor is the language's own, such as `Agent(config, store=..., providers=...)`; its configuration type is `AgentConfig` in all three.
 - **`deliver(event, {parentId})`** queues an event for the next delivery point. `parentId` is optional, for a rewind, as [sessions.md](sessions.md) describes.
 - **`run({stop})`** runs the loop and returns why it ended: `idle`, `reset`, `stopped` or `error`. It fails, with nothing written, when two tools in the session would share a name, as [plugins.md](plugins.md) describes.
 - **A stop** is a value the host makes before a run and sets, with who stopped it, at any time from any task or thread: an `AbortController` in TypeScript, and a `StopSignal` in Python and Rust.

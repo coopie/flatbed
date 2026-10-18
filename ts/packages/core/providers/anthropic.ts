@@ -4,7 +4,7 @@
  * Empty text blocks are dropped everywhere, since the API rejects them.
  */
 import type { AssistantMessage, Block, ImageBlock, Message, Provider, ProviderRequest, Stop, TextBlock } from '../types.ts';
-import { postJson } from './http.ts';
+import { postJson, type ProviderOptions } from './http.ts';
 
 type ApiBlock = Record<string, unknown> & { type: string };
 type ApiMessage = { role: 'user' | 'assistant'; content: ApiBlock[] };
@@ -13,12 +13,12 @@ const EPHEMERAL = { type: 'ephemeral' } as const;
 /** The API allows at most four cache breakpoints in a request. */
 const MAX_BREAKPOINTS = 4;
 
-export function anthropicProvider(options: { apiKey: string; baseUrl?: string }): Provider {
+export function anthropicProvider(options: ProviderOptions): Provider {
   const url = `${options.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`;
   const headers = { 'x-api-key': options.apiKey, 'anthropic-version': '2023-06-01' };
   return {
     async complete(request) {
-      const response = await postJson(url, headers, anthropicRequest(request), request.signal);
+      const response = await postJson(url, headers, anthropicRequest(request), request.signal, options.timeout);
       return fromAnthropic(response as AnthropicResponse, request.model);
     },
   };
