@@ -12,9 +12,59 @@ A `codemode` plugin adds one tool, `run_script`. Its description lists the tools
 
 The script runs in [Monty](https://github.com/pydantic/monty), Pydantic's sandboxed Python interpreter written in Rust, inside a separate worker process. The worker is one small Python program using `pydantic-monty`, shared by all three flatbed implementations: each host only starts the process and speaks to it in JSON lines over stdin and stdout. The conformance suite can then test codemode the same way in every language.
 
-When a script calls a tool, Monty pauses, and the worker writes the call to stdout as `{call id, name, input}`. The host runs it through the loop's own tool runner, so `beforeTool`, the supervisor, the tool, `afterTool` and `maxConcurrentTools` apply exactly as for a direct call, and an unknown name gets the runner's usual `No tool named <name>.` The host writes the result back to stdin and the script resumes. Calls a script starts together with `asyncio.gather` run together on the host. The script's printed output and return value are the tool's result, and each nested call is recorded in the session.
+When a script calls a tool, Monty pauses, and the worker writes the call to stdout as `{call id, name, input}`. The host runs it the way the loop runs a direct call, so `beforeTool`, the supervisor, the tool and `afterTool` apply, and at most `maxConcurrentTools` nested calls run at once. A tool off the allow-list does not exist inside the script, so calling it raises `NameError`; the host also answers any call it is sent for such a name with the runner's usual `No tool named <name>.` The host writes the result back to stdin and the script resumes. Calls a script starts together with `asyncio.gather` run together on the host. The script's printed output and return value are the tool's result, and each nested call is recorded in the session.
 
 Because the host sits outside the process, it enforces the limits from outside: it counts the calls coming out and ends the process at the agent's limit (25 unless set), ends it at a wall-clock deadline, and caps its memory. A stop ends the process too. A fresh process, or a fresh Monty session in a warm one, runs each script. The script sees the real clock; a host running replay tests can give the worker a fixed start time instead.
+
+## The protocol
+
+The worker is `codemode/worker.py` at the repo root, a Python project of its own with one dependency, `pydantic-monty`. A host starts it for one script with `uv run --quiet --frozen --project codemode python codemode/worker.py`, in its own process group and with an environment holding only `PATH` and `HOME`. The two then exchange JSON objects, one per line: the host writes to the worker's stdin and reads its stdout. Anything the worker writes to stderr is for a person debugging it.
+
+### From the host
+
+**`start`**, once, first. `tools` are the functions the script may call, each with its parameter names in order, so that positional arguments can be named. `timeoutMs`, `maxMemory` (bytes, 64 MB unless given) and `startTime` (ISO 8601, which fixes the script's clock) are optional.
+
+```json
+{"type": "start", "script": "import asyncio\nawait asyncio.gather(read_doc('a'), read_doc('b'))", "tools": [{"name": "read_doc", "params": ["name"]}], "timeoutMs": 60000, "startTime": "2026-10-18T09:00:00+00:00"}
+```
+
+**`result`**, once for each `call`, in any order. `text` is the tool result's text blocks joined. When `isError` is true, the script sees `RuntimeError` with `text` as its message; otherwise the call returns `text` as a string.
+
+```json
+{"type": "result", "id": "1", "text": "contents of a", "isError": false}
+```
+
+### From the worker
+
+**`call`**, whenever the script calls a tool. Each has its own `id`, and several may be waiting at once when the script gathers calls. The worker maps positional arguments to the names in `start`, so `input` is always an object.
+
+```json
+{"type": "call", "id": "1", "name": "read_doc", "input": {"name": "a"}}
+```
+
+**`done`**, last, when the script finishes. `output` is what it printed, and `value` the value of its last line: a string as it is, anything else as JSON or, failing that, its `repr`, and `null` when there is none.
+
+```json
+{"type": "done", "output": "found it\n", "value": "[\"contents of a\", \"contents of b\"]"}
+```
+
+**`error`**, last, when the script fails, with what it printed before failing and Monty's traceback, which shows only the script's own lines.
+
+```json
+{"type": "error", "output": "", "error": "Traceback (most recent call last):\n  File \"<python-input-0>\", line 1, in <module>\n    1 / 0\nZeroDivisionError: division by zero"}
+```
+
+### What the host does
+
+- It counts `call` messages and ends the process when one more would pass its limit, 25 unless set.
+- It ends the process at its own wall-clock deadline, which counts time spent in tools. Monty's own time limit, which the worker sets from `timeoutMs`, counts only time running the script, so it is only a backstop.
+- It ends the process when the run's stop is set.
+- It ends the process once it has read `done` or `error`.
+- It checks every `call` name against the allow-list itself, rather than trusting the worker.
+
+To end the process, the host closes stdin and kills the process group. The worker also stops on its own when stdin closes, which ends Monty's interpreter process even when the host could not kill the group.
+
+The tool result the model sees is `output` without its last newline, then `value` or `error` on a line of its own. Each nested call is recorded in the session as a `custom` entry from the `codemode` plugin, with the call and its result.
 
 ## Why a script cannot see behind the tools
 
@@ -34,7 +84,7 @@ The tools' names, descriptions and schemas, which the model needs anyway; their 
 
 ## Costs and risks
 
-A warm run with one tool call takes about 0.15 ms in Python and TypeScript and much less in Rust; the packages are 38 MB (Python) and 63 MB (TypeScript). Monty is young, at version 1.2, and runs a subset of Python. Its Rust crate on crates.io lags the git tag, which the worker process sidesteps, since only Python runs Monty. QuickJS is smaller and more mature, but would mean a different engine and bridge in each language. The probes are in `spikes/codemode/`.
+Each script starts a fresh worker process, which takes 80 to 120 ms on an Apple Silicon Mac: about 20 ms for `uv run`, 50 ms to import `pydantic-monty` and 20 ms to start Monty's interpreter and run a small script. That is small beside a model turn, so there is no warm process. Inside a warm one, a run with one tool call takes about 0.15 ms; the packages are 38 MB (Python) and 63 MB (TypeScript). Monty is young, at version 1.2, and runs a subset of Python. Its Rust crate on crates.io lags the git tag, which the worker process sidesteps, since only Python runs Monty. QuickJS is smaller and more mature, but would mean a different engine and bridge in each language. The probes are in `spikes/codemode/`.
 
 ## Decisions for Sam
 
