@@ -21,6 +21,7 @@ from flatbed import Agent, AgentConfig, ContextAddition, FileStore, Plugin, Stop
 from flatbed.providers import FauxProvider
 from flatbed.store import new_entry_id, new_session_id, now_iso
 
+TIME_LIMIT = 10
 SCENARIOS = Path(__file__).resolve().parent.parent / "conformance" / "scenarios"
 
 
@@ -312,7 +313,11 @@ async def main() -> int:
         scenario = json.loads(path.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as root:
             try:
-                difference = await run_scenario(scenario, Path(root))
+                # A run that never ends, such as one waiting on a hung call, fails rather than hangs.
+                async with asyncio.timeout(TIME_LIMIT):
+                    difference = await run_scenario(scenario, Path(root))
+            except TimeoutError:
+                difference = f"did not finish within {TIME_LIMIT} seconds"
             except Exception as error:
                 difference = f"raised {type(error).__name__}: {error}"
         if difference is None:

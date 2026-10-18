@@ -65,6 +65,12 @@ def notice(text: str) -> Entry:
     return {"type": "event", "kind": "notice", "attrs": {"from": "harness"}, "text": text}
 
 
+def is_stop_notice(entry: Entry) -> bool:
+    return (
+        entry["kind"] == "notice" and entry["text"].startswith("Stopped by ") and entry["text"].endswith(".")
+    )
+
+
 def error_result(text: str) -> ToolResult:
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
@@ -365,15 +371,22 @@ class Agent:
     def _needs_run(session: Session) -> bool:
         """True when the last entry on the path, leaving out custom and context entries, is a tool
         result or an event from outside the harness. The harness's own notices need no answer, except
-        the soft-limit notice, which the model gets one turn to act on."""
+        the soft-limit notice, which the model gets one turn to act on. A stop does not take that turn
+        away, so stop notices after the soft-limit notice are looked past."""
+        after_stop = False
         for entry in reversed(path_of(session.entries)):
             if entry["type"] in ("custom", "context"):
                 continue
             if entry["type"] == "message":
-                return entry["message"]["role"] == "tool"
+                return entry["message"]["role"] == "tool" and not after_stop
             if entry["type"] == "event":
-                from_harness = (entry.get("attrs") or {}).get("from") == "harness"
-                return not from_harness or entry["text"] == SOFT_LIMIT_NOTICE
+                if (entry.get("attrs") or {}).get("from") != "harness":
+                    return not after_stop
+                if entry["text"] == SOFT_LIMIT_NOTICE:
+                    return True
+                if is_stop_notice(entry):
+                    after_stop = True
+                    continue
             return False
         return False
 
