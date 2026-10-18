@@ -1,0 +1,12 @@
+[package]
+name = "codemode_probe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monty = { git = "https://github.com/pydantic/monty", tag = "v1.2.0" }
+monty-pool = { git = "https://github.com/pydantic/monty", tag = "v1.2.0" }
+monty-types = { git = "https://github.com/pydantic/monty", tag = "v1.2.0", features = ["tzdb"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "time"] }
+
+# Rough spike: crates.io has monty 1.1.0, which does not compile on rustc 1.98.1, so this pins the v1.2.0 tag.
