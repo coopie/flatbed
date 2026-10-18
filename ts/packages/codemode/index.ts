@@ -7,7 +7,9 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { createInterface } from 'node:readline';
+import { once } from 'node:events';
+import type { Readable } from 'node:stream';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Plugin, Tool, ToolCall, ToolContext, ToolResult, ToolDefinition } from '@flatbed/core';
 
 export type CodemodeOptions = {
@@ -123,10 +125,10 @@ function params(tool: ToolDefinition) {
   return { required: names.filter((n) => required.includes(n)), optional: names.filter((n) => !required.includes(n)) };
 }
 
-type WorkerMessage =
-  | { type: 'call'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'done'; output: string; value: string | null }
-  | { type: 'error'; output: string; error: string };
+/** The most bytes in one message to or from the worker, not counting its newline. docs/codemode.md explains why. */
+export const MAX_MESSAGE_BYTES = 1024 * 1024;
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** Runs one script in a fresh worker process, answering its calls, until it finishes or a limit ends it. */
 async function runScript(script: string, callable: ToolDefinition[], options: CodemodeOptions, ctx: ToolContext): Promise<ToolResult> {
@@ -136,71 +138,141 @@ async function runScript(script: string, callable: ToolDefinition[], options: Co
   const scriptId = randomBytes(4).toString('hex');
   // Checked here as well as in the worker, so that a worker that misbehaves still reaches only these.
   const allowed = new Set(callable.map((tool) => tool.name));
+  if (ctx.signal.aborted) return text('The harness stopped this script.', true);
+
+  const start = JSON.stringify({
+    type: 'start',
+    script,
+    tools: callable.map((tool) => ({ name: tool.name, params: [...params(tool).required, ...params(tool).optional] })),
+    timeoutMs,
+    ...(options.maxMemory === undefined ? {} : { maxMemory: options.maxMemory }),
+    ...(options.startTime === undefined ? {} : { startTime: options.startTime.toISOString() }),
+  });
+  if (Buffer.byteLength(start) > MAX_MESSAGE_BYTES) return text(`The script is too long: a message to the worker may be at most ${MAX_MESSAGE_BYTES} bytes.`, true);
 
   // An empty environment but for what `uv` needs to find itself and its cache: no keys reach the worker.
   const env = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' };
   // Its own process group, so that ending it ends Monty's interpreter process too.
   const child = spawn(worker.command, worker.args, { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  // A worker that exits before reading `start` makes the write fail with EPIPE. Its stdout closing says what happened.
+  child.stdin.on('error', () => {});
   let stderr = '';
   child.stderr.on('data', (chunk) => (stderr = (stderr + chunk).slice(-2000)));
-  const send = (message: object) => {
-    if (child.stdin.writable) child.stdin.write(`${JSON.stringify(message)}\n`);
-  };
+
+  // The calls the host has started, which run to their end even when the script ends first.
+  const started = new Set<Promise<void>>();
+  let ended = false;
 
   return new Promise<ToolResult>((resolve) => {
     let calls = 0;
-    let settled = false;
     const finish = (result: ToolResult) => {
-      if (settled) return;
-      settled = true;
+      if (ended) return;
+      ended = true;
       clearTimeout(timer);
       ctx.signal.removeEventListener('abort', onStop);
       child.stdin.end();
       killGroup(child.pid);
-      resolve(result);
+      // So that their results are recorded and the turn's limit holds, as docs/codemode.md describes.
+      void Promise.allSettled(started).then(() => resolve(result));
     };
     const timer = setTimeout(() => finish(text(`The script ran for more than ${timeoutMs / 1000} seconds, so it was stopped.`, true)), timeoutMs);
     const onStop = () => finish(text('The harness stopped this script.', true));
-    if (ctx.signal.aborted) return onStop();
     ctx.signal.addEventListener('abort', onStop, { once: true });
 
     child.on('error', (error) => {
       const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
       finish(text(missing ? `The codemode worker could not start: ${worker.command} was not found.` : `The codemode worker failed: ${error.message}`, true));
     });
-    child.on('close', () => finish(text(`The codemode worker ended without finishing the script.${stderr ? `\n${stderr.trim()}` : ''}`, true)));
+    // When the worker could not start, its `error` says why, and there is nothing to read.
+    if (child.pid === undefined) return;
 
-    createInterface({ input: child.stdout }).on('line', (line) => {
-      let message: WorkerMessage;
+    const send = (message: string) => {
+      if (!ended && child.stdin.writable) child.stdin.write(`${message}\n`);
+    };
+
+    const answer = async (id: string, call: ToolCall) => {
+      // The core runs the call as it runs the model's, under the turn's limit. A name off the
+      // allow-list is as unknown as a name nobody has.
+      const result = allowed.has(call.name) ? await ctx.runTool(call) : text(`No tool named ${call.name}.`, true);
+      await ctx.append({ type: 'custom', plugin: 'codemode', data: { call, result } }).catch(() => {});
+      const reply = JSON.stringify({ type: 'result', id, text: result.content.map((b) => (b.type === 'text' ? b.text : '')).join(''), isError: result.isError });
+      if (Buffer.byteLength(reply) <= MAX_MESSAGE_BYTES) return send(reply);
+      send(JSON.stringify({ type: 'result', id, text: `The result of ${call.name} is larger than the ${MAX_MESSAGE_BYTES}-byte limit for a message.`, isError: true }));
+    };
+
+    const onLine = (line: string) => {
+      let message: unknown;
       try {
         message = JSON.parse(line);
       } catch {
         return finish(text(`The codemode worker sent a line that is not JSON: ${line.slice(0, 200)}`, true));
       }
-      if (message.type === 'done') return finish(text(joined(message.output, message.value) || 'The script returned nothing.'));
-      if (message.type === 'error') return finish(text(joined(message.output, message.error), true));
+      if (!isObject(message)) return;
+      const str = (value: unknown) => (typeof value === 'string' ? value : '');
+      if (message.type === 'done') {
+        const value = typeof message.value === 'string' ? message.value : null;
+        return finish(text(joined(str(message.output), value) || 'The script returned nothing.'));
+      }
+      if (message.type === 'error') return finish(text(joined(str(message.output), str(message.error)), true));
       if (message.type !== 'call') return;
+      const { id, name, input } = message;
+      if (typeof id !== 'string' || typeof name !== 'string' || !isObject(input)) {
+        return finish(text(`The codemode worker sent a call it cannot make: ${line.slice(0, 200)}`, true));
+      }
       calls += 1;
       if (calls > maxCalls) return finish(text(`The script made more than ${maxCalls} tool calls, so it was stopped.`, true));
-      const call: ToolCall = { type: 'toolCall', id: `${scriptId}-${message.id}`, name: message.name, input: message.input };
-      // The core runs the call as it runs the model's, under the turn's limit. A name off the
-      // allow-list is as unknown as a name nobody has.
-      void (async () => {
-        const result = allowed.has(call.name) ? await ctx.runTool(call) : text(`No tool named ${call.name}.`, true);
-        if (settled) return;
-        await ctx.append({ type: 'custom', plugin: 'codemode', data: { call, result } }).catch(() => {});
-        send({ type: 'result', id: message.id, text: result.content.map((b) => (b.type === 'text' ? b.text : '')).join(''), isError: result.isError });
-      })();
+      const task = answer(id, { type: 'toolCall', id: `${scriptId}-${id}`, name, input });
+      started.add(task);
+      void task.finally(() => started.delete(task));
+    };
+
+    readLines(child.stdout, {
+      line: (line) => {
+        if (!ended) onLine(line);
+      },
+      tooLong: () => finish(text(`The codemode worker sent a line longer than ${MAX_MESSAGE_BYTES} bytes.`, true)),
+      end: async () => {
+        if (ended) return;
+        // Killed first, so that a stray process holding stderr open cannot delay the end.
+        killGroup(child.pid);
+        if (!child.stderr.readableEnded) await Promise.race([once(child.stderr, 'end'), sleep(1000)]);
+        finish(text(`The codemode worker ended without finishing the script.${stderr.trim() ? `\n${stderr.trim()}` : ''}`, true));
+      },
     });
 
-    send({
-      type: 'start',
-      script,
-      tools: callable.map((tool) => ({ name: tool.name, params: [...params(tool).required, ...params(tool).optional] })),
-      timeoutMs,
-      ...(options.maxMemory === undefined ? {} : { maxMemory: options.maxMemory }),
-      ...(options.startTime === undefined ? {} : { startTime: options.startTime.toISOString() }),
-    });
+    send(start);
+  });
+}
+
+/** Splits a stream into lines of at most MAX_MESSAGE_BYTES, and stops at the first line longer than that. */
+function readLines(stream: Readable, on: { line: (line: string) => void; tooLong: () => void; end: () => void }) {
+  let pending: Buffer[] = [];
+  let size = 0;
+  let broken = false;
+  stream.on('data', (chunk: Buffer) => {
+    if (broken) return;
+    let from = 0;
+    for (let newline = chunk.indexOf(10); newline !== -1; newline = chunk.indexOf(10, from)) {
+      const piece = chunk.subarray(from, newline);
+      if (size + piece.length > MAX_MESSAGE_BYTES) {
+        broken = true;
+        return on.tooLong();
+      }
+      on.line(Buffer.concat([...pending, piece]).toString('utf8'));
+      pending = [];
+      size = 0;
+      from = newline + 1;
+    }
+    const rest = chunk.subarray(from);
+    size += rest.length;
+    if (size > MAX_MESSAGE_BYTES) {
+      broken = true;
+      return on.tooLong();
+    }
+    pending.push(rest);
+  });
+  stream.on('end', () => {
+    if (!broken) on.end();
   });
 }
 

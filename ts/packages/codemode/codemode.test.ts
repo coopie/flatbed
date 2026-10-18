@@ -142,3 +142,58 @@ test('an error in a script comes back with what it printed first', { skip }, asy
   assert.match(textOf(result), /^before\n/);
   assert.match(textOf(result), /ZeroDivisionError: division by zero/);
 });
+
+test('a script cannot pass the message cap with a call or its value', { skip }, async () => {
+  const big = "s = 'x' * 1000000\n";
+  {
+    const { agent, session } = setup(`${big}try:\n    await read_doc(s + s)\nexcept ValueError as e:\n    print(e)\nlen([s] * 200)`);
+    await agent.run();
+    const { entries } = await session();
+    assert.equal(textOf(scriptResult(entries)), 'read_doc() was given more than the 1048576-byte limit for a message.\n200');
+    assert.deepEqual(nested(entries), []);
+  }
+  {
+    const { agent, session } = setup(`${big}[s] * 200`);
+    await agent.run();
+    const result = scriptResult((await session()).entries);
+    assert.equal(textOf(result), "The script's result is larger than the 1048576-byte limit for a message.");
+    assert.equal(result.isError, true);
+  }
+});
+
+test('the host stops at a line longer than the cap, and survives a worker that exits at once', { skip }, async () => {
+  {
+    const worker = { command: 'node', args: ['-e', "process.stdout.write('x'.repeat(2 * 1024 * 1024) + '\\n'); setTimeout(() => {}, 5000)"] };
+    const { agent, session } = setup('1', { worker });
+    await agent.run();
+    assert.equal(textOf(scriptResult((await session()).entries)), 'The codemode worker sent a line longer than 1048576 bytes.');
+  }
+  {
+    // It exits before reading `start`, so writing `start` fails with EPIPE.
+    const worker = { command: 'node', args: ['-e', "process.stderr.write('gone'); process.exit(1)"] };
+    const { agent, session } = setup('1', { worker });
+    await agent.run();
+    assert.equal(textOf(scriptResult((await session()).entries)), 'The codemode worker ended without finishing the script.\ngone');
+  }
+});
+
+test('calls a script started finish and are recorded before run_script returns', { skip }, async () => {
+  // The limit is 1, so the second call ends the script while the first is still running.
+  const { agent, session, spans } = setup("import asyncio\nawait asyncio.gather(slow('a'), slow('b'))", { maxCalls: 1 });
+  await agent.run();
+  const { entries } = await session();
+  assert.equal(textOf(scriptResult(entries)), 'The script made more than 1 tool calls, so it was stopped.');
+  assert.equal(spans.length, 1);
+  assert.deepEqual(nested(entries).map((n) => [n.call.name, n.result.isError]), [['slow', false]]);
+  const [entry] = entries.flatMap((e) => (e.type === 'custom' ? [e.data as { call: { type: string; id: string } }] : []));
+  assert.equal(entry!.call.type, 'toolCall');
+  assert.match(entry!.call.id, /^[0-9a-f]{8}-1$/);
+});
+
+test('NaN and Infinity never reach the host as invalid JSON', { skip }, async () => {
+  const { agent, session } = setup("try:\n    await read_doc(float('nan'))\nexcept ValueError as e:\n    print('refused')\n[float('inf'), 1]");
+  await agent.run();
+  const { entries } = await session();
+  assert.equal(textOf(scriptResult(entries)), 'refused\n[inf, 1]');
+  assert.deepEqual(nested(entries), []);
+});
