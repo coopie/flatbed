@@ -66,6 +66,8 @@ A tool's `ctx` also has `runTool(call)`, for a tool that calls other tools on th
 
 Calls made with `runTool` share the turn's limit of `maxConcurrentTools` with the model's own calls, so a turn never runs more calls at once than its agent allows. While a tool waits for a call it made with `runTool`, it gives up its own place under the limit and takes one back before it carries on, so a tool that calls others can never wait on a place it is holding itself.
 
+A call made with `runTool` shares its caller's `requestReset`. Once the stop is set, a nested call that has not started gets `The harness stopped before this tool ran.`, as a direct call does. A tool that ends while calls it made are still running takes no place back.
+
 ## Tools in other languages
 
 A tool written in another language joins an agent through the `mcp` plugin, which connects to MCP servers when a session opens and adds their tools. The core needs nothing for this.
