@@ -15,6 +15,7 @@ export const DEFAULT_HARD_LIMIT = 180_000;
 export const DEFAULT_MAX_TOKENS = 8_192;
 export const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 export const SOFT_LIMIT_NOTICE = 'This session is nearly full. Bring your notes up to date, then call reset.';
+const NOT_RUN = 'The harness stopped before this tool ran.';
 
 export const resetTool: Tool = {
   name: 'reset',
@@ -37,7 +38,9 @@ export type Agent = {
 
 const notice = (text: string): EntryBody => ({ type: 'event', kind: 'notice', attrs: { from: 'harness' }, text });
 const errorResult = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true });
-const isSoftLimitNotice = (e: Entry) => e.type === 'event' && e.kind === 'notice' && e.attrs?.from === 'harness' && e.text === SOFT_LIMIT_NOTICE;
+const isHarnessNotice = (e: Entry) => e.type === 'event' && e.kind === 'notice' && e.attrs?.from === 'harness';
+const isSoftLimitNotice = (e: Entry) => isHarnessNotice(e) && e.type === 'event' && e.text === SOFT_LIMIT_NOTICE;
+const isStopNotice = (e: Entry) => isHarnessNotice(e) && e.type === 'event' && /^Stopped by .*\.$/s.test(e.text);
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 /** A throwing hook is the plugin's bug: the call gets an error result, and no later hook runs for it. */
 const pluginFailed = (plugin: Plugin, error: unknown) => errorResult(`The ${plugin.name} plugin failed: ${messageOf(error)}`);
@@ -50,9 +53,14 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   // The code for the open session's tools, kept between runs of this process.
   let cachedTools: { session: string; tools: Map<string, Tool> } | undefined;
 
-  const providerName = config.model.slice(0, config.model.indexOf('/'));
+  // Fail here, before anything is stored, for a configuration no run could succeed with.
+  const providerName = config.model.slice(0, Math.max(config.model.indexOf('/'), 0));
   const provider = deps.providers[providerName];
   if (provider === undefined) throw new Error(`No provider named ${providerName} for model ${config.model}.`);
+  const maxConcurrent = config.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS;
+  if (!(maxConcurrent >= 1)) throw new Error(`maxConcurrentTools must be at least 1, not ${maxConcurrent}.`);
+  const toolExecution = config.toolExecution ?? 'concurrent';
+  if (toolExecution !== 'concurrent' && toolExecution !== 'serial') throw new Error(`toolExecution must be concurrent or serial, not ${toolExecution}.`);
 
   function contextFor(session: Session): PluginContext {
     return {
@@ -93,7 +101,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
         tools.set(tool.name, tool);
       }
     }
-    if (tools.has(resetTool.name)) throw new Error('A plugin may not add a tool named reset.');
+    if (tools.has(resetTool.name)) throw new Error(`Two tools are named ${resetTool.name}.`);
     tools.set(resetTool.name, resetTool);
     return { sections, tools };
   }
@@ -139,7 +147,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   /** Step 2: gives every unanswered call of the last assistant message an error result. */
   async function repair(session: Session) {
     for (const call of unansweredCalls(pathOf(session.entries))) {
-      const result = errorResult('The harness stopped before this tool ran.');
+      const result = errorResult(NOT_RUN);
       await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...result } });
     }
   }
@@ -159,21 +167,13 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     return unansweredCalls(pathOf(session.entries.slice(0, at + 1))).length === 0 ? parentId! : head;
   }
 
-  /**
-   * A session needs a run when the last entry on its path, ignoring `custom` and `context` entries,
-   * is a `tool` message or an event that is not from the harness.
-   */
-  function needsRun(session: Session): boolean {
-    const last = pathOf(session.entries).findLast((e) => e.type !== 'custom' && e.type !== 'context');
-    if (last?.type === 'event') return last.attrs?.from !== 'harness';
-    return last?.type === 'message' && last.message.role === 'tool';
-  }
-
   /** Runs one call as docs/spec/plugins.md describes. Never throws for a tool's own failure. */
-  async function runTool(call: ToolCall, tools: Map<string, Tool>, ctx: ToolContext): Promise<ToolResult> {
-    const tool = tools.get(call.name);
-    if (tool === undefined) return errorResult(`No tool named ${call.name}.`);
-    const problem = checkInput(call.input, tool.inputSchema);
+  async function runTool(call: ToolCall, tools: Map<string, { tool: Tool; schema: Record<string, unknown> }>, ctx: ToolContext): Promise<ToolResult> {
+    const found = tools.get(call.name);
+    if (found === undefined) return errorResult(`No tool named ${call.name}.`);
+    const { tool, schema } = found;
+    // The schema the context entry froze, not the one the plugin's code has now.
+    const problem = checkInput(call.input, schema);
     if (problem !== undefined) return errorResult(`Invalid input for ${call.name}: ${problem}.`);
     let result: ToolResult | undefined;
     for (const plugin of plugins) {
@@ -209,31 +209,26 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     return 'reset';
   }
 
-  async function run(signal: AbortSignal | undefined): Promise<RunOutcome> {
+  async function run(signal: AbortSignal): Promise<RunOutcome> {
     // Read from the store on every run, since the host may have appended to it meanwhile.
     const { session, tools } = await openSession();
     await repair(session);
     await deliverQueued(session);
     const softLimit = config.softLimit ?? DEFAULT_SOFT_LIMIT;
     const hardLimit = config.hardLimit ?? DEFAULT_HARD_LIMIT;
-    // The frozen context decides which tools exist; the plugins only supply their code.
+    // The frozen context decides which tools exist and their schemas; the plugins only supply the code.
     const { context } = render(pathOf(session.entries));
-    const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, tools.get(t.name)!] as const] : [])));
-    // After the soft-limit notice, the loop runs one more turn so that the model can answer it.
-    let answerNotice = false;
-    // Tools see the run's stop signal, or one that is never set when the host gave none.
-    const toolSignal = signal ?? new AbortController().signal;
-    // Calls run together, but no more than this many at once.
-    const limit = limiter(config.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS);
+    const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, { tool: tools.get(t.name)!, schema: t.inputSchema }] as const] : [])));
+    const limit = limiter(toolExecution === 'serial' ? 1 : maxConcurrent);
 
-    while (answerNotice || needsRun(session)) {
-      answerNotice = false;
-      if (signal?.aborted) return stopped(session, signal);
+    while (needsRun(session)) {
+      if (signal.aborted) return stopped(session, signal);
 
       const { messages } = render(pathOf(session.entries));
       let message: AssistantMessage;
       try {
-        message = await provider!.complete({
+        // Raced against the stop, so that a provider that ignores the signal cannot keep the run waiting.
+        message = await untilStopped(signal, provider!.complete({
           model: config.model.slice(providerName.length + 1),
           sections: context.sections,
           tools: context.tools,
@@ -241,9 +236,9 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
           maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
           ...(config.effort === undefined ? {} : { effort: config.effort }),
           signal,
-        });
+        }));
       } catch (error) {
-        if (signal?.aborted) return stopped(session, signal);
+        if (signal.aborted) return stopped(session, signal);
         const failed: AssistantMessage = { role: 'assistant', content: [], model: config.model, usage: { input: 0, output: 0 }, stop: 'error' };
         await append(session, { type: 'message', message: failed });
         await append(session, notice(`The model call failed: ${messageOf(error)}`));
@@ -252,24 +247,23 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       await append(session, { type: 'message', message });
 
       const resets: (string | undefined)[] = [];
-      const ctx: ToolContext = { ...contextFor(session), requestReset: (reason) => void resets.push(reason), signal: toolSignal };
+      const ctx: ToolContext = { ...contextFor(session), requestReset: (reason) => void resets.push(reason), signal };
       const calls = toolCalls(message);
       // A response cut off by maxTokens may hold a call whose input is incomplete, so none of its calls run.
+      // Once the stop is set, a call that has not started never starts.
       const results = message.stop === 'maxTokens'
         ? calls.map(() => errorResult('The response was cut off before this call was complete.'))
-        : await Promise.all(calls.map((call) => limit(() => runTool(call, frozen, ctx))));
+        : await Promise.all(calls.map((call) => limit(async () => (signal.aborted ? errorResult(NOT_RUN) : runTool(call, frozen, ctx)))));
       for (const [i, call] of calls.entries()) {
         await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
       }
+      if (signal.aborted && calls.length > 0) return stopped(session, signal);
       if (resets.length > 0) return endSession(session, 'agent', resets[0]);
 
       const { input, output, cacheRead = 0, cacheWrite = 0 } = message.usage;
       const size = input + output + cacheRead + cacheWrite;
       if (size > hardLimit) return endSession(session, 'harness', 'context budget');
-      if (size > softLimit && !session.entries.some(isSoftLimitNotice)) {
-        await append(session, notice(SOFT_LIMIT_NOTICE));
-        answerNotice = true;
-      }
+      if (size > softLimit && !session.entries.some(isSoftLimitNotice)) await append(session, notice(SOFT_LIMIT_NOTICE));
 
       await deliverQueued(session);
     }
@@ -291,7 +285,8 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       if (running) throw new Error(`Agent ${config.id} is already running.`);
       running = true;
       try {
-        return await run(options.signal);
+        // A run the host cannot stop gets a stop that is never set, so the loop has one shape.
+        return await run(options.signal ?? new AbortController().signal);
       } finally {
         running = false;
       }
@@ -301,7 +296,6 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
 
 /** Runs the functions it is given, at most `size` at a time, in the order they were given. */
 function limiter(size: number) {
-  if (!(size >= 1)) throw new Error(`maxConcurrentTools must be at least 1, not ${size}.`);
   let active = 0;
   const waiting: (() => void)[] = [];
   return async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -316,6 +310,30 @@ function limiter(size: number) {
       else active -= 1;
     }
   };
+}
+
+/** Settles as the promise does, or rejects as soon as the signal is set, leaving the promise behind. */
+function untilStopped<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+/**
+ * A session needs a run when the last entry on its path, ignoring `custom` and `context` entries, is
+ * a `tool` message, an event that is not from the harness, or the soft-limit notice. Stop notices
+ * after the soft-limit notice leave it still needing an answer. Worked out from the entries alone,
+ * so a restarted process agrees with the one that wrote them.
+ */
+function needsRun(session: Session): boolean {
+  const path = pathOf(session.entries).filter((e) => e.type !== 'custom' && e.type !== 'context');
+  const last = path.at(-1);
+  if (last !== undefined && isSoftLimitNotice(path.findLast((e) => !isStopNotice(e)) ?? last)) return true;
+  if (last?.type === 'event') return last.attrs?.from !== 'harness';
+  return last?.type === 'message' && last.message.role === 'tool';
 }
 
 function toolCalls(message: AssistantMessage): ToolCall[] {

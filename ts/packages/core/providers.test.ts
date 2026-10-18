@@ -184,3 +184,23 @@ test('http: the backoff sleep ends when the stop signal is set', async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test('http: retries 408 but not 400', async () => {
+  const { postJson } = await import('./providers/http.ts');
+  const realFetch = globalThis.fetch;
+  const statuses = [408, 200, 400];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    const status = statuses[calls++]!;
+    return status === 200 ? Response.json({ ok: true }) : new Response('no', { status });
+  };
+  try {
+    deepEqual(await postJson('https://example.invalid', {}, {}), { ok: true });
+    equal(calls, 2);
+    const outcome = await postJson('https://example.invalid', {}, {}).then(() => 'resolved', (error: Error) => error.message);
+    equal(outcome, 'HTTP 400: no');
+    equal(calls, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
