@@ -165,3 +165,70 @@ class Codemode(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(is_error)
         self.assertTrue(text.startswith("before\n"))
         self.assertIn("ZeroDivisionError: division by zero", text)
+
+    async def test_a_script_cannot_pass_the_message_cap_with_a_call_or_its_value(self):
+        big = "s = 'x' * 1000000\n"
+        agent, entries, *_ = setup(
+            big + "try:\n    await read_doc(s + s)\nexcept ValueError as e:\n    print(e)\nlen([s] * 200)"
+        )
+        await agent.run()
+        found = await entries()
+        self.assertEqual(
+            script_result(found),
+            ("read_doc() was given more than the 1048576-byte limit for a message.\n200", False),
+        )
+        self.assertEqual(nested(found), [])
+        agent, entries, *_ = setup(big + "[s] * 200")
+        await agent.run()
+        self.assertEqual(
+            script_result(await entries()),
+            ("The script's result is larger than the 1048576-byte limit for a message.", True),
+        )
+
+    async def test_the_host_stops_at_a_line_longer_than_the_cap(self):
+        line = "import sys, time; print('x' * 2 * 1024 * 1024, flush=True); time.sleep(5)"
+        agent, entries, *_ = setup("1", worker=["python3", "-c", line])
+        started = time.monotonic()
+        await agent.run()
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(
+            script_result(await entries()),
+            ("The codemode worker sent a line longer than 1048576 bytes.", True),
+        )
+
+    async def test_a_call_without_input_ends_the_script_rather_than_leave_it_waiting(self):
+        call = '{"type": "call", "id": "1", "name": "read_doc"}'
+        line = f"import sys, time; print({call!r}, flush=True); time.sleep(5)"
+        agent, entries, *_ = setup("1", worker=["python3", "-c", line])
+        await agent.run()
+        self.assertEqual(
+            script_result(await entries()), (f"The codemode worker sent a call it cannot make: {call}", True)
+        )
+
+    async def test_calls_a_script_started_finish_and_are_recorded_before_run_script_returns(self):
+        # The limit is 1, so the second call ends the script while the first is still running.
+        agent, entries, _, spans, _ = setup(
+            "import asyncio\nawait asyncio.gather(slow('a'), slow('b'))", max_calls=1
+        )
+        await agent.run()
+        found = await entries()
+        self.assertEqual(
+            script_result(found), ("The script made more than 1 tool calls, so it was stopped.", True)
+        )
+        self.assertEqual(len(spans), 1)
+        [record] = nested(found)
+        self.assertEqual(record["call"]["type"], "toolCall")
+        self.assertRegex(record["call"]["id"], r"^[0-9a-f]{8}-1$")
+        self.assertEqual(
+            record["result"], {"content": [{"type": "text", "text": "done a"}], "isError": False}
+        )
+
+    async def test_nan_and_infinity_never_reach_the_host_as_invalid_json(self):
+        agent, entries, *_ = setup(
+            "try:\n    await read_doc(float('nan'))\nexcept ValueError as e:\n    print('refused')\n"
+            "[float('inf'), 1]"
+        )
+        await agent.run()
+        found = await entries()
+        self.assertEqual(script_result(found), ("refused\n[inf, 1]", False))
+        self.assertEqual(nested(found), [])
