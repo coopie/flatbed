@@ -1,40 +1,45 @@
-# Codemode: a design for review
+# Codemode
 
-Nothing here is built. Sam wants to look at the security question first. This page sets out the design so that the decision is quick.
+Codemode lets the model write a short Python script that calls several tools, loops over their results and returns only what it needs, in one turn instead of many. This page is the design, settled after a spike on 18 October 2026. Nothing is built yet; Sam decides whether to build it.
 
-## What codemode is
+## What it has to guarantee
 
-Instead of calling one tool per turn, the model writes a short script that calls several tools, loops over their results and returns only what it needs. A task that took ten turns, each re-reading the whole context, takes one. pi shipped this on 1 October 2026 ([docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)); Cloudflare's Code Mode is the same idea.
+Sam's conditions: a script must not be able to see how tools are implemented, reach the host's files, environment or network, or learn guardrails the agent should not know. Web access, where an agent has any, goes only through a tool the agent is allowed.
 
-## The worry, and the answer
+## How it works
 
-Sam's question: could a script leak the source code, or anything else the host can reach?
+A `codemode` plugin adds one tool, `run_script`. Its description lists the tools a script may call, as Python function signatures generated from their schemas. The script runs in [Monty](https://github.com/pydantic/monty), Pydantic's sandboxed Python interpreter written in Rust, which has Python, TypeScript and Rust bindings, so all three flatbed implementations share one codemode and the conformance suite can test it.
 
-A script can only reach what it is given. The design rests on three rules:
+When a script calls a tool, Monty pauses and hands the host the name and arguments as data. The host runs the call through the loop's own tool runner, so `beforeTool`, the supervisor, the tool, `afterTool` and `maxConcurrentTools` all apply exactly as for a direct call, then resumes the script with the result. Calls a script starts together with `asyncio.gather` run together on the host. The script's printed output and return value are the tool's result, and each nested call is recorded in the session.
 
-1. **The script runs in an interpreter with no access to the host.** QuickJS compiled to WebAssembly has no file system, network, environment, timers or `require`. It cannot read the source code, `.env` or anything else unless a tool returns it.
-2. **Every tool call leaves the interpreter as a message.** Inside, `tools.read_doc({name})` is a stub that posts `{callId, name, input}` to the host and waits. The host runs the call exactly as if the model had made it directly: through `beforeTool`, so the supervisor and approvals see it, then the tool, then `afterTool`, so redaction applies. The result goes back in as a message.
-3. **The host logs every nested call** on the codemode tool's result, so the session shows each call the script made.
+## Why a script cannot see behind the tools
 
-So codemode can do no more than the model could do with direct calls; it does it in fewer turns. The risk worth naming is different: a script can chain calls faster than a person can watch, so a tool that sends or deletes should keep waiting for a person through its own guard, as it does today.
+The spike tried every usual escape in all three bindings and got the same answers:
 
-This is the "almost sandbox, track the calls coming out, send responses back in" shape Sam described, and it is also how pi's codemode works: the interpreter is closed, and its only door is the tool bridge. Because the bridge is message passing, calls are naturally asynchronous: a script can start several and await them together, and the host can run them concurrently or queue one for a person.
+- **No host code inside.** A tool is a stub, `<function 'read_doc' external>`, with no `__code__` or `__globals__`. `inspect`, `traceback`, `__import__`, `globals` and `dir` do not exist, and `().__class__` raises, so the object graph that Python's own `exec` would expose is out of reach.
+- **No host resources.** Monty's `os` is its own: files and directories raise `PermissionError`, and the environment is not supported. There is no `socket`, `subprocess` or `urllib`, so the network exists only as a tool.
+- **Only messages come back.** When a tool fails, the script sees its error type and message, never a host traceback.
 
-## How it would fit flatbed
+## What the plugin must add
 
-A plugin, `codemode`, with no change to the core:
+The spike found gaps the plugin closes itself:
 
-- its `context` hook adds one tool, `codemode`, whose description lists the other tools as TypeScript declarations generated from their schemas, and hides them from direct use if the agent prefers
-- the tool's `run` starts a QuickJS worker, bridges calls through the loop's own tool runner, enforces a time limit and an output cap, and returns the script's output
+- **Check every call's name** against the agent's codemode allow-list before running it. Through Monty's process pool, even an unknown name such as `__import__` arrives at the host as an ordinary call.
+- **Count calls in the host.** The in-process Rust binding does not enforce Monty's call limit.
+- **Clean error messages.** A tool's error message passes through as written, so strip host paths from it.
+- **Limits:** a time limit on the script (which pauses while a tool runs), a deadline on each tool and on the whole run, and memory, recursion, output and call limits. Start a fresh interpreter session for every script, since a session that hit a limit cannot be trusted.
+- **A fixed clock**, so scripts cannot time the host.
+- **A stop** ends a script between calls. The TypeScript binding cannot cancel a script mid-run, so the deadline is the backstop there.
 
-The TypeScript implementation can use pi's `@earendil-works/pi-codemode` package, which has no pi dependencies, or `quickjs-emscripten` directly.
+## What still shows, by design
 
-## Python and Rust
+The tools' names, descriptions and schemas, which the model needs anyway; their results; and a supervisor's refusal text. Where guardrails should stay hidden, the guard can refuse with a generic message.
 
-- **Python:** Monty, from the Pydantic team, is a Python interpreter written in Rust for exactly this, running model-written Python with no host access and external functions as the bridge. It is young; check its state before relying on it.
-- **Rust:** embed QuickJS through `rquickjs`, or call Monty natively.
+## Costs and risks
+
+A warm run with one tool call takes about 0.15 ms in Python and TypeScript and much less in Rust; the packages are 38 MB (Python) and 63 MB (TypeScript). Monty is young, at version 1.2, and runs a subset of Python. Its Rust crate on crates.io lags the git tag, and the Rust host has to write the loop that answers each pause, about 60 lines. QuickJS is smaller and more mature, but would mean a different engine and bridge in each language. The probes are in `spikes/codemode/`.
 
 ## Decisions for Sam
 
-- Build it as a TypeScript plugin first, on pi's package?
-- Should tools that change the outside world be callable from a script at all, or only read-only tools?
+- Build it, starting with TypeScript and Python and adding Rust once its crate catches up?
+- Should tools that send or change something be callable from a script at all, or only read-only tools by default, with an agent opting others in?
