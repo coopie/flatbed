@@ -35,26 +35,25 @@ A lightly held plan, started on 6 October 2026 and last rewritten on 18 October.
 
 **Done**
 
-- The docs and the spec.
-- The core in TypeScript, Python and Rust, aligned on 18 October to one async host API ([spec/host.md](spec/host.md)). Each passes the same 37 conformance scenarios and has the fake, Anthropic and OpenAI-compatible providers and a rough CLI. Each runs a turn's tool calls together or one at a time, by the agent's `toolExecution`. Python and Rust have passed the live check against Anthropic.
+- The docs and the spec, with the docs brought in line with Sam's updated starter docs on 18 October.
+- The core in TypeScript, Python and Rust, aligned on 18 October to one async host API ([spec/host.md](spec/host.md)). Each passes the same 46 conformance scenarios and has the fake, Anthropic and OpenAI-compatible providers and a rough CLI. Each runs a turn's tool calls together or one at a time, by the agent's `toolExecution`, and gives tools `ctx.runTool` to run other calls under the same limit. All three have passed the live check against Anthropic.
 - The docs plugin: documents pinned as context, and the timeline.
 - The supervisor: the spec format, one-call and agent runners, and the guard plugin.
 - The MCP plugin, with a Python MCP server as the example, and the dispatch plugin for sub-agents.
+- Codemode in all three languages, on one shared Monty worker process, reviewed and fixed: [codemode.md](codemode.md).
 - The example app in `examples/assistant`, in demo mode, reviewed and fixed. Google mode and the Docker image are untested.
-- The codemode design, agreed by Sam on 18 October after a spike: [codemode.md](codemode.md).
 - An interactive walkthrough from the first night, [walkthrough.html](walkthrough.html).
 
 **Now**
 
-- Closing the eight gaps a review of the three cores found after the alignment, with a conformance scenario for each that the suite can check.
-- Codemode in all three languages, on one shared Monty worker process.
-- Bringing these docs in line with Sam's updated starter docs.
+- Nothing is running. The repo is on GitHub at `coopie/flatbed` from 18 October.
 
 **Next**
 
-- A real model through the example app.
-- Sam's calls on messaging, the GitHub repo, a Google web client and deploying to Cloud Run, and on the entries in [decisions.md](decisions.md) still marked *for review*.
+- A real model through the example app, once the Supabase project is restored.
+- Sam's calls on messaging, a Google web client and deploying to Cloud Run, and on the entries in [decisions.md](decisions.md) still marked *for review*.
 - Sam's call on which tools a codemode script may call, in [codemode.md](codemode.md).
+- A `signal` on `ctx.runTool`, so a slow nested call cannot hold a script past its deadline, if that starts to matter.
 - A `callId` on the tool context, so the app need not match a proposal to its call by input.
 
 **Later, if it earns its place**
