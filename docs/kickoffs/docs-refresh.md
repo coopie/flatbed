@@ -29,3 +29,18 @@ The repo's working docs read as the new starter docs would have them, `scripts/c
 Work for at most 75 minutes; stop and write up what you have when you reach it. Sam will read this branch before it merges. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Other builders are changing code at the same time; touch only docs, and leave `docs/spec/` alone apart from wording outside its contracts.
 
 ## Write-up
+
+Written 18 October 2026, after about 35 minutes. Commit `bcdcf9a` holds the change.
+
+**What changed.** `AGENTS.md` now has the gist's start-here shape, with flatbed under *This project*: what it is, each doc with when to read it, and the check and `view` commands. `writing.md` and the new `leading.md` are the gist's files, word for word, so later syncs are a copy. `ways-of-working/README.md` is the gist's page with flatbed's practice folded in as described evidence: the core's size, spec and suite first, care in proportion, and the conformance suite as the test boundary. Its *Stack* and *Testing* detail moved to a new `docs/stack.md`, where the gist puts it. The overview's plan is brought up to 18 October (37 scenarios, OpenAI providers everywhere, alignment, codemode), and its *When you add to it* reads as context. `decisions.md`'s preamble lost a pointer to a `decisions-archive.md` that never existed. `design.md` lost three "not X" contrasts.
+
+**Kept, and why.** The spec, decision entries and write-ups. `codemode.md`, because the codemode builder is writing its protocol section now. `design.md`, `codemode.md` and the walkthrough stay as their own docs; the gist's list is "worth having in most projects", not exhaustive. Plugin READMEs, which sit beside code other builders are changing.
+
+**How I know it works.** `scripts/check.sh ts` ended `== all checks passed`. A small script found no dead links or paths in the edited docs, apart from `leading.md`'s conditional `docs/research/`.
+
+**For Sam to decide.**
+- The gist's tone paragraph, still unconfirmed in the handover, is now in flatbed's writing guide too.
+- Eighteen merged briefs are still in `docs/kickoffs/`. `leading.md` says to delete them after merge; `decisions.md` links `core-fixes.md` as "history in git". I left them for the lead.
+- The old `flatbed view <session>` command never existed; `stack.md` now gives the three real ones.
+
+**How it went.** Quick, because the gist and handover are clear. Writing the overview's plan meant reading six write-ups to learn what was true; a dated line in the overview after each merge would save that.
