@@ -14,18 +14,21 @@ The request holds:
 - `sections` and `tools`, from the session's `context` entry
 - `messages`, rendered as [sessions.md](sessions.md) describes
 - `maxTokens`, 8,192 unless the agent sets it
-- `outputSchema`, optional: a JSON Schema the response's text must match, for structured output
+- `outputSchema`, optional: a JSON Schema the response's text must match, for structured output. The loop never sets it; callers that use a provider directly, such as the supervisor, do
 - `effort`, optional: how much effort the model should spend, such as `low` or `high`, passed through from the agent's config to providers that take it and ignored by the rest
 - `signal`, optional, to cancel the request
 
 The response is an assistant message with `model` set to `<provider>/<model-name>`, its `usage` and its `stop`. Map the API's stop reasons to `end`, `toolUse`, `maxTokens` or `refusal`, and any reason not listed for the provider below to `end`.
 
-A provider retries rate limits and server errors itself, three times with backoff, and then throws. When the signal is aborted, it stops at once, during a backoff wait too, and throws.
+A provider retries a failed request itself, up to three times, waiting 1, 2 and then 4 seconds between tries, and then throws. It retries when the request never got a response, such as a refused connection or a timeout, and on HTTP 408, 409, 429, 500 and above. It does not retry any other response. When the signal is aborted, it stops at once, during a backoff wait too, and throws.
+
+Every provider that calls an API takes the same options: `apiKey`, `baseUrl`, and `timeout`, the seconds to wait for a response, 600 unless set.
 
 ## Every implementation has
 
 - **`faux`**, a scripted fake for tests. It is given a list of assistant messages, or functions that receive the request and return one, and returns them in order. It records every request it receives. When the list runs out, it throws `No more scripted responses.` It sets `model` to `faux/<model-name>`, and reports `usage` as given in the script, or zero, and `stop` as given, or `toolUse` when the content has a tool call and `end` otherwise.
 - **`anthropic`**, the Messages API, described below.
+- **`openai`**, any chat-completions-compatible endpoint, described below.
 
 ### The Anthropic adapter
 
@@ -43,7 +46,10 @@ A provider retries rate limits and server errors itself, three times with backof
 2. One on the last tool, when there are tools.
 3. The rest, two or three, on the sections marked `cache: true`, taking the earliest first. Earlier sections change least, so their breakpoints still match after a reset, while the history breakpoint covers the later ones within a session. Mark no more than that, even when more sections ask for it.
 
-TypeScript also has **`openai`**, for any chat-completions-compatible endpoint, which joins the sections into one system message, sends `effort` as `reasoning_effort`, and maps `tool_calls` to `toolUse`, `length` to `maxTokens` and `content_filter` to `refusal`.
+
+### The OpenAI adapter
+
+The adapter joins the sections into one system message, sends `effort` as `reasoning_effort`, and maps `tool_calls` to `toolUse`, `length` to `maxTokens` and `content_filter` to `refusal`.
 
 ## Choosing a provider
 

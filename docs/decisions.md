@@ -133,3 +133,13 @@ Entries marked *for review* were made overnight on 6 October 2026 while Sam was 
 **Because:** Sam wants idiomatic modern Python that runs tools together, as TypeScript does. The standard library has no async HTTP client, and httpx saves writing one. Appending one line to a local file is fast enough not to need a thread.
 
 **Rules out:** calling `Runner.run` from synchronous code without `asyncio.run`, and a store that blocks for long, such as a remote database, without wrapping it in `asyncio.to_thread`.
+
+## One host API, async throughout, concurrency by setting
+
+18 October 2026.
+
+**Chose:** every implementation is async from end to end (TypeScript promises, Python `asyncio`, Rust `tokio`), offers the same host API with the same names ([spec/host.md](spec/host.md)), and runs a turn's tool calls by the agent's `toolExecution`, `concurrent` or `serial`, with `maxConcurrentTools`.
+
+**Because:** a comparison of the three cores on 18 October found that they had drifted where the suite could not see: Rust ran tools one at a time and could not interrupt a model call, hooks were sync in Rust and the store sync in Python, and names differed. Sam wants them alike, and as concurrent as each language allows.
+
+**Rules out:** an implementation choosing its own concurrency or stop behaviour. The suite now checks both.

@@ -4,7 +4,7 @@ A plugin is how anything beyond the loop joins an agent: documents, supervision,
 
 ## A plugin
 
-A plugin is a plain object with a `name` and any of five hooks. Every hook may be asynchronous.
+A plugin is a plain object with a `name` and any of five hooks. Every hook is async, as everything in the core is; TypeScript and Python also accept a hook or tool that returns a plain value.
 
 - **`context(ctx)`**, when a session opens. Returns sections and tools to add. Sections from all plugins are joined in plugin order.
 - **`beforeTool(call, ctx)`**, before a tool call runs. Returns nothing to let it run, or a result to use instead, such as a refusal or a note that the call is waiting for a person. The first plugin that returns a result wins, and the tool does not run.
@@ -14,7 +14,7 @@ A plugin is a plain object with a `name` and any of five hooks. Every hook may b
 
 `ctx` gives a hook the agent, the open session, and two actions:
 
-- `append(entry)`, to add a `custom` entry to the open session now, such as from `afterTool`. It fails for any other type of entry.
+- `append(entry)`, to add a `custom` entry to the open session. It writes at once, before the hook carries on, and fails for any other type of entry.
 - `deliver(event)`, to queue an event for the next delivery point
 
 Send events through `deliver`, never `append`. Delivery points come only after a turn's results, so an event never lands between a tool call and its result, which providers reject.
@@ -45,7 +45,7 @@ A tool is a name, a description, an input schema and a function:
 For each call in an assistant message:
 
 1. Find the tool by name in the session's tools. When none matches, the result is an error: `No tool named <name>.`
-2. Check the input against the tool's schema. Each implementation checks at least that the input is an object and that required properties are present, and reports the first problem in these words, which the conformance suite checks: `Invalid input for <name>: expected an object.` or `Invalid input for <name>: missing required property "<property>".` A fuller check may report other problems in its own words.
+2. Check the input against the tool's schema, as the session's `context` entry records it, not as the plugin's code has it now. Each implementation checks at least that the input is an object and that required properties are present, and reports the first problem in these words, which the conformance suite checks: `Invalid input for <name>: expected an object.` or `Invalid input for <name>: missing required property "<property>".` A fuller check may report other problems in its own words.
 3. Call each plugin's `beforeTool`. When one returns a result, use it.
 4. Otherwise call the tool's `run`. When it throws, the result is an error with the message.
 5. Pass the result through each plugin's `afterTool`.
@@ -56,7 +56,7 @@ A custom entry that a tool, `beforeTool` or `afterTool` appends is written at on
 
 A call that fails at step 1 or 2 never reaches the plugins. Nor does a call in a response cut off by `maxTokens`, which the loop answers without running, as [loop.md](loop.md) describes.
 
-The session's `context` entry decides which tools exist; the plugins supply their code. When a run resumes a session that an earlier process opened, the loop calls the `context` hooks again for the tools' code and ignores the sections.
+The session's `context` entry decides which tools exist; the plugins supply their code. When a session opens and two of its tools would share a name, including a plugin's tool named `reset`, the run fails before writing anything, with the error `Two tools are named <name>.` When a run resumes a session that an earlier process opened, the loop calls the `context` hooks again for the tools' code and ignores the sections.
 
 ## Tools in other languages
 

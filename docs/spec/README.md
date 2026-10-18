@@ -9,6 +9,8 @@ The core is deliberately small. It does four things:
 3. lets plugins add context, tools and checks, in [plugins.md](plugins.md)
 4. talks to models through providers, in [providers.md](providers.md)
 
+[host.md](host.md) is the surface a host programs against: configuring, delivering, running and stopping an agent, with the same names in every language.
+
 Everything else is a plugin. [conformance.md](conformance.md) says how an implementation proves it follows this spec.
 
 ## Words used throughout
