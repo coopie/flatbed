@@ -85,8 +85,30 @@ test('no more than maxConcurrentTools calls run at once, and results keep call o
   deepEqual(results, [0, 1, 2, 3, 4].map((n) => ({ type: 'text', text: `done ${n}` })));
 });
 
-test('createAgent fails at once for an unknown provider or maxConcurrentTools below 1', () => {
+test('createAgent fails at once, in the words host.md gives', () => {
   const deps = { store: memoryStore(), providers: { faux: fauxProvider([]) } };
-  throws(() => createAgent({ id: 'a', model: 'nowhere/test' }, deps), /No provider named nowhere/);
-  throws(() => createAgent({ id: 'a', model: 'faux/test', maxConcurrentTools: 0 }, deps), /maxConcurrentTools must be at least 1/);
+  throws(() => createAgent({ id: 'a', model: 'nowhere/test' }, deps), { message: 'No provider named nowhere for the model nowhere/test.' });
+  throws(() => createAgent({ id: 'a', model: 'faux/test', maxConcurrentTools: 0 }, deps), { message: 'maxConcurrentTools must be at least 1, not 0.' });
+  const toolExecution = 'parallel' as 'serial';
+  throws(() => createAgent({ id: 'a', model: 'faux/test', toolExecution }, deps), { message: 'toolExecution must be concurrent or serial, not parallel.' });
+});
+
+test('every hook sees the run stop signal, and a stop with no name is by the host', async () => {
+  const controller = new AbortController();
+  const seen: boolean[] = [];
+  const tool: Tool = { name: 'wait', description: 'Stop the run.', inputSchema: { type: 'object' }, run: () => (controller.abort(), 'Stopped.') };
+  const plugin: Plugin = {
+    name: 'test',
+    context: (ctx) => (seen.push(ctx.signal === controller.signal), { tools: [tool] }),
+    onEntry: (_entry, ctx) => void seen.push(ctx.signal === controller.signal),
+  };
+  const store = memoryStore();
+  const providers = { faux: fauxProvider([callWait]) };
+  const agent = createAgent({ id: 'a', model: 'faux/test', plugins: [plugin] }, { store, providers });
+  agent.deliver({ kind: 'message', text: 'Wait' });
+  equal(await agent.run({ signal: controller.signal }), 'stopped');
+  equal(seen.length > 1 && seen.every(Boolean), true);
+  const { entries } = await store.read('a', (await store.list('a'))[0]!);
+  const last = entries.at(-1);
+  equal(last?.type === 'event' && last.text, 'Stopped by the host.');
 });

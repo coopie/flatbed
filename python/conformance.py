@@ -9,6 +9,7 @@ Runs every scenario in conformance/scenarios/ against a temporary file store wit
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import tempfile
@@ -45,9 +46,11 @@ def make_tool(spec: dict[str, Any], running: Running) -> Tool:
             running.now -= 1
 
     async def behave(tool_input: dict[str, Any], ctx: Any) -> str:
+        # Any behaviour may wait first, then append, then do the rest.
         if "sleep" in behaviour:
             await asyncio.sleep(behaviour["sleep"] / 1000)
-            return behaviour["text"]
+        if "append" in behaviour:
+            await ctx.append({"type": "custom", "plugin": "test", "data": behaviour["append"]})
         if "waitForStop" in behaviour:
             await ctx.signal.wait()
             return behaviour["waitForStop"]
@@ -80,13 +83,25 @@ def make_plugin(scenario: dict[str, Any], running: Running) -> Plugin:
             raise RuntimeError(result["throw"])
         return result
 
+    async def context(ctx: Any) -> ContextAddition:
+        opening = hooks.get("context", {})
+        if "throw" in opening:
+            raise RuntimeError(opening["throw"])
+        if "append" in opening:
+            # `append` fails here, and the hook carries on.
+            with contextlib.suppress(Exception):
+                await ctx.append({"type": "custom", "plugin": "test", "data": opening["append"]})
+        return ContextAddition(sections=scenario["sections"], tools=tools)
+
     async def on_entry(entry: dict[str, Any], ctx: Any) -> None:
         if entry["type"] == "message" and entry["message"]["role"] == "tool":
+            if "throw" in hooks["onEntry"]:
+                raise RuntimeError(hooks["onEntry"]["throw"])
             await ctx.append({"type": "custom", "plugin": "test", "data": hooks["onEntry"]["custom"]})
 
     return Plugin(
         name="test",
-        context=lambda ctx: ContextAddition(sections=scenario["sections"], tools=tools),
+        context=context,
         before_tool=(lambda call, ctx: hook_result(before.get(call["name"]))) if before else None,
         after_tool=(lambda call, result, ctx: hook_result(after.get(call["name"]))) if after else None,
         on_entry=on_entry if "onEntry" in hooks else None,
@@ -282,7 +297,7 @@ async def run_step(agent: Agent, step: dict[str, Any], index: int) -> str | None
             stop.set(step["run"]["stop"])
     expected = step.get("expect")
     try:
-        outcome = await agent.run(stop=stop)
+        outcome = await agent.run(signal=stop)
     except Exception as error:
         if isinstance(expected, dict) and str(error) == expected.get("error"):
             return None

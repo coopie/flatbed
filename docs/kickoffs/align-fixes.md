@@ -27,3 +27,13 @@ The three cores were aligned on 18 October and all pass 37 scenarios, but a read
 Work for at most 90 minutes; stop and write up what you have when you reach it. Sam is around today. If a choice would change the shape of the work, add a `## Question for the lead` section with your best guess and carry on. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. The Anthropic key in `.env` works; never print a value from it. Run long commands in the foreground one at a time.
 
 ## Write-up
+
+**What changed.** All three cores now follow `7ab4852`. A `context` hook cannot append, and one that throws fails the run, before anything is written, with `The <plugin> plugin failed: ...`. TypeScript appends take turns. In TypeScript and Python, errors from `onEntry` and `onSessionEnd` are ignored. The first reset in call order wins, and a reset wins over a stop set in the same turn. Every hook's `ctx` has `signal`. In Python, `run` takes `signal=` and `set()` with no name means `the host`. Rust's `StopSignal` now has `set`, `wait` and `who`. A provider stop ends a request in flight with `The request was stopped.`, in TypeScript and Python too. The `createAgent` errors match `host.md`. Python leaves out an empty `system`. The TypeScript and Rust loops now carry Python's numbered step comments, and TypeScript's `needsRun` reads like Python's.
+
+**Choices.** Scenarios 38 to 43 add five things to `conformance.md`: `plugin.context` (`append` or `throw`), `onEntry.throw`, and `sleep` and `append` as add-ons to any tool behaviour. Scenario 38 starts from a header-only session, because only a stored header lets the old bug write anything. Scenario 41 appends without sleeping, because with sleeps Node's timers run the two appends one after the other and the race never shows. Before the fix, TypeScript failed all six new scenarios and Python failed five; Python already had the append lock. Rust's hooks cannot fail, so for Rust, `onEntry.throw` does nothing.
+
+**Commands.** `scripts/check.sh ts python rust` passed: `== all checks passed`, and all 43 scenarios print `ok` in each core.
+
+**Left out.** The `assistant` section. Rust has no `set` without a name, so `the host` applies there only as a fallback.
+
+**How it went.** It went smoothly. The spec commit made each point unambiguous. Running new scenarios against the old code (`git show HEAD:...`) was the most useful check, because it found two scenarios that passed without testing anything.
