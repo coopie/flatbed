@@ -3,16 +3,16 @@
  * and thinking blocks are dropped, since the format has no place for them.
  */
 import type { AssistantMessage, Block, ImageBlock, Message, Provider, ProviderRequest, Stop, TextBlock } from '../types.ts';
-import { postJson } from './http.ts';
+import { postJson, type ProviderOptions } from './http.ts';
 
 type ChatMessage = Record<string, unknown> & { role: string };
 
-export function openaiProvider(options: { apiKey: string; baseUrl?: string }): Provider {
+export function openaiProvider(options: ProviderOptions): Provider {
   const url = `${options.baseUrl ?? 'https://api.openai.com/v1'}/chat/completions`;
   const headers = { authorization: `Bearer ${options.apiKey}` };
   return {
     async complete(request) {
-      const response = await postJson(url, headers, openaiRequest(request), request.signal);
+      const response = await postJson(url, headers, openaiRequest(request), request.signal, options.timeout);
       return fromOpenai(response as OpenaiResponse, request.model);
     },
   };

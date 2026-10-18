@@ -1,5 +1,5 @@
 // Tests for the loop that the conformance suite cannot express, such as what a tool sees in its context.
-import { deepEqual, equal } from 'node:assert/strict';
+import { deepEqual, equal, throws } from 'node:assert/strict';
 import { test } from 'node:test';
 import { createAgent } from './loop.ts';
 import { fauxProvider } from './providers/faux.ts';
@@ -83,4 +83,10 @@ test('no more than maxConcurrentTools calls run at once, and results keep call o
   const { entries } = await store.read('a', (await store.list('a'))[0]!);
   const results = entries.flatMap((e) => (e.type === 'message' && e.message.role === 'tool' ? [e.message.content[0]] : []));
   deepEqual(results, [0, 1, 2, 3, 4].map((n) => ({ type: 'text', text: `done ${n}` })));
+});
+
+test('createAgent fails at once for an unknown provider or maxConcurrentTools below 1', () => {
+  const deps = { store: memoryStore(), providers: { faux: fauxProvider([]) } };
+  throws(() => createAgent({ id: 'a', model: 'nowhere/test' }, deps), /No provider named nowhere/);
+  throws(() => createAgent({ id: 'a', model: 'faux/test', maxConcurrentTools: 0 }, deps), /maxConcurrentTools must be at least 1/);
 });

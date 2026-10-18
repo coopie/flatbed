@@ -53,4 +53,4 @@ The adapter joins the sections into one system message, sends `effort` as `reaso
 
 ## Choosing a provider
 
-An agent names its model as `<provider>/<model-name>`, such as `anthropic/claude-opus-5-5` or `faux/test`. The host gives the loop a map from provider name to provider. When the map has no provider for the agent's model, the run fails before it touches the session, since no model call could succeed.
+An agent names its model as `<provider>/<model-name>`, such as `anthropic/claude-opus-5-5` or `faux/test`. The host gives the loop a map from provider name to provider. When the map has no provider for the agent's model, `createAgent` fails at once, before anything is stored, since no model call could succeed, as [host.md](host.md) describes.

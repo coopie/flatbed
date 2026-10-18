@@ -92,7 +92,9 @@ export type AgentConfig = {
   maxTokens?: number;
   /** Passed through to providers that take it. */
   effort?: string;
-  /** How many of a turn's tool calls run at once. 4 by default. */
+  /** Whether a turn's tool calls run together or one after another. `concurrent` by default. */
+  toolExecution?: 'concurrent' | 'serial';
+  /** The most of a turn's tool calls that run at once when concurrent. 4 by default, and at least 1. */
   maxConcurrentTools?: number;
   /** The parent of the agent's first session, such as the session that dispatched it. */
   parent?: ParentLink;
