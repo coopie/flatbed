@@ -3,28 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from typing import Any
 
 import httpx
 
-from ..types import StopSignal
+from ..types import Stopped, StopSignal
 
 RETRIES = 3
 # Statuses worth trying again: a timeout, a conflict, a rate limit, and any server error.
 RETRY_STATUSES = {408, 409, 429}
+STOPPED = "The request was stopped."
 
 
 async def post_json(
     url: str, body: Any, headers: dict[str, str], timeout: float, signal: StopSignal | None
 ) -> Any:
     """POSTs the body and returns the response's JSON, retrying up to three times after 1, 2 and 4
-    seconds. A stop ends a backoff wait at once."""
+    seconds. A stop ends a request in flight or a backoff wait at once, with `Stopped`."""
     # A client per call: a model call takes seconds, so pooling saves little, and a client never
     # outlives the event loop it was made on.
     async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(RETRIES + 1):
             try:
-                response = await client.post(url, json=body, headers=headers)
+                response = await until_stopped(client.post(url, json=body, headers=headers), signal)
                 if response.is_success:
                     return response.json()
                 # The error body is the API's message; it never holds the request's headers.
@@ -36,11 +38,18 @@ async def post_json(
                 failure = f"Network error: {message_of(error)}"
             if attempt == RETRIES:
                 raise RuntimeError(f"{failure} (after {attempt} retries)")
-            if signal is None:
-                await asyncio.sleep(2**attempt)
-            elif await signal.wait(2**attempt):
-                raise RuntimeError(f"{failure} (stopped while waiting to retry)")
+            await until_stopped(asyncio.sleep(2**attempt), signal)
     raise AssertionError("unreachable")
+
+
+async def until_stopped[T](work: Awaitable[T], signal: StopSignal | None) -> T:
+    """Awaits `work`, or raises `Stopped("The request was stopped.")` as soon as the signal is set."""
+    if signal is None:
+        return await work
+    try:
+        return await signal.unless_set(work)
+    except Stopped:
+        raise Stopped(STOPPED) from None
 
 
 def message_of(error: BaseException) -> str:

@@ -127,15 +127,18 @@ impl Agent {
         store: Arc<dyn Store>,
         providers: HashMap<String, Arc<dyn Provider>>,
     ) -> Result<Agent> {
-        let (provider, model) = config.model.split_once('/').unwrap_or_default();
-        let Some(provider) = providers.get(provider).cloned() else {
+        let (name, model) = config.model.split_once('/').unwrap_or_default();
+        let Some(provider) = providers.get(name).cloned() else {
             return Err(Error(format!(
-                "No provider for the model {}.",
+                "No provider named {name} for the model {}.",
                 config.model
             )));
         };
         if config.max_concurrent_tools < 1 {
-            return Err(Error::new("max_concurrent_tools must be at least 1."));
+            return Err(Error(format!(
+                "max_concurrent_tools must be at least 1, not {}.",
+                config.max_concurrent_tools
+            )));
         }
         Ok(Agent {
             model: model.to_string(),
@@ -175,11 +178,16 @@ impl Agent {
         let _running = Running(&self.running);
         let stop = stop.cloned().unwrap_or_default();
 
+        // 1. Open a session if none is open. 2. Repair calls left without a result. 3. Deliver
+        // waiting events.
         let (run, tools) = self.open(&stop).await?;
         run.repair().await?;
         run.deliver_waiting().await?;
+        // 4. Freeze the context: the last context entry on the path, for the whole run.
         let context = run.render().await.0;
+        // 5. Loop while the session needs a run.
         while run.needs_run().await {
+            // i. Stop when the stop is set.
             if stop.is_set() {
                 return run.stopped().await;
             }
@@ -193,10 +201,11 @@ impl Agent {
                 effort: self.config.effort.clone(),
                 signal: Some(stop.clone()),
             };
-            // The stop abandons the call in flight, whatever the provider does with the signal.
+            // ii. Call the provider. The stop abandons the call in flight, whatever the provider
+            // does with the signal.
             let answer = tokio::select! {
                 answer = self.provider.complete(&request) => answer,
-                () = stop.stopped() => Err(Error::new("The run was stopped.")),
+                () = stop.wait() => Err(Error::new("The run was stopped.")),
             };
             let message = match answer {
                 Ok(message) => message,
@@ -209,9 +218,11 @@ impl Agent {
                     return Ok(Outcome::Error);
                 }
             };
+            // iii. Append the assistant message.
             run.append_message(Message::Assistant(message.clone()))
                 .await?;
 
+            // iv. Run the calls, then append their results in call order.
             let calls: Vec<&ToolCall> = message.tool_calls().collect();
             let results = if message.stop == Stop::MaxTokens {
                 // A response cut off by the token limit may hold a call with half its input.
@@ -225,12 +236,15 @@ impl Agent {
             for (call, result) in calls.iter().zip(results) {
                 run.append_message(tool_message(call, result)).await?;
             }
-            if !calls.is_empty() && stop.is_set() {
-                return run.stopped().await;
-            }
+            // v. A reset wins over a stop, since the model has already been told the session will
+            // reset.
             if let Some(reason) = run.take_reset() {
                 return run.end("agent", reason).await;
             }
+            if !calls.is_empty() && stop.is_set() {
+                return run.stopped().await;
+            }
+            // vi. Check the budget.
             let size = message.usage.size();
             if size > self.config.hard_limit {
                 return run.end("harness", Some("context budget".into())).await;
@@ -238,8 +252,10 @@ impl Agent {
             if size > self.config.soft_limit && !run.has_soft_limit_notice().await {
                 run.notice(SOFT_LIMIT_NOTICE).await?;
             }
+            // vii. Deliver waiting events.
             run.deliver_waiting().await?;
         }
+        // 6. End.
         Ok(Outcome::Idle)
     }
 
@@ -374,7 +390,8 @@ impl Agent {
         });
         // The semaphore is fair, and `join_all` asks for slots in call order, so calls start in
         // call order.
-        join_all(calls.iter().map(|call| async {
+        let slots = &slots;
+        join_all(calls.iter().enumerate().map(|(index, call)| async move {
             let _slot = slots
                 .acquire()
                 .await
@@ -382,7 +399,7 @@ impl Agent {
             if run.stop.is_set() {
                 return ToolResult::error(REPAIR_TEXT);
             }
-            run_call(run, tools, definitions, call).await
+            run_call(run, tools, definitions, call, index).await
         }))
         .await
     }
@@ -398,12 +415,16 @@ impl Drop for Running<'_> {
 }
 
 /// Calls every plugin's `context` hook, in plugin order, joins what they add, and adds the core
-/// `reset` tool last. Fails when two tools would share a name.
+/// `reset` tool last. Fails when a hook fails, naming its plugin, or when two tools would share a
+/// name.
 async fn collect_context(run: &Arc<Run>) -> Result<Contribution> {
     let mut joined = Contribution::default();
     let ctx = Ctx::opening(run.clone());
     for plugin in &run.agent.plugins {
-        let contribution = plugin.context(&ctx).await?;
+        let contribution = plugin
+            .context(&ctx)
+            .await
+            .map_err(|error| Error(format!("The {} plugin failed: {}", plugin.name(), error.0)))?;
         joined.sections.extend(contribution.sections);
         joined.tools.extend(contribution.tools);
     }
@@ -426,6 +447,7 @@ async fn run_call(
     tools: &[Box<dyn Tool>],
     definitions: &[ToolDefinition],
     call: &ToolCall,
+    index: usize,
 ) -> ToolResult {
     let definition = definitions.iter().find(|tool| tool.name == call.name);
     let code = tools
@@ -438,7 +460,7 @@ async fn run_call(
         Ok(input) => input,
         Err(problem) => return ToolResult::error(problem),
     };
-    let ctx = Ctx::new(run.clone());
+    let ctx = Ctx::for_call(run.clone(), index);
     let failed = |plugin: &dyn Plugin, error: Error| {
         ToolResult::error(format!("The {} plugin failed: {}", plugin.name(), error.0))
     };
@@ -478,8 +500,8 @@ pub(crate) struct Run {
     queue: Queue,
     pub(crate) stop: StopSignal,
     pub(crate) session: tokio::sync::Mutex<Session>,
-    /// The first reset a tool asked for this turn, with its reason.
-    reset: Mutex<Option<Option<String>>>,
+    /// The reset the earliest call in call order asked for this turn: its index and its reason.
+    reset: Mutex<Option<(usize, Option<String>)>>,
 }
 
 impl Run {
@@ -531,7 +553,7 @@ impl Run {
     }
 
     async fn stopped(self: &Arc<Self>) -> Result<Outcome> {
-        let who = self.stop.stopped_by().unwrap_or_default();
+        let who = self.stop.who().unwrap_or_else(|| "the host".into());
         self.notice(format!("Stopped by {who}.")).await?;
         Ok(Outcome::Stopped)
     }
@@ -543,12 +565,17 @@ impl Run {
             .push(Queued { event, parent });
     }
 
-    pub(crate) fn request_reset(&self, reason: Option<String>) {
-        self.reset.lock().expect("reset lock").get_or_insert(reason);
+    /// Keeps the request of the earliest call in call order, and that call's first request.
+    pub(crate) fn request_reset(&self, call: usize, reason: Option<String>) {
+        let mut reset = self.reset.lock().expect("reset lock");
+        if reset.as_ref().is_none_or(|(earliest, _)| call < *earliest) {
+            *reset = Some((call, reason));
+        }
     }
 
     fn take_reset(&self) -> Option<Option<String>> {
-        self.reset.lock().expect("reset lock").take()
+        let reset = self.reset.lock().expect("reset lock").take();
+        reset.map(|(_, reason)| reason)
     }
 
     /// The context and messages the model sees, from the path as it is now.

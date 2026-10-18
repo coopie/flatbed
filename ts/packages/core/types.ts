@@ -107,12 +107,12 @@ export type PluginContext = {
   append(entry: EntryBody<CustomEntry>): Promise<void>;
   /** Queues an event for the next delivery point, which is never between a call and its result. */
   deliver(event: Event): void;
+  /** The run's stop signal, so that a long hook or tool can stop when the run is stopped. */
+  signal: AbortSignal;
 };
 
 export type ToolContext = PluginContext & {
   requestReset(reason?: string): void;
-  /** The run's stop signal, so that a long tool can stop when the run is stopped. */
-  signal: AbortSignal;
 };
 
 export type ToolResult = { content: (TextBlock | ImageBlock)[]; isError: boolean };

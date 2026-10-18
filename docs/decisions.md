@@ -90,7 +90,7 @@ Entries marked *for review* were made overnight on 6 October 2026 while Sam was 
 
 **Chose:** a session needs a run only when its last entry, ignoring `custom` and `context` entries, is a tool result or an event not from the harness. The soft-budget notice is the exception: the loop runs one more turn after it.
 
-**Because:** otherwise a bare run after a stop resumes the work a person stopped, a failed call is retried silently, and every new session pays a call to answer "Session started". The review of wave 1 found this ([core-fixes.md](kickoffs/core-fixes.md) history in git).
+**Because:** otherwise a bare run after a stop resumes the work a person stopped, a failed call is retried silently, and every new session pays a call to answer "Session started". The review of wave 1 found this (the core-fixes brief, in git at `e38873b`).
 
 **Rules out:** hosts relying on a notice to wake an agent; they deliver a real event instead, as dispatch now does.
 

@@ -32,12 +32,12 @@ class AnthropicProvider:
 def to_anthropic(request: ProviderRequest) -> dict[str, Any]:
     """The request body for the Messages API."""
     sections = [section for section in request.sections if section["text"]]
-    body: dict[str, Any] = {
-        "model": request.model,
-        "max_tokens": request.max_tokens,
-        "system": [{"type": "text", "text": section["text"]} for section in sections],
-        "messages": to_anthropic_messages(request.messages),
-    }
+    system = [{"type": "text", "text": section["text"]} for section in sections]
+    body: dict[str, Any] = {"model": request.model, "max_tokens": request.max_tokens}
+    # Leave out a system prompt with nothing in it, as the other implementations do.
+    if system:
+        body["system"] = system
+    body["messages"] = to_anthropic_messages(request.messages)
     if request.tools:
         body["tools"] = [
             {"name": tool["name"], "description": tool["description"], "input_schema": tool["inputSchema"]}
@@ -52,7 +52,7 @@ def to_anthropic(request: ProviderRequest) -> dict[str, Any]:
     breakpoints: list[dict[str, Any]] = []
     if request.tools:
         breakpoints.append(body["tools"][-1])
-    marked = [block for section, block in zip(sections, body["system"], strict=True) if section.get("cache")]
+    marked = [block for section, block in zip(sections, system, strict=True) if section.get("cache")]
     breakpoints.extend(marked[: MAX_BREAKPOINTS - 1 - len(breakpoints)])
     for block in breakpoints:
         block["cache_control"] = EPHEMERAL

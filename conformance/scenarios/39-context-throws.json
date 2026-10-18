@@ -1,0 +1,56 @@
+{
+  "name": "a context hook that throws fails the run before anything is written",
+  "description": "The test plugin's context hook throws. The run fails with an error naming the plugin, and the store has no session.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [],
+  "plugin": {
+    "context": {
+      "throw": "No documents today."
+    }
+  },
+  "script": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Done."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 3
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Hello"
+      }
+    },
+    {
+      "run": {},
+      "expect": {
+        "error": "The test plugin failed: No documents today."
+      }
+    }
+  ],
+  "expect": {
+    "sessions": []
+  }
+}

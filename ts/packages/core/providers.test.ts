@@ -177,9 +177,23 @@ test('http: the backoff sleep ends when the stop signal is set', async () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort('Sam'), 50);
     const started = Date.now();
-    const outcome = await postJson('https://example.invalid', {}, {}, controller.signal).then(() => 'resolved', (reason) => reason);
-    equal(outcome, 'Sam');
+    const outcome = await postJson('https://example.invalid', {}, {}, controller.signal).then(() => 'resolved', (error: Error) => error.message);
+    equal(outcome, 'The request was stopped.');
     equal(Date.now() - started < 900, true);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('http: a stop ends a request in flight, even when fetch ignores the signal', async () => {
+  const { postJson } = await import('./providers/http.ts');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => new Promise(() => {});
+  try {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort('Sam'), 50);
+    const outcome = await postJson('https://example.invalid', {}, {}, controller.signal).then(() => 'resolved', (error: Error) => error.message);
+    equal(outcome, 'The request was stopped.');
   } finally {
     globalThis.fetch = realFetch;
   }

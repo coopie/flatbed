@@ -50,51 +50,78 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   const plugins = config.plugins ?? [];
   const queue: { event: Event; parentId?: string }[] = [];
   let running = false;
+  // The running run's stop signal, which every hook and tool sees. Never set between runs.
+  let signal = new AbortController().signal;
+  // Calls running together may append at once. Each append reads the head and writes after it, so
+  // they take turns: `writing` settles when the last append queued so far has written its entry.
+  let writing: Promise<unknown> = Promise.resolve();
   // The code for the open session's tools, kept between runs of this process.
   let cachedTools: { session: string; tools: Map<string, Tool> } | undefined;
 
   // Fail here, before anything is stored, for a configuration no run could succeed with.
   const providerName = config.model.slice(0, Math.max(config.model.indexOf('/'), 0));
   const provider = deps.providers[providerName];
-  if (provider === undefined) throw new Error(`No provider named ${providerName} for model ${config.model}.`);
+  if (provider === undefined) throw new Error(`No provider named ${providerName} for the model ${config.model}.`);
   const maxConcurrent = config.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS;
   if (!(maxConcurrent >= 1)) throw new Error(`maxConcurrentTools must be at least 1, not ${maxConcurrent}.`);
   const toolExecution = config.toolExecution ?? 'concurrent';
   if (toolExecution !== 'concurrent' && toolExecution !== 'serial') throw new Error(`toolExecution must be concurrent or serial, not ${toolExecution}.`);
 
-  function contextFor(session: Session): PluginContext {
+  /** What a hook sees. `refusal` is why `append` fails, when it must: while the session opens. */
+  function contextFor(session: Session, refusal?: string): PluginContext {
     return {
       agent: config,
       session,
       append: async (entry) => {
+        if (refusal !== undefined) throw new Error(refusal);
         // Events go through `deliver`, so that none lands between a call and its result.
         if (entry.type !== 'custom') throw new Error('A plugin may append only custom entries. Deliver events instead.');
         await append(session, entry);
       },
       deliver: (event) => void queue.push({ event }),
+      signal,
     };
   }
 
-  async function append(session: Session, body: EntryBody, parentId = session.entries.at(-1)?.id ?? null): Promise<Entry> {
-    if (session.entries.at(-1)?.type === 'reset') throw new Error('Nothing may follow a reset.');
-    const ids = new Set(session.entries.map((e) => e.id));
-    let id = newEntryId();
-    while (ids.has(id)) id = newEntryId();
-    const { type, ...rest } = body;
-    const entry = { type, id, parentId, at: new Date().toISOString(), ...rest } as Entry;
-    await store.append(config.id, session.header.id, entry);
-    session.entries.push(entry);
+  /** Appends an entry after the head, or after `parentId` to rewind, then tells the plugins. */
+  async function append(session: Session, body: EntryBody, parentId?: string): Promise<Entry> {
+    const write = async () => {
+      if (session.entries.at(-1)?.type === 'reset') throw new Error('Nothing may follow a reset.');
+      const ids = new Set(session.entries.map((e) => e.id));
+      let id = newEntryId();
+      while (ids.has(id)) id = newEntryId();
+      const { type, ...rest } = body;
+      const head = session.entries.at(-1)?.id ?? null;
+      const entry = { type, id, parentId: parentId ?? head, at: new Date().toISOString(), ...rest } as Entry;
+      await store.append(config.id, session.header.id, entry);
+      session.entries.push(entry);
+      return entry;
+    };
+    const written = writing.then(write);
+    writing = written.catch(() => {});
+    const entry = await written;
+    // Outside the turn-taking, since a watcher may append in turn. A watcher's error is ignored, so
+    // that it can never leave a turn's results half written.
     const ctx = contextFor(session);
-    for (const plugin of plugins) await plugin.onEntry?.(entry, ctx);
+    for (const plugin of plugins) await ignoreErrors(() => plugin.onEntry?.(entry, ctx));
     return entry;
   }
 
-  /** Calls every plugin's `context` hook, and adds the core `reset` tool after their tools. */
+  /**
+   * Calls every plugin's `context` hook, and adds the core `reset` tool after their tools. Nothing
+   * can be appended yet, since a session's first entry is its `context` entry.
+   */
   async function collectContext(session: Session) {
     const sections = [];
     const tools = new Map<string, Tool>();
+    const ctx = contextFor(session, 'The session is opening, so nothing can be appended yet.');
     for (const plugin of plugins) {
-      const added = await plugin.context?.(contextFor(session));
+      let added;
+      try {
+        added = await plugin.context?.(ctx);
+      } catch (error) {
+        throw new Error(`The ${plugin.name} plugin failed: ${messageOf(error)}`);
+      }
       sections.push(...(added?.sections ?? []));
       for (const tool of added?.tools ?? []) {
         if (tools.has(tool.name)) throw new Error(`Two tools are named ${tool.name}.`);
@@ -157,14 +184,13 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   }
 
   /**
-   * The parent for a delivered event. A rewind target must be in the open session and must leave no
-   * call on its path without a result; otherwise the event goes at the head, as usual.
+   * The parent for a delivered event, or undefined for the head. A rewind target must be in the open
+   * session and must leave no call on its path without a result; otherwise the event goes at the head.
    */
-  function rewindTarget(session: Session, parentId: string | undefined): string | null {
-    const head = session.entries.at(-1)?.id ?? null;
+  function rewindTarget(session: Session, parentId: string | undefined): string | undefined {
     const at = session.entries.findIndex((e) => e.id === parentId);
-    if (at === -1) return head;
-    return unansweredCalls(pathOf(session.entries.slice(0, at + 1))).length === 0 ? parentId! : head;
+    if (at === -1) return undefined;
+    return unansweredCalls(pathOf(session.entries.slice(0, at + 1))).length === 0 ? parentId : undefined;
   }
 
   /** Runs one call as docs/spec/plugins.md describes. Never throws for a tool's own failure. */
@@ -205,29 +231,33 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   async function endSession(session: Session, by: 'agent' | 'harness', reason: string | undefined): Promise<RunOutcome> {
     // An empty reason is no reason.
     await append(session, { type: 'reset', by, ...(reason ? { reason } : {}) });
-    for (const plugin of plugins) await plugin.onSessionEnd?.(session, contextFor(session));
+    // The session has ended, so an error here can change nothing; `append` fails, since nothing follows a reset.
+    for (const plugin of plugins) await ignoreErrors(() => plugin.onSessionEnd?.(session, contextFor(session)));
     return 'reset';
   }
 
-  async function run(signal: AbortSignal): Promise<RunOutcome> {
-    // Read from the store on every run, since the host may have appended to it meanwhile.
+  async function run(): Promise<RunOutcome> {
+    // 1. Open a session if none is open. Read the store every run, since the host may have appended.
     const { session, tools } = await openSession();
+    // 2. Repair calls left without a result. 3. Deliver waiting events.
     await repair(session);
     await deliverQueued(session);
     const softLimit = config.softLimit ?? DEFAULT_SOFT_LIMIT;
     const hardLimit = config.hardLimit ?? DEFAULT_HARD_LIMIT;
-    // The frozen context decides which tools exist and their schemas; the plugins only supply the code.
+    // 4. Freeze the context. It decides which tools exist and their schemas; the plugins only supply the code.
     const { context } = render(pathOf(session.entries));
     const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, { tool: tools.get(t.name)!, schema: t.inputSchema }] as const] : [])));
     const limit = limiter(toolExecution === 'serial' ? 1 : maxConcurrent);
 
+    // 5. Loop while the session needs a run.
     while (needsRun(session)) {
-      if (signal.aborted) return stopped(session, signal);
+      // i. Stop when the stop is set.
+      if (signal.aborted) return stopped(session);
 
+      // ii. Call the provider, raced against the stop, so that a provider that ignores the signal cannot keep the run waiting.
       const { messages } = render(pathOf(session.entries));
       let message: AssistantMessage;
       try {
-        // Raced against the stop, so that a provider that ignores the signal cannot keep the run waiting.
         message = await untilStopped(signal, provider!.complete({
           model: config.model.slice(providerName.length + 1),
           sections: context.sections,
@@ -238,39 +268,51 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
           signal,
         }));
       } catch (error) {
-        if (signal.aborted) return stopped(session, signal);
+        if (signal.aborted) return stopped(session);
         const failed: AssistantMessage = { role: 'assistant', content: [], model: config.model, usage: { input: 0, output: 0 }, stop: 'error' };
         await append(session, { type: 'message', message: failed });
         await append(session, notice(`The model call failed: ${messageOf(error)}`));
         return 'error';
       }
+      // iii. Append the assistant message.
       await append(session, { type: 'message', message });
 
-      const resets: (string | undefined)[] = [];
-      const ctx: ToolContext = { ...contextFor(session), requestReset: (reason) => void resets.push(reason), signal };
+      // iv. Run the calls, then append their results in call order. A response cut off by maxTokens may
+      // hold a call whose input is incomplete, so none of its calls run. Once the stop is set, a call
+      // that has not started never starts.
       const calls = toolCalls(message);
-      // A response cut off by maxTokens may hold a call whose input is incomplete, so none of its calls run.
-      // Once the stop is set, a call that has not started never starts.
+      // The reset each call requested, by call index, so that the first in call order wins.
+      const resets: { reason?: string }[] = [];
+      const start = (call: ToolCall, i: number) => {
+        const ctx: ToolContext = { ...contextFor(session), requestReset: (reason) => void (resets[i] ??= { reason }) };
+        return limit(async () => (signal.aborted ? errorResult(NOT_RUN) : runTool(call, frozen, ctx)));
+      };
       const results = message.stop === 'maxTokens'
         ? calls.map(() => errorResult('The response was cut off before this call was complete.'))
-        : await Promise.all(calls.map((call) => limit(async () => (signal.aborted ? errorResult(NOT_RUN) : runTool(call, frozen, ctx)))));
+        : await Promise.all(calls.map(start));
       for (const [i, call] of calls.entries()) {
         await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
       }
-      if (signal.aborted && calls.length > 0) return stopped(session, signal);
-      if (resets.length > 0) return endSession(session, 'agent', resets[0]);
 
+      // v. A reset wins over a stop, since the model has already been told the session will reset.
+      const reset = resets.find((r) => r !== undefined);
+      if (reset !== undefined) return endSession(session, 'agent', reset.reason);
+      if (signal.aborted && calls.length > 0) return stopped(session);
+
+      // vi. Check the budget.
       const { input, output, cacheRead = 0, cacheWrite = 0 } = message.usage;
       const size = input + output + cacheRead + cacheWrite;
       if (size > hardLimit) return endSession(session, 'harness', 'context budget');
       if (size > softLimit && !session.entries.some(isSoftLimitNotice)) await append(session, notice(SOFT_LIMIT_NOTICE));
 
+      // vii. Deliver waiting events.
       await deliverQueued(session);
     }
+    // 6. End.
     return 'idle';
   }
 
-  async function stopped(session: Session, signal: AbortSignal): Promise<RunOutcome> {
+  async function stopped(session: Session): Promise<RunOutcome> {
     const who = typeof signal.reason === 'string' ? signal.reason : 'the host';
     await append(session, notice(`Stopped by ${who}.`));
     return 'stopped';
@@ -284,14 +326,25 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     async run(options = {}) {
       if (running) throw new Error(`Agent ${config.id} is already running.`);
       running = true;
+      // A run the host cannot stop gets a stop that is never set, so the loop has one shape.
+      signal = options.signal ?? new AbortController().signal;
       try {
-        // A run the host cannot stop gets a stop that is never set, so the loop has one shape.
-        return await run(options.signal ?? new AbortController().signal);
+        return await run();
       } finally {
         running = false;
+        signal = new AbortController().signal;
       }
     },
   };
+}
+
+/** Runs a hook whose errors are ignored, such as a watcher's. */
+async function ignoreErrors(hook: () => unknown): Promise<void> {
+  try {
+    await hook();
+  } catch {
+    // Ignored on purpose, as docs/spec/plugins.md says.
+  }
 }
 
 /** Runs the functions it is given, at most `size` at a time, in the order they were given. */
@@ -323,17 +376,24 @@ function untilStopped<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
 }
 
 /**
- * A session needs a run when the last entry on its path, ignoring `custom` and `context` entries, is
- * a `tool` message, an event that is not from the harness, or the soft-limit notice. Stop notices
- * after the soft-limit notice leave it still needing an answer. Worked out from the entries alone,
- * so a restarted process agrees with the one that wrote them.
+ * A session needs a run when the last entry on its path, leaving out `custom` and `context` entries,
+ * is a tool result or an event from outside the harness. The harness's own notices need no answer,
+ * except the soft-limit notice, which the model gets one turn to act on. A stop does not take that
+ * turn away, so stop notices after the soft-limit notice are looked past. Worked out from the entries
+ * alone, so a restarted process agrees with the one that wrote them.
  */
 function needsRun(session: Session): boolean {
-  const path = pathOf(session.entries).filter((e) => e.type !== 'custom' && e.type !== 'context');
-  const last = path.at(-1);
-  if (last !== undefined && isSoftLimitNotice(path.findLast((e) => !isStopNotice(e)) ?? last)) return true;
-  if (last?.type === 'event') return last.attrs?.from !== 'harness';
-  return last?.type === 'message' && last.message.role === 'tool';
+  let afterStop = false;
+  for (const entry of pathOf(session.entries).reverse()) {
+    if (entry.type === 'custom' || entry.type === 'context') continue;
+    if (entry.type === 'message') return entry.message.role === 'tool' && !afterStop;
+    if (entry.type !== 'event') return false;
+    if (entry.attrs?.from !== 'harness') return !afterStop;
+    if (isSoftLimitNotice(entry)) return true;
+    if (!isStopNotice(entry)) return false;
+    afterStop = true;
+  }
+  return false;
 }
 
 function toolCalls(message: AssistantMessage): ToolCall[] {

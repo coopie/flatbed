@@ -1,5 +1,6 @@
 """The OpenAI adapter's translation, and the retry rules every API provider shares."""
 
+import asyncio
 import unittest
 from unittest import mock
 
@@ -95,11 +96,16 @@ class FromOpenAI(unittest.TestCase):
 
 
 class Retries(unittest.IsolatedAsyncioTestCase):
-    async def post(self, statuses: list[int], signal: StopSignal | None = None) -> tuple[list[int], object]:
-        """Posts against a fake server that answers with these statuses in turn, without real waits."""
+    async def post(
+        self, statuses: list[int], signal: StopSignal | None = None, sleep: object = None
+    ) -> tuple[list[int], object]:
+        """Posts against a fake server that answers with these statuses in turn, then never answers.
+        The backoff is `sleep`, or no wait at all."""
         seen: list[int] = []
 
-        def answer(request: httpx.Request) -> httpx.Response:
+        async def answer(request: httpx.Request) -> httpx.Response:
+            if len(seen) == len(statuses):
+                await asyncio.Event().wait()
             status = statuses[len(seen)]
             seen.append(status)
             return httpx.Response(status, json={"ok": True})
@@ -108,11 +114,11 @@ class Retries(unittest.IsolatedAsyncioTestCase):
         real_client = httpx.AsyncClient
         with (
             mock.patch.object(http.httpx, "AsyncClient", lambda **kw: real_client(transport=transport, **kw)),
-            mock.patch.object(http.asyncio, "sleep", mock.AsyncMock()),
+            mock.patch.object(http.asyncio, "sleep", sleep or mock.AsyncMock()),
         ):
             try:
                 result: object = await http.post_json("https://example.test", {}, {}, 1, signal)
-            except RuntimeError as error:
+            except Exception as error:
                 result = error
         return seen, result
 
@@ -128,10 +134,18 @@ class Retries(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_stop_ends_the_backoff_wait(self):
         stop = StopSignal()
-        stop.set("Sam")
-        seen, result = await self.post([500, 200], stop)
+        asyncio.get_running_loop().call_later(0.05, stop.set, "Sam")
+        # The backoff waits for good, so only the stop can end it.
+        seen, result = await self.post([500, 200], stop, sleep=lambda seconds: asyncio.Event().wait())
         self.assertEqual(seen, [500])
-        self.assertIn("stopped while waiting", str(result))
+        self.assertEqual(str(result), "The request was stopped.")
+
+    async def test_a_stop_ends_a_request_in_flight(self):
+        stop = StopSignal()
+        asyncio.get_running_loop().call_later(0.05, stop.set, "Sam")
+        # The server never answers, so only the stop can end the request.
+        seen, result = await self.post([], stop)
+        self.assertEqual(str(result), "The request was stopped.")
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ pub(crate) async fn post_json(
             .json(body)
             .send();
         let failure = tokio::select! {
-            () = stop.stopped() => return Err(stopped()),
+            () = stop.wait() => return Err(stopped()),
             response = sent => match response {
                 Ok(response) => {
                     let status = response.status().as_u16();
@@ -74,7 +74,7 @@ pub(crate) async fn post_json(
             return Err(Error(format!("{failure} (after {RETRIES} retries)")));
         }
         tokio::select! {
-            () = stop.stopped() => return Err(stopped()),
+            () = stop.wait() => return Err(stopped()),
             () = tokio::time::sleep(Duration::from_secs(1 << attempt)) => {}
         }
         attempt += 1;
