@@ -7,23 +7,21 @@
 
 use async_trait::async_trait;
 use flatbed::{
-    Block, Contribution, Ctx, Entry, EntryBody, Error, Plugin, Result, Session, Tool, ToolCall,
-    ToolDefinition, ToolExecution, ToolResult,
+    Block, Contribution, Ctx, Entry, Plugin, Result, Session, Tool, ToolCall, ToolDefinition,
+    ToolResult,
 };
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 pub const DEFAULT_MAX_CALLS: usize = 25;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
-const NOT_RUN: &str = "The harness stopped before this tool ran.";
 
 pub struct CodemodeOptions {
     /// The tools a script may call, by name. A script cannot call any other tool.
@@ -73,74 +71,55 @@ pub fn default_worker() -> Vec<String> {
     .to_vec()
 }
 
-type Code = Arc<Mutex<HashMap<String, Arc<dyn Tool>>>>;
+/// The tools the other plugins added, by name, as codemode saw them when the session opened.
+type Seen = Arc<Mutex<HashMap<String, ToolDefinition>>>;
 
 /// Adds codemode to a list of plugins. It returns the plugins with their `context` hooks wrapped,
-/// so that codemode can find the code for the tools they add, followed by the codemode plugin.
+/// so that codemode can see the tools they add, followed by the codemode plugin.
 ///
-/// The wrapping is a stopgap: the core gives a tool no way to run another call through the loop's
-/// own runner, so codemode runs nested calls itself, the same way, with the agent's plugins' hooks.
+/// Codemode needs the allowed tools' descriptions and schemas to write `run_script`'s description,
+/// and a `context` hook sees nothing of the tools other plugins add. The calls themselves run
+/// through the core, with `Ctx::run_tool`.
 pub fn with_codemode(
     plugins: Vec<Box<dyn Plugin>>,
     options: CodemodeOptions,
 ) -> Vec<Box<dyn Plugin>> {
-    let code = Code::default();
+    let seen = Seen::default();
     let mut wrapped: Vec<Box<dyn Plugin>> = plugins
         .into_iter()
         .map(|inner| {
-            Box::new(Capturing {
+            Box::new(Watched {
                 inner,
-                code: code.clone(),
+                seen: seen.clone(),
             }) as Box<dyn Plugin>
         })
         .collect();
     wrapped.push(Box::new(Codemode {
-        code,
+        seen,
         options: Arc::new(options),
     }));
     wrapped
 }
 
-/// A plugin as it was, except that its `context` hook records the code of the tools it adds.
-struct Capturing {
+/// A plugin as it was, except that its `context` hook records the tools it adds.
+struct Watched {
     inner: Box<dyn Plugin>,
-    code: Code,
-}
-
-/// A tool whose code codemode shares with the loop.
-struct Shared(Arc<dyn Tool>);
-
-#[async_trait]
-impl Tool for Shared {
-    fn definition(&self) -> ToolDefinition {
-        self.0.definition()
-    }
-    async fn run(&self, input: &Map<String, Value>, ctx: &Ctx) -> Result<ToolResult> {
-        self.0.run(input, ctx).await
-    }
+    seen: Seen,
 }
 
 #[async_trait]
-impl Plugin for Capturing {
+impl Plugin for Watched {
     fn name(&self) -> &str {
         self.inner.name()
     }
     async fn context(&self, ctx: &Ctx) -> Result<Contribution> {
         let added = self.inner.context(ctx).await?;
-        let mut code = self.code.lock().expect("codemode lock");
-        let tools = added
-            .tools
-            .into_iter()
-            .map(|tool| {
-                let tool: Arc<dyn Tool> = Arc::from(tool);
-                code.insert(tool.definition().name, tool.clone());
-                Box::new(Shared(tool)) as Box<dyn Tool>
-            })
-            .collect();
-        Ok(Contribution {
-            sections: added.sections,
-            tools,
-        })
+        let mut seen = self.seen.lock().expect("codemode lock");
+        for tool in &added.tools {
+            let definition = tool.definition();
+            seen.insert(definition.name.clone(), definition);
+        }
+        Ok(added)
     }
     async fn before_tool(&self, call: &ToolCall, ctx: &Ctx) -> Result<Option<ToolResult>> {
         self.inner.before_tool(call, ctx).await
@@ -162,7 +141,7 @@ impl Plugin for Capturing {
 }
 
 struct Codemode {
-    code: Code,
+    seen: Seen,
     options: Arc<CodemodeOptions>,
 }
 
@@ -172,18 +151,17 @@ impl Plugin for Codemode {
         "codemode"
     }
     async fn context(&self, _ctx: &Ctx) -> Result<Contribution> {
-        let code = self.code.lock().expect("codemode lock").clone();
-        let callable = self
-            .options
-            .tools
-            .iter()
-            .filter_map(|name| code.get(name).map(|tool| tool.definition()))
+        let seen = self.seen.lock().expect("codemode lock");
+        let callable: Vec<ToolDefinition> = (self.options.tools.iter())
+            .filter_map(|name| seen.get(name).cloned())
             .collect();
         Ok(Contribution {
             sections: Vec::new(),
             tools: vec![Box::new(RunScript {
+                // Checked here as well as in the worker, so that a worker that misbehaves still
+                // reaches only these.
+                allowed: Arc::new(callable.iter().map(|t| t.name.clone()).collect()),
                 callable,
-                code: Arc::new(code),
                 options: self.options.clone(),
             })],
         })
@@ -192,7 +170,7 @@ impl Plugin for Codemode {
 
 struct RunScript {
     callable: Vec<ToolDefinition>,
-    code: Arc<HashMap<String, Arc<dyn Tool>>>,
+    allowed: Arc<HashSet<String>>,
     options: Arc<CodemodeOptions>,
 }
 
@@ -381,25 +359,6 @@ impl RunScript {
         let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
         let mut stderr = child.stderr.take().expect("piped stderr");
         let script_id = flatbed::ids::new_entry_id();
-        let slots = Arc::new(Semaphore::new(match ctx.agent().tool_execution {
-            ToolExecution::Serial => 1,
-            ToolExecution::Concurrent => ctx.agent().max_concurrent_tools,
-        }));
-        // The schemas the session's context entry froze, as the loop checks them.
-        let frozen: Arc<HashMap<String, Value>> = Arc::new(
-            ctx.session()
-                .await
-                .entries
-                .iter()
-                .find_map(|e| match &e.body {
-                    EntryBody::Context { tools, .. } => Some(tools.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .map(|t| (t.name, t.input_schema))
-                .collect(),
-        );
 
         let mut start = json!({
             "type": "start",
@@ -464,14 +423,14 @@ impl RunScript {
                                 name: field("name"),
                                 input: message.get("input").cloned().unwrap_or(json!({})),
                             };
-                            let (slots, frozen, code, ctx) = (slots.clone(), frozen.clone(), self.code.clone(), ctx.clone());
-                            let allowed = self.options.tools.contains(&call.name);
+                            let (allowed, ctx) = (self.allowed.contains(&call.name), ctx.clone());
+                            // The core runs the call as it runs the model's, under the turn's
+                            // limit. A name off the allow-list is as unknown as a name nobody has.
                             answering.spawn(async move {
-                                let _slot = slots.acquire_owned().await;
-                                let result = if ctx.signal().is_set() {
-                                    ToolResult::error(NOT_RUN)
+                                let result = if allowed {
+                                    ctx.run_tool(call.clone()).await
                                 } else {
-                                    run_nested(&call, allowed, &code, &frozen, &ctx).await
+                                    ToolResult::error(format!("No tool named {}.", call.name))
                                 };
                                 (id, call, result)
                             });
@@ -495,72 +454,4 @@ impl RunScript {
 async fn send(stdin: &mut tokio::process::ChildStdin, message: &Value) -> std::io::Result<()> {
     stdin.write_all(format!("{message}\n").as_bytes()).await?;
     stdin.flush().await
-}
-
-/// Runs one nested call as docs/spec/plugins.md describes for a direct call. A name off the
-/// allow-list is as unknown as a name nobody has.
-async fn run_nested(
-    call: &ToolCall,
-    allowed: bool,
-    code: &HashMap<String, Arc<dyn Tool>>,
-    frozen: &HashMap<String, Value>,
-    ctx: &Ctx,
-) -> ToolResult {
-    let (Some(tool), Some(schema), true) = (code.get(&call.name), frozen.get(&call.name), allowed)
-    else {
-        return ToolResult::error(format!("No tool named {}.", call.name));
-    };
-    let input = match check_input(&call.input, schema) {
-        Ok(input) => input,
-        Err(problem) => {
-            return ToolResult::error(format!("Invalid input for {}: {problem}.", call.name))
-        }
-    };
-    let plugins = &ctx.agent().plugins;
-    let mut result = None;
-    for plugin in plugins {
-        match plugin.before_tool(call, ctx).await {
-            Ok(Some(replaced)) => {
-                result = Some(replaced);
-                break;
-            }
-            Ok(None) => {}
-            Err(e) => return plugin_failed(plugin.name(), e),
-        }
-    }
-    let mut result = match result {
-        Some(result) => result,
-        None => tool
-            .run(input, ctx)
-            .await
-            .unwrap_or_else(|e| ToolResult::error(e.to_string())),
-    };
-    for plugin in plugins {
-        result = match plugin.after_tool(call, result, ctx).await {
-            Ok(result) => result,
-            Err(e) => return plugin_failed(plugin.name(), e),
-        };
-    }
-    result
-}
-
-fn plugin_failed(name: &str, error: Error) -> ToolResult {
-    ToolResult::error(format!("The {name} plugin failed: {error}"))
-}
-
-/// The least check the spec asks for: an object, with its required properties present.
-fn check_input<'i>(
-    input: &'i Value,
-    schema: &Value,
-) -> std::result::Result<&'i Map<String, Value>, String> {
-    let Some(object) = input.as_object() else {
-        return Err("expected an object".into());
-    };
-    let required = schema.get("required").and_then(Value::as_array);
-    for name in required.into_iter().flatten().filter_map(Value::as_str) {
-        if !object.contains_key(name) {
-            return Err(format!("missing required property \"{name}\""));
-        }
-    }
-    Ok(object)
 }

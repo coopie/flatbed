@@ -310,6 +310,36 @@ impl ScenarioTool {
                 ctx.signal().wait().await;
                 Ok(ToolResult::text(text("waitForStop")))
             }
+            "runTools" => {
+                // The tool gives up its place while its calls run, so it does not count as running
+                // then.
+                self.running.now.fetch_sub(1, Ordering::SeqCst);
+                let calls = value.as_array().cloned().unwrap_or_default();
+                let results =
+                    futures_util::future::join_all(calls.into_iter().enumerate().map(|(i, c)| {
+                        ctx.run_tool(ToolCall {
+                            id: format!("nested-{i}"),
+                            name: c["name"].as_str().unwrap_or_default().to_string(),
+                            input: c["input"].clone(),
+                        })
+                    }))
+                    .await;
+                let running = self.running.now.fetch_add(1, Ordering::SeqCst) + 1;
+                self.running.most.fetch_max(running, Ordering::SeqCst);
+                let texts: Vec<String> = results
+                    .iter()
+                    .map(|r| {
+                        r.content
+                            .iter()
+                            .filter_map(|b| match b {
+                                Block::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .collect();
+                Ok(ToolResult::text(texts.join("\n")))
+            }
             "deliver" => {
                 ctx.deliver(serde_json::from_value(value.clone())?);
                 Ok(ToolResult::text("Delivered."))

@@ -20,7 +20,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const SOFT_LIMIT_NOTICE: &str =
     "This session is nearly full. Bring your notes up to date, then call reset.";
@@ -375,33 +375,113 @@ impl Agent {
     }
 
     /// Runs a turn's calls and returns their results in call order. The calls start in order:
-    /// at most `max_concurrent_tools` at once, or one after another when serial. Once the stop is
-    /// set, a call that has not started does not start.
+    /// at most `max_concurrent_tools` at once, or one after another, with one place, when serial.
     async fn run_tools(
         &self,
         run: &Arc<Run>,
-        tools: &[Box<dyn Tool>],
+        tools: &Tools,
         definitions: &[ToolDefinition],
         calls: &[&ToolCall],
     ) -> Vec<ToolResult> {
-        let slots = Semaphore::new(match self.config.tool_execution {
+        let places = match self.config.tool_execution {
             ToolExecution::Concurrent => self.config.max_concurrent_tools,
             ToolExecution::Serial => 1,
+        };
+        let turn = Arc::new(Turn {
+            run: run.clone(),
+            tools: tools.clone(),
+            definitions: definitions.to_vec(),
+            places: Arc::new(Semaphore::new(places)),
         });
-        // The semaphore is fair, and `join_all` asks for slots in call order, so calls start in
-        // call order.
-        let slots = &slots;
-        join_all(calls.iter().enumerate().map(|(index, call)| async move {
-            let _slot = slots
-                .acquire()
-                .await
-                .expect("the semaphore is never closed");
-            if run.stop.is_set() {
-                return ToolResult::error(REPAIR_TEXT);
+        let calls = calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| turn.run_limited(call, index));
+        match self.config.tool_execution {
+            // The semaphore is fair, and `join_all` asks for places in call order, so calls start
+            // in call order.
+            ToolExecution::Concurrent => join_all(calls).await,
+            ToolExecution::Serial => {
+                let mut results = Vec::new();
+                for call in calls {
+                    results.push(call.await);
+                }
+                results
             }
-            run_call(run, tools, definitions, call, index).await
-        }))
-        .await
+        }
+    }
+}
+
+/// What a turn's calls share: the run, the tools as the frozen context names them, and the places
+/// under the turn's limit. A call a tool makes with `Ctx::run_tool` takes a place like any other.
+pub(crate) struct Turn {
+    run: Arc<Run>,
+    tools: Tools,
+    definitions: Vec<ToolDefinition>,
+    places: Arc<Semaphore>,
+}
+
+impl Turn {
+    /// Runs a call under the turn's limit, with the index of the model's call it belongs to. Once
+    /// the stop is set, a call that has not started never starts.
+    pub(crate) async fn run_limited(self: &Arc<Self>, call: &ToolCall, index: usize) -> ToolResult {
+        let permit =
+            (self.places.clone().acquire_owned().await).expect("the semaphore is never closed");
+        if self.run.stop.is_set() {
+            return ToolResult::error(REPAIR_TEXT);
+        }
+        let place = Arc::new(Place {
+            places: self.places.clone(),
+            state: tokio::sync::Mutex::new(PlaceState {
+                permit: Some(permit),
+                waiting: 0,
+                finished: false,
+            }),
+        });
+        let ctx = Ctx::for_call(self.run.clone(), index, self.clone(), place.clone());
+        let result = run_call(&self.run, &self.tools, &self.definitions, call, &ctx).await;
+        place.finish().await;
+        result
+    }
+}
+
+/// A running call's place under the turn's limit. While the calls it made with `Ctx::run_tool`
+/// run, the call gives up its place, and it takes one back when the last of them finishes, so a
+/// tool never waits on its own place. When the call ends while calls it made still run, it has no
+/// place to give back, and takes none.
+pub(crate) struct Place {
+    places: Arc<Semaphore>,
+    state: tokio::sync::Mutex<PlaceState>,
+}
+
+struct PlaceState {
+    permit: Option<OwnedSemaphorePermit>,
+    waiting: usize,
+    finished: bool,
+}
+
+impl Place {
+    pub(crate) async fn give_up(&self) {
+        let mut state = self.state.lock().await;
+        state.waiting += 1;
+        state.permit = None;
+    }
+
+    /// Holds the lock while it waits for a place, so that a call made meanwhile sees the place
+    /// taken back and gives it up again.
+    pub(crate) async fn take_back(&self) {
+        let mut state = self.state.lock().await;
+        state.waiting -= 1;
+        if state.waiting == 0 && !state.finished {
+            let permit = self.places.clone().acquire_owned().await;
+            state.permit = Some(permit.expect("the semaphore is never closed"));
+        }
+    }
+
+    async fn finish(&self) {
+        let mut state = self.state.lock().await;
+        state.finished = true;
+        state.permit = None;
     }
 }
 
@@ -447,7 +527,7 @@ async fn run_call(
     tools: &[Box<dyn Tool>],
     definitions: &[ToolDefinition],
     call: &ToolCall,
-    index: usize,
+    ctx: &Ctx,
 ) -> ToolResult {
     let definition = definitions.iter().find(|tool| tool.name == call.name);
     let code = tools
@@ -460,13 +540,12 @@ async fn run_call(
         Ok(input) => input,
         Err(problem) => return ToolResult::error(problem),
     };
-    let ctx = Ctx::for_call(run.clone(), index);
     let failed = |plugin: &dyn Plugin, error: Error| {
         ToolResult::error(format!("The {} plugin failed: {}", plugin.name(), error.0))
     };
     let mut replaced = None;
     for plugin in &run.agent.plugins {
-        match plugin.before_tool(call, &ctx).await {
+        match plugin.before_tool(call, ctx).await {
             Ok(None) => {}
             Ok(result) => {
                 replaced = result;
@@ -478,12 +557,12 @@ async fn run_call(
     let mut result = match replaced {
         Some(result) => result,
         None => code
-            .run(input, &ctx)
+            .run(input, ctx)
             .await
             .unwrap_or_else(|error| ToolResult::error(error.0)),
     };
     for plugin in &run.agent.plugins {
-        result = match plugin.after_tool(call, result, &ctx).await {
+        result = match plugin.after_tool(call, result, ctx).await {
             Ok(result) => result,
             Err(error) => return failed(plugin.as_ref(), error),
         };

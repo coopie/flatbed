@@ -141,6 +141,15 @@ fn setup(
     change: impl FnOnce(&mut CodemodeOptions),
     stop: Option<StopSignal>,
 ) -> Setup {
+    setup_with_places(script, change, stop, 4)
+}
+
+fn setup_with_places(
+    script: &str,
+    change: impl FnOnce(&mut CodemodeOptions),
+    stop: Option<StopSignal>,
+    max_concurrent_tools: usize,
+) -> Setup {
     let seen = Seen::default();
     let mut options = CodemodeOptions::new(["slow", "read_doc"]);
     change(&mut options);
@@ -149,6 +158,7 @@ fn setup(
         stop_after_slow: stop,
     };
     let mut config = AgentConfig::new("coder", "faux/test");
+    config.max_concurrent_tools = max_concurrent_tools;
     config.plugins = with_codemode(vec![Box::new(tools), Box::new(Guard)], options);
     let call = json!({"type": "toolCall", "id": "call_1", "name": "run_script", "input": {"script": script}});
     let faux = Arc::new(Faux::new(vec![
@@ -358,4 +368,27 @@ async fn an_error_in_a_script_comes_back_with_what_it_printed_first() {
         text.contains("ZeroDivisionError: division by zero"),
         "{text}"
     );
+}
+
+#[tokio::test]
+async fn gathered_calls_take_turns_when_the_agent_allows_one_call_at_a_time() {
+    if !has_uv() {
+        return;
+    }
+    let s = setup_with_places(
+        "import asyncio\nawait asyncio.gather(slow('a'), slow('b'))",
+        |_| {},
+        None,
+        1,
+    );
+    assert_eq!(s.agent.run(None).await.unwrap(), Outcome::Idle);
+    assert_eq!(
+        script_result(&entries(&s.store).await),
+        ("[\"done a\", \"done b\"]".to_string(), false)
+    );
+    // run_script gave up its place, so its calls could run, one after the other.
+    let mut spans = s.seen.spans.lock().unwrap().clone();
+    spans.sort();
+    assert_eq!(spans.len(), 2);
+    assert!(spans[0].1 <= spans[1].0);
 }

@@ -6,7 +6,7 @@
 //! a trait object and still be written as plain `async fn`s with defaults. Writing the boxed
 //! futures by hand would put a `Pin<Box<dyn Future>>` in every signature a plugin author reads.
 
-use crate::agent::{AgentConfig, Run};
+use crate::agent::{AgentConfig, Place, Run, Turn};
 use crate::error::{Error, Result};
 use crate::stop::StopSignal;
 use crate::types::{Block, Entry, EntryBody, Event, Section, Session, ToolCall, ToolDefinition};
@@ -121,8 +121,10 @@ pub struct Ctx {
     /// Why `append` fails, when it does: while a session opens, and after it ends.
     refuse_append: Option<&'static str>,
     /// The index of the call this context is for, when it is for a tool call, so that the first
-    /// reset in call order wins.
+    /// reset in call order wins. A call a tool makes with `run_tool` shares its caller's index.
     call: Option<usize>,
+    /// For a tool call: the turn it runs in and its place under the turn's limit, for `run_tool`.
+    turn: Option<(Arc<Turn>, Arc<Place>)>,
 }
 
 impl Ctx {
@@ -131,13 +133,15 @@ impl Ctx {
             run,
             refuse_append: None,
             call: None,
+            turn: None,
         }
     }
 
-    /// A context for the call at `index` in its turn.
-    pub(crate) fn for_call(run: Arc<Run>, index: usize) -> Ctx {
+    /// A context for a call of the turn's call at `index`, holding `place` under the turn's limit.
+    pub(crate) fn for_call(run: Arc<Run>, index: usize, turn: Arc<Turn>, place: Arc<Place>) -> Ctx {
         Ctx {
             call: Some(index),
+            turn: Some((turn, place)),
             ..Ctx::new(run)
         }
     }
@@ -191,6 +195,20 @@ impl Ctx {
     /// Queues an event for the next delivery point.
     pub fn deliver(&self, event: Event) {
         self.run.queue(event, None);
+    }
+
+    /// Runs another call as the loop runs the model's calls, through the same hooks and under the
+    /// turn's limit, and returns its result without appending a `tool` message. The calling tool
+    /// gives up its place under the limit while it waits. Only a tool's context can run calls.
+    pub async fn run_tool(&self, call: ToolCall) -> ToolResult {
+        let Some((turn, place)) = &self.turn else {
+            return ToolResult::error("Only a tool's context can run other tools.");
+        };
+        place.give_up().await;
+        let index = self.call.unwrap_or(usize::MAX);
+        let result = Box::pin(turn.run_limited(&call, index)).await;
+        place.take_back().await;
+        result
     }
 
     /// Asks the loop to end the session after this turn. For tools; the core `reset` tool uses it.
