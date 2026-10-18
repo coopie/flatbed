@@ -20,7 +20,7 @@ The request holds:
 
 The response is an assistant message with `model` set to `<provider>/<model-name>`, its `usage` and its `stop`. Map the API's stop reasons to `end`, `toolUse`, `maxTokens` or `refusal`, and any reason not listed for the provider below to `end`.
 
-A provider retries a failed request itself, up to three times, waiting 1, 2 and then 4 seconds between tries, and then throws. It retries when the request never got a response, such as a refused connection or a timeout, and on HTTP 408, 409, 429, 500 and above. It does not retry any other response. When the signal is aborted, it stops at once, during a backoff wait too, and throws.
+A provider retries a failed request itself, up to three times, waiting 1, 2 and then 4 seconds between tries, and then throws. It retries when the request never got a response, such as a refused connection or a timeout, and on HTTP 408, 409, 429, 500 and above. It does not retry any other response. When the signal is aborted, it stops at once, during a request or a backoff wait, and throws the error `The request was stopped.`
 
 Every provider that calls an API takes the same options: `apiKey`, `baseUrl`, and `timeout`, the seconds to wait for a response, 600 unless set.
 

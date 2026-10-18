@@ -23,7 +23,7 @@ A host calls `run`, optionally with a stop that says who stopped the run, as [ho
       - `serial`: each call starts only after the one before it has finished
 
       When the stop is set during the calls, no further call starts, as [host.md](host.md) describes: append every result, then the `Stopped by <who>.` notice, and end the run with `stopped`. When the assistant message's `stop` is `maxTokens`, run none of its calls, since one may be incomplete: give each a `tool` message with `isError: true` and the text `The response was cut off before this call was complete.`, and do not call plugins.
-   5. When a tool requested a reset, append a `reset` entry with `by: "agent"` and the reason of the first request, and end the run with `reset`.
+   5. When a tool requested a reset, append a `reset` entry with `by: "agent"` and the reason of the first call to request one, in call order, and end the run with `reset`. A reset wins over a stop set during the same turn, since the model has already been told the session will reset: the run appends the turn's results and the `reset` entry, with no stop notice, and ends with `reset`.
    6. Check the budget, as below.
    7. Deliver waiting events.
 6. **Ends** and returns why: `idle`, `reset`, `stopped` or `error`.
@@ -38,7 +38,7 @@ A session needs a run when the last entry on its path, ignoring `custom` and `co
 
 Work this out from the session's entries every time, never from a flag held in memory.
 
-So an assistant message with no tool calls ends the run with `idle`, unless something was delivered. Every other notice from the harness, such as `Session started.`, `Stopped by <who>.` or `The model call failed: ...`, waits for the next event that is not from the harness. A run that finds nothing needing an answer ends with `idle` without calling the model, and without checking the stop signal.
+So an assistant message with no tool calls ends the run with `idle`, unless something was delivered. Every other notice from the harness, such as `Session started.`, `Stopped by <who>.` or `The model call failed: ...`, waits for the next event that is not from the harness. A run that finds nothing needing an answer ends with `idle` without calling the model, and without checking the stop signal. So a stop set after the model's last answer, in a turn with no tool calls, changes nothing: the run ends with `idle` and writes no stop notice.
 
 ## The budget
 
@@ -58,7 +58,7 @@ The core provides one tool:
 - **input**: an object with an optional string `reason`.
 - **result**: the text `Session will reset after this turn.`
 
-The reset happens after the turn's results are appended, so a reset never sits between a call and its result. The `reset` entry takes the reason of the first request; when that reason is missing or empty, leave `reason` out.
+The reset happens after the turn's results are appended, so a reset never sits between a call and its result. The `reset` entry takes the reason of the first call, in call order, that requested a reset; when that reason is missing or empty, leave `reason` out.
 
 ## One run at a time
 

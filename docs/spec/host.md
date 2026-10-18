@@ -24,8 +24,20 @@ An agent's configuration holds:
 
 - **`createAgent(config, {store, providers})`** makes an agent. It fails at once, before anything is stored, when the model's provider is not in `providers`, `maxConcurrentTools` is below 1, or `toolExecution` is neither `concurrent` nor `serial`. In Python and Rust the type is `Agent` and the constructor is the language's own, such as `Agent(config, store=..., providers=...)`; its configuration type is `AgentConfig` in all three.
 - **`deliver(event, {parentId})`** queues an event for the next delivery point. `parentId` is optional, for a rewind, as [sessions.md](sessions.md) describes.
-- **`run({stop})`** runs the loop and returns why it ended: `idle`, `reset`, `stopped` or `error`. It fails, with nothing written, when two tools in the session would share a name, as [plugins.md](plugins.md) describes.
-- **A stop** is a value the host makes before a run and sets, with who stopped it, at any time from any task or thread: an `AbortController` in TypeScript, and a `StopSignal` in Python and Rust.
+- **`run({signal})`** runs the loop and returns why it ended: `idle`, `reset`, `stopped` or `error`. It fails, with nothing written, when two tools in the session would share a name, as [plugins.md](plugins.md) describes.
+- **A stop** is a value the host makes before a run and sets, with who stopped it, at any time from any task or thread. In TypeScript the host makes an `AbortController`, passes its `signal` to `run`, and calls `abort(who)`. In Python and Rust the host makes a `StopSignal`, passes it to `run`, and calls `set(who)`; `wait()` waits until it is set. When the host gives no name, the stop is by `the host`.
+
+## Errors from `createAgent`
+
+So that hosts and tests see the same words, the failures read:
+
+- `No provider named <provider> for the model <model>.`
+- `maxConcurrentTools must be at least 1, not <n>.`, with the field spelled as in the language
+- `toolExecution must be concurrent or serial, not <value>.`, likewise
+
+## Providers
+
+Each language names its providers in its own style: `anthropicProvider(options)` and `openaiProvider(options)` in TypeScript, `AnthropicProvider(...)` and `OpenAIProvider(...)` in Python, and `Anthropic::new(options)` and `OpenAi::new(options)` in Rust. Their default base URLs are `https://api.anthropic.com` and `https://api.openai.com/v1`.
 
 ## What a stop does
 
