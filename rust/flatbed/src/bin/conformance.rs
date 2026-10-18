@@ -4,19 +4,25 @@
 //!
 //!   cargo run --bin conformance [scenario-dir]
 
+use async_trait::async_trait;
 use flatbed::providers::faux::{Faux, Script, Scripted};
 use flatbed::render::path_of;
 use flatbed::{
     Agent, AgentConfig, Block, Contribution, Ctx, Entry, EntryBody, Event, Header, MemoryStore,
     Message, ParentLink, Plugin, Provider, Section, Session, Stop, StopSignal, Store, Tool,
-    ToolCall, ToolDefinition, ToolResult, Usage,
+    ToolCall, ToolDefinition, ToolExecution, ToolResult, Usage,
 };
 use serde::Deserialize;
-use serde_json::{Map, Value};
-use std::cell::RefCell;
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// A scenario that has not finished by then fails, so that a run that never ends cannot hang
+/// the suite.
+const SCENARIO_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Deserialize)]
 struct Scenario {
@@ -40,6 +46,9 @@ struct ScenarioAgent {
     soft_limit: Option<u64>,
     hard_limit: Option<u64>,
     max_tokens: Option<u32>,
+    effort: Option<String>,
+    tool_execution: Option<String>,
+    max_concurrent_tools: Option<usize>,
     parent: Option<ParentLink>,
 }
 
@@ -94,11 +103,17 @@ struct DeliverJson {
 }
 
 /// A scripted response, or `{"abort": "<who>"}`: set the stop signal while the call is in flight,
-/// and fail the call.
+/// and fail the call, or `{"hang": true}`: never answer, and ignore the signal.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ScriptStep {
-    Abort { abort: String },
+    Abort {
+        abort: String,
+    },
+    #[allow(dead_code)]
+    Hang {
+        hang: bool,
+    },
     Response(ScriptedJson),
 }
 
@@ -109,6 +124,16 @@ struct ScenarioTool {
     description: String,
     input_schema: Value,
     behaviour: Value,
+    /// How many calls are running now, and the most there have been at once, for
+    /// `expect.maxRunning`.
+    #[serde(skip)]
+    running: Arc<Running>,
+}
+
+#[derive(Default)]
+struct Running {
+    now: AtomicUsize,
+    most: AtomicUsize,
 }
 
 #[derive(Deserialize)]
@@ -119,9 +144,11 @@ struct ScriptedJson {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Expect {
     sessions: Vec<Vec<Value>>,
     requests: Option<Vec<Value>>,
+    max_running: Option<usize>,
 }
 
 /// The test plugin: the scenario's sections and tools, from its `context` hook.
@@ -131,12 +158,13 @@ struct ScenarioPlugin {
     hooks: Hooks,
 }
 
+#[async_trait]
 impl Plugin for ScenarioPlugin {
     fn name(&self) -> &str {
         "test"
     }
 
-    fn context(&self, _ctx: &mut Ctx) -> flatbed::Result<Contribution> {
+    async fn context(&self, _ctx: &Ctx) -> flatbed::Result<Contribution> {
         Ok(Contribution {
             sections: self.sections.clone(),
             tools: self
@@ -147,7 +175,11 @@ impl Plugin for ScenarioPlugin {
         })
     }
 
-    fn before_tool(&self, call: &ToolCall, _ctx: &mut Ctx) -> flatbed::Result<Option<ToolResult>> {
+    async fn before_tool(
+        &self,
+        call: &ToolCall,
+        _ctx: &Ctx,
+    ) -> flatbed::Result<Option<ToolResult>> {
         let found = self
             .hooks
             .before_tool
@@ -156,11 +188,11 @@ impl Plugin for ScenarioPlugin {
         found.map(ResultJson::result).transpose()
     }
 
-    fn after_tool(
+    async fn after_tool(
         &self,
         call: &ToolCall,
         result: ToolResult,
-        _ctx: &mut Ctx,
+        _ctx: &Ctx,
     ) -> flatbed::Result<ToolResult> {
         let found = self
             .hooks
@@ -170,7 +202,7 @@ impl Plugin for ScenarioPlugin {
         found.map(ResultJson::result).unwrap_or(Ok(result))
     }
 
-    fn on_entry(&self, entry: &Entry, ctx: &mut Ctx) {
+    async fn on_entry(&self, entry: &Entry, ctx: &Ctx) {
         let is_result = matches!(
             &entry.body,
             EntryBody::Message {
@@ -179,17 +211,19 @@ impl Plugin for ScenarioPlugin {
         );
         if let (Some(hook), true) = (&self.hooks.on_entry, is_result) {
             ctx.append("test", hook.custom.clone())
+                .await
                 .expect("the session is open");
         }
     }
 
-    fn on_session_end(&self, _session: &Session, ctx: &mut Ctx) {
+    async fn on_session_end(&self, _session: &Session, ctx: &Ctx) {
         if let Some(hook) = &self.hooks.on_session_end {
             ctx.deliver(hook.deliver.clone());
         }
     }
 }
 
+#[async_trait]
 impl Tool for ScenarioTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -199,7 +233,29 @@ impl Tool for ScenarioTool {
         }
     }
 
-    fn run(&self, input: &Map<String, Value>, ctx: &mut Ctx) -> flatbed::Result<ToolResult> {
+    async fn run(&self, input: &Map<String, Value>, ctx: &Ctx) -> flatbed::Result<ToolResult> {
+        let running = self.running.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.running.most.fetch_max(running, Ordering::SeqCst);
+        let result = self.behave(input, ctx).await;
+        self.running.now.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+}
+
+impl ScenarioTool {
+    async fn behave(&self, input: &Map<String, Value>, ctx: &Ctx) -> flatbed::Result<ToolResult> {
+        let behaviour = self.behaviour.as_object();
+        let text = |key: &str| {
+            let value = behaviour.and_then(|b| b.get(key)).and_then(Value::as_str);
+            value.unwrap_or_default().to_string()
+        };
+        if let Some(ms) = behaviour
+            .and_then(|b| b.get("sleep"))
+            .and_then(Value::as_u64)
+        {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            return Ok(ToolResult::text(text("text")));
+        }
         let (kind, value) = self
             .behaviour
             .as_object()
@@ -218,6 +274,10 @@ impl Tool for ScenarioTool {
                 ctx.request_reset(value.as_str().map(String::from));
                 Ok(ToolResult::text("Session will reset after this turn."))
             }
+            "waitForStop" => {
+                ctx.signal().stopped().await;
+                Ok(ToolResult::text(text("waitForStop")))
+            }
             "deliver" => {
                 ctx.deliver(serde_json::from_value(value.clone())?);
                 Ok(ToolResult::text("Delivered."))
@@ -227,7 +287,8 @@ impl Tool for ScenarioTool {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let dir = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -249,7 +310,10 @@ fn main() {
                 continue;
             }
         };
-        match run(&scenario) {
+        let outcome = tokio::time::timeout(SCENARIO_TIMEOUT, run(&scenario))
+            .await
+            .unwrap_or_else(|_| Err(format!("not finished after {SCENARIO_TIMEOUT:?}")));
+        match outcome {
             Ok(()) => println!("ok {}", scenario.name),
             Err(difference) => {
                 println!("FAIL {}: {difference}", scenario.name);
@@ -262,11 +326,46 @@ fn main() {
     }
 }
 
+/// The agent the scenario describes, with the test plugin and the faux provider.
+fn agent(
+    scenario: &Scenario,
+    store: Arc<MemoryStore>,
+    faux: Arc<Faux>,
+    running: Arc<Running>,
+) -> flatbed::Result<Agent> {
+    let given = &scenario.agent;
+    let mut config = AgentConfig::new("test", &given.model);
+    config.soft_limit = given.soft_limit.unwrap_or(config.soft_limit);
+    config.hard_limit = given.hard_limit.unwrap_or(config.hard_limit);
+    config.max_tokens = given.max_tokens.unwrap_or(config.max_tokens);
+    config.effort = given.effort.clone();
+    config.tool_execution = match given.tool_execution.as_deref() {
+        None | Some("concurrent") => ToolExecution::Concurrent,
+        Some("serial") => ToolExecution::Serial,
+        Some(other) => return Err(format!("Unknown toolExecution {other}.").into()),
+    };
+    config.max_concurrent_tools = given
+        .max_concurrent_tools
+        .unwrap_or(config.max_concurrent_tools);
+    config.parent = given.parent.clone();
+    let tools = scenario.tools.iter().map(|tool| ScenarioTool {
+        running: running.clone(),
+        ..tool.clone()
+    });
+    config.plugins.push(Box::new(ScenarioPlugin {
+        sections: scenario.sections.clone(),
+        tools: tools.collect(),
+        hooks: scenario.plugin.clone(),
+    }));
+    let providers = HashMap::from([("faux".to_string(), faux as Arc<dyn Provider>)]);
+    Agent::new(config, store, providers)
+}
+
 /// Runs one scenario, and returns the first difference from what it expects.
-fn run(scenario: &Scenario) -> Result<(), String> {
-    let store = Rc::new(MemoryStore::new());
+async fn run(scenario: &Scenario) -> Result<(), String> {
+    let store = Arc::new(MemoryStore::new());
     // The signal for the current run, which an `abort` step sets mid-call.
-    let signal = Rc::new(RefCell::new(StopSignal::new()));
+    let signal = Arc::new(Mutex::new(StopSignal::new()));
     let script = scenario
         .script
         .iter()
@@ -279,25 +378,19 @@ fn run(scenario: &Scenario) -> Result<(), String> {
             ScriptStep::Abort { abort } => {
                 let (signal, who) = (signal.clone(), abort.clone());
                 Script::Function(Box::new(move |_| {
-                    signal.borrow().stop(who.clone());
-                    Err("The request was cancelled.".into())
+                    signal.lock().unwrap().stop(who.clone());
+                    Box::pin(async { Err("The request was cancelled.".into()) })
                 }))
+            }
+            ScriptStep::Hang { .. } => {
+                Script::Function(Box::new(|_| Box::pin(std::future::pending())))
             }
         })
         .collect();
-    let faux = Rc::new(Faux::new(script));
-    let mut config = AgentConfig::new("test", &scenario.agent.model);
-    config.soft_limit = scenario.agent.soft_limit.unwrap_or(config.soft_limit);
-    config.hard_limit = scenario.agent.hard_limit.unwrap_or(config.hard_limit);
-    config.max_tokens = scenario.agent.max_tokens.unwrap_or(config.max_tokens);
-    config.parent = scenario.agent.parent.clone();
-    config.plugins.push(Box::new(ScenarioPlugin {
-        sections: scenario.sections.clone(),
-        tools: scenario.tools.clone(),
-        hooks: scenario.plugin.clone(),
-    }));
-    let providers = HashMap::from([("faux".to_string(), faux.clone() as Rc<dyn Provider>)]);
-    let mut agent = Agent::new(config, store.clone(), providers);
+    let faux = Arc::new(Faux::new(script));
+    let running = Arc::new(Running::default());
+    let agent =
+        agent(scenario, store.clone(), faux.clone(), running.clone()).map_err(|e| e.to_string())?;
 
     let mut rewind_to: Option<String> = None;
     let mut rewind_targets = Vec::new();
@@ -306,29 +399,41 @@ fn run(scenario: &Scenario) -> Result<(), String> {
         if let Some(event) = step.get("deliver") {
             let event: Event =
                 serde_json::from_value(event.clone()).map_err(|e| fail(e.to_string()))?;
-            match rewind_to.take() {
-                Some(parent) => agent.deliver_after(event, parent),
-                None => agent.deliver(event),
-            }
+            agent.deliver(event, rewind_to.take());
         } else if let Some(options) = step.get("run") {
             let current = StopSignal::new();
+            *signal.lock().unwrap() = current.clone();
             if let Some(who) = options.get("stop").and_then(Value::as_str) {
-                current.stop(who);
-            }
-            *signal.borrow_mut() = current.clone();
-            let outcome = agent.run(Some(&current)).map_err(|e| fail(e.to_string()))?;
-            if let Some(expected) = step.get("expect").and_then(Value::as_str) {
-                if outcome.as_str() != expected {
-                    return Err(fail(format!(
-                        "expected the run to end {expected}, got {}",
-                        outcome.as_str()
-                    )));
+                match options.get("stopAfter").and_then(Value::as_u64) {
+                    Some(ms) => {
+                        let (current, who) = (current.clone(), who.to_string());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(ms)).await;
+                            current.stop(who);
+                        });
+                    }
+                    None => current.stop(who),
                 }
+            }
+            let outcome = match agent.run(Some(&current)).await {
+                Ok(outcome) => json!(outcome.as_str()),
+                Err(error) => json!({"error": error.to_string()}),
+            };
+            match step.get("expect") {
+                Some(expected) if *expected != outcome => {
+                    return Err(fail(format!(
+                        "expected the run to end {expected}, got {outcome}"
+                    )))
+                }
+                None if outcome.get("error").is_some() => {
+                    return Err(fail(format!("the run failed: {outcome}")))
+                }
+                _ => {}
             }
         } else if let Some(body) = step.get("crash") {
             let body: EntryBody =
                 serde_json::from_value(body.clone()).map_err(|e| fail(e.to_string()))?;
-            let session = newest(&*store)?;
+            let session = newest(&*store).await?;
             let entry = Entry {
                 id: flatbed::ids::new_entry_id(),
                 parent_id: session.entries.last().map(|e| e.id.clone()),
@@ -337,11 +442,12 @@ fn run(scenario: &Scenario) -> Result<(), String> {
             };
             store
                 .append("test", &session.header.id, &entry)
+                .await
                 .map_err(|e| fail(e.to_string()))?;
         } else if step.get("header").is_some() {
             // Only the header of a new session, as a process that stopped before its context
             // entry would leave.
-            let ids = store.list("test").map_err(|e| fail(e.to_string()))?;
+            let ids = store.list("test").await.map_err(|e| fail(e.to_string()))?;
             let now = flatbed::ids::now_iso();
             let header = Header {
                 version: 1,
@@ -356,9 +462,12 @@ fn run(scenario: &Scenario) -> Result<(), String> {
                     agent: None,
                 }),
             };
-            store.create(&header).map_err(|e| fail(e.to_string()))?;
+            store
+                .create(&header)
+                .await
+                .map_err(|e| fail(e.to_string()))?;
         } else if let Some(index) = step.get("rewind").and_then(Value::as_u64) {
-            let session = newest(&*store)?;
+            let session = newest(&*store).await?;
             let path = path_of(&session.entries);
             let target = path
                 .get(index as usize)
@@ -370,34 +479,60 @@ fn run(scenario: &Scenario) -> Result<(), String> {
         }
     }
 
-    compare_sessions(&*store, &scenario.expect.sessions, &rewind_targets)?;
+    compare_sessions(&*store, &scenario.expect.sessions, &rewind_targets).await?;
     if let Some(expected) = &scenario.expect.requests {
-        let actual: Vec<Value> = faux
-            .requests()
-            .iter()
-            .map(|r| serde_json::to_value(&r.messages).expect("messages serialise"))
-            .collect();
-        difference(
-            "requests",
-            &Value::Array(expected.clone()),
-            &Value::Array(actual),
-        )?;
+        compare_requests(expected, &faux.requests())?;
+    }
+    if let Some(expected) = scenario.expect.max_running {
+        let most = running.most.load(Ordering::SeqCst);
+        if most != expected {
+            return Err(format!("maxRunning: expected {expected}, got {most}"));
+        }
     }
     Ok(())
 }
 
-fn newest(store: &dyn Store) -> Result<flatbed::Session, String> {
-    let ids = store.list("test").map_err(|e| e.to_string())?;
-    let id = ids.last().ok_or("there is no session yet")?;
-    store.read("test", id).map_err(|e| e.to_string())
+/// Each expected request is either its messages, or an object with any of `messages`,
+/// `sections`, `tools`, `maxTokens` and `effort`.
+fn compare_requests(expected: &[Value], actual: &[flatbed::Request]) -> Result<(), String> {
+    if expected.len() != actual.len() {
+        return Err(format!(
+            "requests: expected {} requests, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    for (n, (want, got)) in expected.iter().zip(actual).enumerate() {
+        let got = json!({
+            "messages": got.messages,
+            "sections": got.sections,
+            "tools": got.tools,
+            "maxTokens": got.max_tokens,
+            "effort": got.effort,
+        });
+        let Some(want) = want.as_object() else {
+            difference(&format!("requests[{n}]"), want, &got["messages"])?;
+            continue;
+        };
+        for (key, want) in want {
+            difference(&format!("requests[{n}].{key}"), want, &got[key])?;
+        }
+    }
+    Ok(())
 }
 
-fn compare_sessions(
+async fn newest(store: &dyn Store) -> Result<flatbed::Session, String> {
+    let ids = store.list("test").await.map_err(|e| e.to_string())?;
+    let id = ids.last().ok_or("there is no session yet")?;
+    store.read("test", id).await.map_err(|e| e.to_string())
+}
+
+async fn compare_sessions(
     store: &dyn Store,
     expected: &[Vec<Value>],
     rewind_targets: &[String],
 ) -> Result<(), String> {
-    let ids = store.list("test").map_err(|e| e.to_string())?;
+    let ids = store.list("test").await.map_err(|e| e.to_string())?;
     if ids.len() != expected.len() {
         return Err(format!(
             "expected {} sessions, got {}",
@@ -406,7 +541,7 @@ fn compare_sessions(
         ));
     }
     for (n, (id, expected)) in ids.iter().zip(expected).enumerate() {
-        let session = store.read("test", id).map_err(|e| e.to_string())?;
+        let session = store.read("test", id).await.map_err(|e| e.to_string())?;
         let mut expected = expected.as_slice();
         if let Some(header) = expected.first().and_then(|first| first.get("header")) {
             let want = &header["parent"];

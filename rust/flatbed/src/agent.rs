@@ -1,21 +1,26 @@
 //! The loop, as docs/spec/loop.md describes: open a session if none is open, repair it, deliver
 //! waiting events, then ask the model and run its tools until nothing new needs an answer.
-//! `Agent::run` is the whole harness; everything below it is one step of it.
+//! `Agent::run` is the whole harness; `Run` holds one run's view of the open session, and every
+//! other function here is one step of it.
 
 use crate::error::{Error, Result};
 use crate::ids::{new_entry_id, new_session_id, now_iso};
-use crate::plugin::{Contribution, Ctx, Outputs, Plugin, Tool, ToolResult};
+use crate::plugin::{Contribution, Ctx, Plugin, Tool, ToolResult};
 use crate::providers::{Provider, Request};
 use crate::render::{path_of, render, Context};
+use crate::stop::StopSignal;
 use crate::store::Store;
 use crate::types::{
     AssistantMessage, Entry, EntryBody, Event, Header, Message, ParentLink, Session, Stop,
     ToolCall, ToolDefinition, ToolMessage, Usage,
 };
+use async_trait::async_trait;
+use futures_util::future::{join_all, BoxFuture};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Semaphore;
 
 const SOFT_LIMIT_NOTICE: &str =
     "This session is nearly full. Bring your notes up to date, then call reset.";
@@ -24,7 +29,8 @@ const CUT_OFF_TEXT: &str = "The response was cut off before this call was comple
 const RESET_RESULT: &str = "Session will reset after this turn.";
 const RESET_DESCRIPTION: &str = "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.";
 
-/// An agent as the host configures it. The core stores nothing about it beyond its sessions.
+/// An agent as the host configures it, as docs/spec/host.md describes. The core stores nothing
+/// about it beyond its sessions.
 pub struct AgentConfig {
     pub id: String,
     /// `<provider>/<model-name>`, such as `anthropic/claude-opus-5-5` or `faux/test`.
@@ -35,6 +41,9 @@ pub struct AgentConfig {
     pub max_tokens: u32,
     /// Passed to providers that take it, such as `low` or `high`.
     pub effort: Option<String>,
+    pub tool_execution: ToolExecution,
+    /// The most calls that run at once when concurrent. At least 1.
+    pub max_concurrent_tools: usize,
     /// The parent of the agent's first session, such as the session that dispatched it.
     pub parent: Option<ParentLink>,
 }
@@ -49,9 +58,21 @@ impl AgentConfig {
             hard_limit: 180_000,
             max_tokens: 8_192,
             effort: None,
+            tool_execution: ToolExecution::Concurrent,
+            max_concurrent_tools: 4,
             parent: None,
         }
     }
+}
+
+/// How a turn's tool calls run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolExecution {
+    /// Calls start in call order, at most `max_concurrent_tools` at once.
+    #[default]
+    Concurrent,
+    /// Each call starts only after the one before it has finished.
+    Serial,
 }
 
 /// Why a run ended.
@@ -74,118 +95,150 @@ impl Outcome {
     }
 }
 
-/// Stops a run at its next turn. It names who stopped it, for the notice. It can be shared with
-/// another thread, such as a Ctrl-C handler.
-#[derive(Clone, Debug, Default)]
-pub struct StopSignal(Arc<Mutex<Option<String>>>);
-
-impl StopSignal {
-    pub fn new() -> StopSignal {
-        StopSignal::default()
-    }
-
-    pub fn stop(&self, who: impl Into<String>) {
-        *self.0.lock().expect("stop signal lock") = Some(who.into());
-    }
-
-    pub fn stopped_by(&self) -> Option<String> {
-        self.0.lock().expect("stop signal lock").clone()
-    }
-}
-
 /// An event waiting for the next delivery point, with the entry to follow when rewinding.
 struct Queued {
     event: Event,
     parent: Option<String>,
 }
 
+type Queue = Arc<Mutex<Vec<Queued>>>;
+type Tools = Arc<Vec<Box<dyn Tool>>>;
+
 pub struct Agent {
-    pub config: AgentConfig,
-    store: Rc<dyn Store>,
-    providers: HashMap<String, Rc<dyn Provider>>,
-    queue: Vec<Queued>,
-    /// The tools' code for the open session, kept between runs. The session's `context` entry
-    /// says which tools exist; the plugins supply their code.
-    tools: Option<(String, Vec<Box<dyn Tool>>)>,
+    config: Arc<AgentConfig>,
+    store: Arc<dyn Store>,
+    provider: Arc<dyn Provider>,
+    /// The model name without its provider, as providers take it.
+    model: String,
+    queue: Queue,
+    /// The tools' code for the open session, by session id, kept between runs. The session's
+    /// `context` entry says which tools exist; the plugins supply their code.
+    tools: Mutex<Option<(String, Tools)>>,
+    /// The in-process guard against running one agent twice at once.
+    running: AtomicBool,
 }
 
 impl Agent {
     /// `providers` maps a provider name, the part of the model before the `/`, to a provider.
+    /// Fails, before anything is stored, when the model's provider is missing or
+    /// `max_concurrent_tools` is below 1.
     pub fn new(
         config: AgentConfig,
-        store: Rc<dyn Store>,
-        providers: HashMap<String, Rc<dyn Provider>>,
-    ) -> Agent {
-        Agent {
-            config,
-            store,
-            providers,
-            queue: Vec::new(),
-            tools: None,
-        }
-    }
-
-    /// Queues an event for the next delivery point.
-    pub fn deliver(&mut self, event: Event) {
-        self.queue.push(Queued {
-            event,
-            parent: None,
-        });
-    }
-
-    /// Queues an event that follows `parent`, an earlier entry, to rewind or branch the session.
-    pub fn deliver_after(&mut self, event: Event, parent: impl Into<String>) {
-        self.queue.push(Queued {
-            event,
-            parent: Some(parent.into()),
-        });
-    }
-
-    /// Runs the agent until nothing new needs an answer. Taking `&mut self` is the in-process
-    /// guard against running one agent twice at once. Errors are the store's; a failing model or
-    /// tool is recorded in the session instead.
-    pub fn run(&mut self, signal: Option<&StopSignal>) -> Result<Outcome> {
-        let stopped_by = || signal.and_then(StopSignal::stopped_by);
-        let (provider, _) = self.config.model.split_once('/').unwrap_or_default();
-        if !self.providers.contains_key(provider) {
-            let model = &self.config.model;
+        store: Arc<dyn Store>,
+        providers: HashMap<String, Arc<dyn Provider>>,
+    ) -> Result<Agent> {
+        let (provider, model) = config.model.split_once('/').unwrap_or_default();
+        let Some(provider) = providers.get(provider).cloned() else {
             return Err(Error(format!(
-                "No provider named {provider} for model {model}."
+                "No provider for the model {}.",
+                config.model
+            )));
+        };
+        if config.max_concurrent_tools < 1 {
+            return Err(Error::new("max_concurrent_tools must be at least 1."));
+        }
+        Ok(Agent {
+            model: model.to_string(),
+            config: Arc::new(config),
+            store,
+            provider,
+            queue: Queue::default(),
+            tools: Mutex::new(None),
+            running: AtomicBool::new(false),
+        })
+    }
+
+    pub fn config(&self) -> &AgentConfig {
+        &self.config
+    }
+
+    /// Queues an event for the next delivery point, even while the agent runs. Give `parent_id`,
+    /// an earlier entry, to rewind or branch the session.
+    pub fn deliver(&self, event: Event, parent_id: Option<String>) {
+        let queued = Queued {
+            event,
+            parent: parent_id,
+        };
+        self.queue.lock().expect("queue lock").push(queued);
+    }
+
+    /// Runs the agent until nothing new needs an answer, and returns why it ended. `stop` may be
+    /// set at any time, from any task or thread. Errors are the store's, a plugin's `context`
+    /// hook's, or a second run at once; a failing model or tool is recorded in the session instead.
+    pub async fn run(&self, stop: Option<&StopSignal>) -> Result<Outcome> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return Err(Error(format!(
+                "Agent {} is already running.",
+                self.config.id
             )));
         }
-        let mut run = self.start()?;
-        run.repair()?;
-        run.deliver_waiting()?;
-        while run.needs_run() {
-            if let Some(who) = stopped_by() {
-                run.notice(format!("Stopped by {who}."))?;
-                return Ok(Outcome::Stopped);
+        let _running = Running(&self.running);
+        let stop = stop.cloned().unwrap_or_default();
+
+        let (run, tools) = self.open(&stop).await?;
+        run.repair().await?;
+        run.deliver_waiting().await?;
+        let context = run.render().await.0;
+        while run.needs_run().await {
+            if stop.is_set() {
+                return run.stopped().await;
             }
-            let message = match run.ask_model(signal) {
+            let request = Request {
+                model: self.model.clone(),
+                sections: context.sections.clone(),
+                tools: context.tools.clone(),
+                messages: run.render().await.1,
+                max_tokens: self.config.max_tokens,
+                output_schema: None,
+                effort: self.config.effort.clone(),
+                signal: Some(stop.clone()),
+            };
+            // The stop abandons the call in flight, whatever the provider does with the signal.
+            let answer = tokio::select! {
+                answer = self.provider.complete(&request) => answer,
+                () = stop.stopped() => Err(Error::new("The run was stopped.")),
+            };
+            let message = match answer {
                 Ok(message) => message,
-                // A call that failed because the run was stopped is a stop, which the top of the
-                // loop records.
-                Err(_) if stopped_by().is_some() => continue,
+                Err(_) if stop.is_set() => return run.stopped().await,
                 Err(error) => {
-                    run.append_message(Message::Assistant(run.failed_message()))?;
-                    run.notice(format!("The model call failed: {error}"))?;
+                    run.append_message(Message::Assistant(self.failed_message()))
+                        .await?;
+                    run.notice(format!("The model call failed: {error}"))
+                        .await?;
                     return Ok(Outcome::Error);
                 }
             };
-            run.append_message(Message::Assistant(message.clone()))?;
-            if let Some(reason) = run.run_tools(&message, signal)? {
-                run.end("agent", reason)?;
-                return Ok(Outcome::Reset);
+            run.append_message(Message::Assistant(message.clone()))
+                .await?;
+
+            let calls: Vec<&ToolCall> = message.tool_calls().collect();
+            let results = if message.stop == Stop::MaxTokens {
+                // A response cut off by the token limit may hold a call with half its input.
+                calls
+                    .iter()
+                    .map(|_| ToolResult::error(CUT_OFF_TEXT))
+                    .collect()
+            } else {
+                self.run_tools(&run, &tools, &context.tools, &calls).await
+            };
+            for (call, result) in calls.iter().zip(results) {
+                run.append_message(tool_message(call, result)).await?;
+            }
+            if !calls.is_empty() && stop.is_set() {
+                return run.stopped().await;
+            }
+            if let Some(reason) = run.take_reset() {
+                return run.end("agent", reason).await;
             }
             let size = message.usage.size();
-            if size > run.agent.hard_limit {
-                run.end("harness", Some("context budget".into()))?;
-                return Ok(Outcome::Reset);
+            if size > self.config.hard_limit {
+                return run.end("harness", Some("context budget".into())).await;
             }
-            if size > run.agent.soft_limit && !run.has_notice(SOFT_LIMIT_NOTICE) {
-                run.notice(SOFT_LIMIT_NOTICE)?;
+            if size > self.config.soft_limit && !run.has_soft_limit_notice().await {
+                run.notice(SOFT_LIMIT_NOTICE).await?;
             }
-            run.deliver_waiting()?;
+            run.deliver_waiting().await?;
         }
         Ok(Outcome::Idle)
     }
@@ -194,307 +247,104 @@ impl Agent {
     /// newest ended in a reset. A newest session that holds only its header, because a process
     /// stopped after writing it, is opened in place. Loads the tools' code when this process has
     /// not yet.
-    fn start(&mut self) -> Result<Run<'_>> {
-        let Agent {
-            config,
-            store,
-            providers,
-            queue,
-            tools,
-        } = self;
-        let ids = store.list(&config.id)?;
+    async fn open(&self, stop: &StopSignal) -> Result<(Arc<Run>, Tools)> {
+        let (agent, store) = (&self.config.id, &self.store);
+        let ids = store.list(agent).await?;
         let newest = match ids.last() {
-            Some(id) => Some(store.read(&config.id, id)?),
+            Some(id) => Some(store.read(agent, id).await?),
             None => None,
         };
-        let ended_with = |session: &Session| match session.entries.last().map(|e| &e.body) {
+        let reset_of = |session: &Session| match session.entries.last().map(|e| &e.body) {
             Some(EntryBody::Reset { reason, .. }) => Some(reason.clone()),
             _ => None,
         };
-        let open = newest
+
+        if let Some(session) = newest
             .as_ref()
-            .filter(|s| !s.entries.is_empty() && ended_with(s).is_none());
-        if let Some(session) = open {
-            let loaded = tools
-                .as_ref()
-                .is_some_and(|(id, _)| *id == session.header.id);
-            let mut outputs = Outputs::default();
-            if !loaded {
-                let code = collect_context(config, session, &mut outputs)?.tools;
-                *tools = Some((session.header.id.clone(), code));
-            }
-            let mut run = Run::new(config, &**store, providers, queue, tools, newest.unwrap());
-            run.apply(outputs)?;
-            run.freeze_context();
-            return Ok(run);
+            .filter(|s| !s.entries.is_empty() && reset_of(s).is_none())
+        {
+            let id = session.header.id.clone();
+            let run = self.start_run(session.clone(), stop);
+            let cached = self.tools.lock().expect("tools lock").clone();
+            let tools = match cached.filter(|(cached_for, _)| *cached_for == id) {
+                Some((_, tools)) => tools,
+                None => Arc::new(collect_context(&run).await?.tools),
+            };
+            *self.tools.lock().expect("tools lock") = Some((id, tools.clone()));
+            return Ok((run, tools));
         }
 
         let header_only = newest.as_ref().is_some_and(|s| s.entries.is_empty());
         // The session whose reset says why this one starts: the one before a header-only newest.
-        let ended_with = match (header_only, ids.len()) {
-            (false, _) => newest.as_ref().and_then(ended_with),
-            (true, n) if n > 1 => ended_with(&store.read(&config.id, &ids[n - 2])?),
+        let started_after = match (header_only, ids.len()) {
+            (false, _) => newest.as_ref().and_then(reset_of),
+            (true, n) if n > 1 => reset_of(&store.read(agent, &ids[n - 2]).await?),
             (true, _) => None,
         };
         let session = match newest.filter(|_| header_only) {
             Some(session) => session,
-            None => {
-                let now = now_iso();
-                let parent = match ids.last() {
-                    Some(previous) => Some(ParentLink {
-                        session: previous.clone(),
-                        reason: "reset".into(),
-                        entry: None,
-                        agent: None,
-                    }),
-                    None => config.parent.clone(),
-                };
-                let header = Header {
-                    version: 1,
-                    id: new_session_id(&now, ids.last().map(String::as_str))?,
-                    agent: config.id.clone(),
-                    created_at: now,
-                    parent,
-                };
-                Session {
-                    header,
-                    entries: Vec::new(),
-                }
-            }
+            None => self.new_session(&ids)?,
         };
-        let mut outputs = Outputs::default();
-        let Contribution {
-            sections,
-            tools: code,
-        } = collect_context(config, &session, &mut outputs)?;
-        let definitions = code.iter().map(|tool| tool.definition()).collect();
+        let run = self.start_run(session.clone(), stop);
+        // The plugins answer before anything is written, so that a clash of tool names leaves the
+        // store untouched.
+        let Contribution { sections, tools } = collect_context(&run).await?;
         if !header_only {
-            store.create(&session.header)?;
+            store.create(&session.header).await?;
         }
-        *tools = Some((session.header.id.clone(), code));
-        let mut run = Run::new(config, &**store, providers, queue, tools, session);
+        let definitions = tools.iter().map(|tool| tool.definition()).collect();
         run.append(
             EntryBody::Context {
                 sections,
                 tools: definitions,
             },
             None,
-        )?;
-        run.notice(match ended_with {
+        )
+        .await?;
+        run.notice(match started_after {
             None => "Session started.".to_string(),
             Some(None) => "Session started after a reset.".to_string(),
             Some(Some(reason)) => format!("Session started after a reset: {reason}"),
-        })?;
-        run.apply(outputs)?;
-        run.freeze_context();
-        Ok(run)
-    }
-}
-
-/// Calls every plugin's `context` hook, in plugin order, joins what they add, and adds the core
-/// `reset` tool last.
-fn collect_context(
-    config: &AgentConfig,
-    session: &Session,
-    outputs: &mut Outputs,
-) -> Result<Contribution> {
-    let mut joined = Contribution::default();
-    for plugin in &config.plugins {
-        let mut ctx = Ctx::new(config, session);
-        let contribution = plugin.context(&mut ctx)?;
-        joined.sections.extend(contribution.sections);
-        joined.tools.extend(contribution.tools);
-        outputs.merge(ctx.outputs);
-    }
-    joined.tools.push(Box::new(ResetTool));
-    Ok(joined)
-}
-
-/// One run's view of the open session: the session as read at the start, plus everything the
-/// run appends. Every append goes to the store and to `session.entries`, then to the plugins.
-struct Run<'a> {
-    agent: &'a AgentConfig,
-    store: &'a dyn Store,
-    providers: &'a HashMap<String, Rc<dyn Provider>>,
-    queue: &'a mut Vec<Queued>,
-    tools: &'a [Box<dyn Tool>],
-    session: Session,
-    /// The last `context` entry on the path, taken once for the whole run.
-    context: Context,
-}
-
-impl<'a> Run<'a> {
-    fn new(
-        agent: &'a AgentConfig,
-        store: &'a dyn Store,
-        providers: &'a HashMap<String, Rc<dyn Provider>>,
-        queue: &'a mut Vec<Queued>,
-        tools: &'a Option<(String, Vec<Box<dyn Tool>>)>,
-        session: Session,
-    ) -> Run<'a> {
-        let tools = tools
-            .as_ref()
-            .map(|(_, code)| code.as_slice())
-            .unwrap_or(&[]);
-        Run {
-            agent,
-            store,
-            providers,
-            queue,
-            tools,
-            session,
-            context: Context::default(),
-        }
+        })
+        .await?;
+        let tools = Arc::new(tools);
+        *self.tools.lock().expect("tools lock") = Some((session.header.id, tools.clone()));
+        Ok((run, tools))
     }
 
-    fn freeze_context(&mut self) {
-        self.context = render(&path_of(&self.session.entries)).0;
-    }
-
-    /// Appends an entry after `parent`, or after the head when `parent` is `None`.
-    fn append(&mut self, body: EntryBody, parent: Option<String>) -> Result<()> {
-        let taken: HashSet<&str> = self.session.entries.iter().map(|e| e.id.as_str()).collect();
-        let id = std::iter::repeat_with(new_entry_id)
-            .find(|id| !taken.contains(id.as_str()))
-            .expect("an unused entry id");
-        let head = self.session.entries.last().map(|e| e.id.clone());
-        let entry = Entry {
-            id,
-            parent_id: parent.or(head),
-            at: now_iso(),
-            body,
+    /// A session not yet in the store: its parent is the previous session, or the agent's parent.
+    fn new_session(&self, ids: &[String]) -> Result<Session> {
+        let now = now_iso();
+        let parent = match ids.last() {
+            Some(previous) => Some(ParentLink {
+                session: previous.clone(),
+                reason: "reset".into(),
+                entry: None,
+                agent: None,
+            }),
+            None => self.config.parent.clone(),
         };
-        let header = &self.session.header;
-        self.store.append(&header.agent, &header.id, &entry)?;
-        self.session.entries.push(entry);
-        let mut outputs = Outputs::default();
-        let entry = self
-            .session
-            .entries
-            .last()
-            .expect("the entry just appended");
-        for plugin in &self.agent.plugins {
-            let mut ctx = Ctx::new(self.agent, &self.session);
-            plugin.on_entry(entry, &mut ctx);
-            outputs.merge(ctx.outputs);
-        }
-        self.apply(outputs)
-    }
-
-    fn append_message(&mut self, message: Message) -> Result<()> {
-        self.append(EntryBody::Message { message }, None)
-    }
-
-    fn notice(&mut self, text: impl Into<String>) -> Result<()> {
-        self.append(EntryBody::Event(Event::notice(text)), None)
-    }
-
-    /// Writes what a hook appended, and queues what it delivered.
-    fn apply(&mut self, outputs: Outputs) -> Result<()> {
-        for body in outputs.appended {
-            self.append(body, None)?;
-        }
-        self.queue
-            .extend(outputs.delivered.into_iter().map(|event| Queued {
-                event,
-                parent: None,
-            }));
-        Ok(())
-    }
-
-    /// Gives each tool call of the last assistant message that has no result an error result, so
-    /// that after a crash the model never sees a call with no answer.
-    fn repair(&mut self) -> Result<()> {
-        let path = path_of(&self.session.entries);
-        let Some(at) = path.iter().rposition(|e| assistant(e).is_some()) else {
-            return Ok(());
+        let header = Header {
+            version: 1,
+            id: new_session_id(&now, ids.last().map(String::as_str))?,
+            agent: self.config.id.clone(),
+            created_at: now,
+            parent,
         };
-        let answered: HashSet<&str> = path[at + 1..]
-            .iter()
-            .filter_map(|e| tool_result_id(e))
-            .collect();
-        let missing: Vec<ToolCall> = assistant(path[at])
-            .expect("found as an assistant message")
-            .tool_calls()
-            .filter(|call| !answered.contains(call.id.as_str()))
-            .cloned()
-            .collect();
-        for call in missing {
-            self.append_message(tool_message(&call, ToolResult::error(REPAIR_TEXT)))?;
-        }
-        Ok(())
-    }
-
-    /// Appends every queued event, in order. A rewound event goes to the head instead when its
-    /// parent is not in this session, or when the path up to its parent would leave a tool call
-    /// without its result, as docs/spec/sessions.md describes.
-    fn deliver_waiting(&mut self) -> Result<()> {
-        while !self.queue.is_empty() {
-            let Queued { event, parent } = self.queue.remove(0);
-            let parent = parent.filter(|id| self.can_rewind_to(id));
-            self.append(EntryBody::Event(event), parent)?;
-        }
-        Ok(())
-    }
-
-    fn can_rewind_to(&self, id: &str) -> bool {
-        let Some(at) = self.session.entries.iter().position(|e| e.id == id) else {
-            return false;
-        };
-        let path = path_of(&self.session.entries[..=at]);
-        let Some(last) = path.iter().rposition(|e| assistant(e).is_some()) else {
-            return true;
-        };
-        let answered: HashSet<&str> = path[last + 1..]
-            .iter()
-            .filter_map(|e| tool_result_id(e))
-            .collect();
-        assistant(path[last])
-            .expect("found as an assistant message")
-            .tool_calls()
-            .all(|call| answered.contains(call.id.as_str()))
-    }
-
-    /// A session needs a run when the last entry on its path, leaving out context and custom
-    /// entries, is a tool result or an event from outside the harness. The harness's own
-    /// notices need no answer, except the soft-limit notice, which asks the agent to act.
-    fn needs_run(&self) -> bool {
-        let path = path_of(&self.session.entries);
-        let last = path
-            .iter()
-            .rev()
-            .find(|e| !matches!(e.body, EntryBody::Context { .. } | EntryBody::Custom { .. }));
-        match last.map(|e| &e.body) {
-            Some(EntryBody::Message {
-                message: Message::Tool(_),
-            }) => true,
-            Some(EntryBody::Event(event)) => {
-                !from_harness(event) || event.text == SOFT_LIMIT_NOTICE
-            }
-            _ => false,
-        }
-    }
-
-    fn has_notice(&self, text: &str) -> bool {
-        self.session.entries.iter().any(|e| match &e.body {
-            EntryBody::Event(event) => from_harness(event) && event.text == text,
-            _ => false,
+        Ok(Session {
+            header,
+            entries: Vec::new(),
         })
     }
 
-    fn ask_model(&self, signal: Option<&StopSignal>) -> Result<AssistantMessage> {
-        let (_, messages) = render(&path_of(&self.session.entries));
-        let (provider, model) = self.agent.model.split_once('/').expect("checked by run");
-        let provider = &self.providers[provider];
-        provider.complete(&Request {
-            model: model.to_string(),
-            sections: self.context.sections.clone(),
-            tools: self.context.tools.clone(),
-            messages,
-            max_tokens: self.agent.max_tokens,
-            output_schema: None,
-            effort: self.agent.effort.clone(),
-            signal: signal.cloned(),
+    fn start_run(&self, session: Session, stop: &StopSignal) -> Arc<Run> {
+        Arc::new(Run {
+            agent: self.config.clone(),
+            store: self.store.clone(),
+            queue: self.queue.clone(),
+            stop: stop.clone(),
+            session: tokio::sync::Mutex::new(session),
+            reset: Mutex::new(None),
         })
     }
 
@@ -502,108 +352,326 @@ impl<'a> Run<'a> {
     fn failed_message(&self) -> AssistantMessage {
         AssistantMessage {
             content: Vec::new(),
-            model: self.agent.model.clone(),
+            model: self.config.model.clone(),
             usage: Usage::default(),
             stop: Stop::Error,
         }
     }
 
-    /// Runs the message's tool calls one at a time and appends their results in call order.
-    /// Returns the reset a tool asked for, with its reason, if any did.
-    fn run_tools(
-        &mut self,
-        message: &AssistantMessage,
-        signal: Option<&StopSignal>,
-    ) -> Result<Option<Option<String>>> {
-        let mut results = Vec::new();
-        let mut reset = None;
-        for call in message.tool_calls() {
-            // A response cut off by the token limit may hold a call with half its input.
-            let result = if message.stop == Stop::MaxTokens {
-                ToolResult::error(CUT_OFF_TEXT)
-            } else {
-                let (result, outputs) = self.run_call(call, signal);
-                reset = reset.or(outputs.reset.clone());
-                self.apply(outputs)?;
-                result
-            };
-            results.push(tool_message(call, result));
-        }
-        for result in results {
-            self.append_message(result)?;
-        }
-        Ok(reset)
+    /// Runs a turn's calls and returns their results in call order. The calls start in order:
+    /// at most `max_concurrent_tools` at once, or one after another when serial. Once the stop is
+    /// set, a call that has not started does not start.
+    async fn run_tools(
+        &self,
+        run: &Arc<Run>,
+        tools: &[Box<dyn Tool>],
+        definitions: &[ToolDefinition],
+        calls: &[&ToolCall],
+    ) -> Vec<ToolResult> {
+        let slots = Semaphore::new(match self.config.tool_execution {
+            ToolExecution::Concurrent => self.config.max_concurrent_tools,
+            ToolExecution::Serial => 1,
+        });
+        // The semaphore is fair, and `join_all` asks for slots in call order, so calls start in
+        // call order.
+        join_all(calls.iter().map(|call| async {
+            let _slot = slots
+                .acquire()
+                .await
+                .expect("the semaphore is never closed");
+            if run.stop.is_set() {
+                return ToolResult::error(REPAIR_TEXT);
+            }
+            run_call(run, tools, definitions, call).await
+        }))
+        .await
     }
+}
 
-    /// One call, as docs/spec/plugins.md describes: find the tool, check the input, let the
-    /// plugins replace the call, run it, then pass the result through the plugins.
-    /// A failing hook is a bug in its plugin: the call gets an error result naming the plugin,
-    /// and no later hook runs for it.
-    fn run_call(&self, call: &ToolCall, signal: Option<&StopSignal>) -> (ToolResult, Outputs) {
-        let definition = self
-            .context
-            .tools
-            .iter()
-            .find(|tool| tool.name == call.name);
-        let code = self
-            .tools
-            .iter()
-            .find(|tool| tool.definition().name == call.name);
-        let (Some(definition), Some(code)) = (definition, code) else {
-            let result = ToolResult::error(format!("No tool named {}.", call.name));
-            return (result, Outputs::default());
-        };
-        let input = match check_input(definition, &call.input) {
-            Ok(input) => input,
-            Err(problem) => return (ToolResult::error(problem), Outputs::default()),
-        };
-        let mut ctx = Ctx::new(self.agent, &self.session);
-        if let Some(signal) = signal {
-            ctx.signal = signal.clone();
+/// Clears the running flag however a run ends, even when its future is dropped.
+struct Running<'a>(&'a AtomicBool);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Calls every plugin's `context` hook, in plugin order, joins what they add, and adds the core
+/// `reset` tool last. Fails when two tools would share a name.
+async fn collect_context(run: &Arc<Run>) -> Result<Contribution> {
+    let mut joined = Contribution::default();
+    let ctx = Ctx::opening(run.clone());
+    for plugin in &run.agent.plugins {
+        let contribution = plugin.context(&ctx).await?;
+        joined.sections.extend(contribution.sections);
+        joined.tools.extend(contribution.tools);
+    }
+    joined.tools.push(Box::new(ResetTool));
+    let mut names = HashSet::new();
+    for tool in &joined.tools {
+        let name = tool.definition().name;
+        if !names.insert(name.clone()) {
+            return Err(Error(format!("Two tools are named {name}.")));
         }
-        let failed = |plugin: &dyn Plugin, error: Error| {
-            ToolResult::error(format!("The {} plugin failed: {}", plugin.name(), error.0))
-        };
-        let mut replaced = None;
-        for plugin in &self.agent.plugins {
-            replaced = match plugin.before_tool(call, &mut ctx) {
-                Ok(replaced) => replaced,
-                Err(error) => return (failed(plugin.as_ref(), error), ctx.outputs),
-            };
-            if replaced.is_some() {
+    }
+    Ok(joined)
+}
+
+/// One call, as docs/spec/plugins.md describes: find the tool, check the input, let the plugins
+/// replace the call, run it, then pass the result through the plugins. A failing hook is a bug in
+/// its plugin: the call gets an error result naming the plugin, and no later hook runs for it.
+async fn run_call(
+    run: &Arc<Run>,
+    tools: &[Box<dyn Tool>],
+    definitions: &[ToolDefinition],
+    call: &ToolCall,
+) -> ToolResult {
+    let definition = definitions.iter().find(|tool| tool.name == call.name);
+    let code = tools
+        .iter()
+        .find(|tool| tool.definition().name == call.name);
+    let (Some(definition), Some(code)) = (definition, code) else {
+        return ToolResult::error(format!("No tool named {}.", call.name));
+    };
+    let input = match check_input(definition, &call.input) {
+        Ok(input) => input,
+        Err(problem) => return ToolResult::error(problem),
+    };
+    let ctx = Ctx::new(run.clone());
+    let failed = |plugin: &dyn Plugin, error: Error| {
+        ToolResult::error(format!("The {} plugin failed: {}", plugin.name(), error.0))
+    };
+    let mut replaced = None;
+    for plugin in &run.agent.plugins {
+        match plugin.before_tool(call, &ctx).await {
+            Ok(None) => {}
+            Ok(result) => {
+                replaced = result;
                 break;
             }
+            Err(error) => return failed(plugin.as_ref(), error),
         }
-        let mut result = replaced.unwrap_or_else(|| {
-            code.run(input, &mut ctx)
-                .unwrap_or_else(|error| ToolResult::error(error.0))
-        });
-        for plugin in &self.agent.plugins {
-            result = match plugin.after_tool(call, result, &mut ctx) {
-                Ok(result) => result,
-                Err(error) => return (failed(plugin.as_ref(), error), ctx.outputs),
+    }
+    let mut result = match replaced {
+        Some(result) => result,
+        None => code
+            .run(input, &ctx)
+            .await
+            .unwrap_or_else(|error| ToolResult::error(error.0)),
+    };
+    for plugin in &run.agent.plugins {
+        result = match plugin.after_tool(call, result, &ctx).await {
+            Ok(result) => result,
+            Err(error) => return failed(plugin.as_ref(), error),
+        };
+    }
+    result
+}
+
+/// One run's view of the open session: the session as read at the start, plus everything the run
+/// appends. Hooks and tools reach it through `Ctx`, so it is shared, and the session sits behind
+/// a lock that each append holds until the entry is written.
+pub(crate) struct Run {
+    pub(crate) agent: Arc<AgentConfig>,
+    store: Arc<dyn Store>,
+    queue: Queue,
+    pub(crate) stop: StopSignal,
+    pub(crate) session: tokio::sync::Mutex<Session>,
+    /// The first reset a tool asked for this turn, with its reason.
+    reset: Mutex<Option<Option<String>>>,
+}
+
+impl Run {
+    /// Appends an entry after `parent`, or after the head when `parent` is `None`, then tells the
+    /// plugins. It is boxed because a plugin's `on_entry` may append in turn.
+    pub(crate) fn append(
+        self: &Arc<Self>,
+        body: EntryBody,
+        parent: Option<String>,
+    ) -> BoxFuture<'static, Result<()>> {
+        let run = self.clone();
+        Box::pin(async move {
+            let entry = {
+                let mut session = run.session.lock().await;
+                if let Some(EntryBody::Reset { .. }) = session.entries.last().map(|e| &e.body) {
+                    return Err(Error::new("Nothing may follow a reset."));
+                }
+                let taken: HashSet<&str> = session.entries.iter().map(|e| e.id.as_str()).collect();
+                let id = std::iter::repeat_with(new_entry_id)
+                    .find(|id| !taken.contains(id.as_str()))
+                    .expect("an unused entry id");
+                let head = session.entries.last().map(|e| e.id.clone());
+                let entry = Entry {
+                    id,
+                    parent_id: parent.or(head),
+                    at: now_iso(),
+                    body,
+                };
+                let header = &session.header;
+                run.store.append(&header.agent, &header.id, &entry).await?;
+                session.entries.push(entry.clone());
+                entry
             };
+            let ctx = Ctx::new(run.clone());
+            for plugin in &run.agent.plugins {
+                plugin.on_entry(&entry, &ctx).await;
+            }
+            Ok(())
+        })
+    }
+
+    async fn append_message(self: &Arc<Self>, message: Message) -> Result<()> {
+        self.append(EntryBody::Message { message }, None).await
+    }
+
+    async fn notice(self: &Arc<Self>, text: impl Into<String>) -> Result<()> {
+        self.append(EntryBody::Event(Event::notice(text)), None)
+            .await
+    }
+
+    async fn stopped(self: &Arc<Self>) -> Result<Outcome> {
+        let who = self.stop.stopped_by().unwrap_or_default();
+        self.notice(format!("Stopped by {who}.")).await?;
+        Ok(Outcome::Stopped)
+    }
+
+    pub(crate) fn queue(&self, event: Event, parent: Option<String>) {
+        self.queue
+            .lock()
+            .expect("queue lock")
+            .push(Queued { event, parent });
+    }
+
+    pub(crate) fn request_reset(&self, reason: Option<String>) {
+        self.reset.lock().expect("reset lock").get_or_insert(reason);
+    }
+
+    fn take_reset(&self) -> Option<Option<String>> {
+        self.reset.lock().expect("reset lock").take()
+    }
+
+    /// The context and messages the model sees, from the path as it is now.
+    async fn render(&self) -> (Context, Vec<Message>) {
+        render(&path_of(&self.session.lock().await.entries))
+    }
+
+    /// Gives each tool call of the last assistant message that has no result an error result, so
+    /// that after a crash the model never sees a call with no answer.
+    async fn repair(self: &Arc<Self>) -> Result<()> {
+        let missing = unanswered(&path_of(&self.session.lock().await.entries));
+        for call in missing {
+            self.append_message(tool_message(&call, ToolResult::error(REPAIR_TEXT)))
+                .await?;
         }
-        (result, ctx.outputs)
+        Ok(())
+    }
+
+    /// Appends every queued event, in order. A rewound event goes to the head instead when its
+    /// parent is not in this session, or when the path up to its parent would leave a tool call
+    /// without its result, as docs/spec/sessions.md describes.
+    async fn deliver_waiting(self: &Arc<Self>) -> Result<()> {
+        loop {
+            let next = {
+                let mut queue = self.queue.lock().expect("queue lock");
+                (!queue.is_empty()).then(|| queue.remove(0))
+            };
+            let Some(Queued { event, parent }) = next else {
+                return Ok(());
+            };
+            let parent = {
+                let session = self.session.lock().await;
+                parent.filter(|id| can_rewind_to(&session.entries, id))
+            };
+            self.append(EntryBody::Event(event), parent).await?;
+        }
+    }
+
+    /// A session needs a run when the last entry on its path, leaving out context and custom
+    /// entries, is a tool result or an event from outside the harness. The harness's own
+    /// notices need no answer, except the soft-limit notice, which asks the agent to act, even
+    /// when stop notices have followed it.
+    async fn needs_run(&self) -> bool {
+        let session = self.session.lock().await;
+        let path = path_of(&session.entries);
+        let mut after_stop = false;
+        for entry in path.iter().rev() {
+            match &entry.body {
+                EntryBody::Context { .. } | EntryBody::Custom { .. } => continue,
+                EntryBody::Event(event) if from_harness(event) => {
+                    if event.text == SOFT_LIMIT_NOTICE {
+                        return true;
+                    }
+                    let stopped =
+                        event.text.starts_with("Stopped by ") && event.text.ends_with('.');
+                    if !stopped {
+                        return false;
+                    }
+                    after_stop = true;
+                }
+                EntryBody::Event(_) => return !after_stop,
+                EntryBody::Message {
+                    message: Message::Tool(_),
+                } => return !after_stop,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Looks in every entry, not only the path, so that a rewind never brings a second warning.
+    async fn has_soft_limit_notice(&self) -> bool {
+        let session = self.session.lock().await;
+        session.entries.iter().any(|e| match &e.body {
+            EntryBody::Event(event) => from_harness(event) && event.text == SOFT_LIMIT_NOTICE,
+            _ => false,
+        })
     }
 
     /// Appends a `reset` and tells the plugins the session has ended.
-    fn end(&mut self, by: &str, reason: Option<String>) -> Result<()> {
-        self.append(
-            EntryBody::Reset {
-                by: by.into(),
-                reason,
-            },
-            None,
-        )?;
-        let mut outputs = Outputs::default();
+    async fn end(self: &Arc<Self>, by: &str, reason: Option<String>) -> Result<Outcome> {
+        let body = EntryBody::Reset {
+            by: by.into(),
+            reason,
+        };
+        self.append(body, None).await?;
+        let session = self.session.lock().await.clone();
+        let ctx = Ctx::ended(self.clone());
         for plugin in &self.agent.plugins {
-            let mut ctx = Ctx::ended(self.agent, &self.session);
-            plugin.on_session_end(&self.session, &mut ctx);
-            outputs.merge(ctx.outputs);
+            plugin.on_session_end(&session, &ctx).await;
         }
-        // Only deliveries can come out of an ended context; they wait for the next session.
-        self.apply(outputs)
+        Ok(Outcome::Reset)
+    }
+}
+
+/// The calls of the last assistant message on the path that have no `tool` message after it.
+fn unanswered(path: &[&Entry]) -> Vec<ToolCall> {
+    let Some(at) = path.iter().rposition(|e| assistant(e).is_some()) else {
+        return Vec::new();
+    };
+    let answered: HashSet<&str> = path[at + 1..]
+        .iter()
+        .filter_map(|e| match &e.body {
+            EntryBody::Message {
+                message: Message::Tool(result),
+            } => Some(result.call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let message = assistant(path[at]).expect("found as an assistant message");
+    message
+        .tool_calls()
+        .filter(|call| !answered.contains(call.id.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// A rewind stays inside the open session and never leaves a call without its result.
+fn can_rewind_to(entries: &[Entry], id: &str) -> bool {
+    // Parents come before their children, so the path to the target ends at the target.
+    match entries.iter().position(|e| e.id == id) {
+        Some(at) => unanswered(&path_of(&entries[..=at])).is_empty(),
+        None => false,
     }
 }
 
@@ -612,16 +680,6 @@ fn assistant(entry: &Entry) -> Option<&AssistantMessage> {
         EntryBody::Message {
             message: Message::Assistant(message),
         } => Some(message),
-        _ => None,
-    }
-}
-
-/// The call id a `tool` message answers.
-fn tool_result_id(entry: &Entry) -> Option<&str> {
-    match &entry.body {
-        EntryBody::Message {
-            message: Message::Tool(result),
-        } => Some(&result.call_id),
         _ => None,
     }
 }
@@ -670,6 +728,7 @@ fn check_input<'i>(
 /// The one tool the core provides.
 struct ResetTool;
 
+#[async_trait]
 impl Tool for ResetTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -679,7 +738,7 @@ impl Tool for ResetTool {
         }
     }
 
-    fn run(&self, input: &Map<String, Value>, ctx: &mut Ctx) -> Result<ToolResult> {
+    async fn run(&self, input: &Map<String, Value>, ctx: &Ctx) -> Result<ToolResult> {
         let reason = input
             .get("reason")
             .and_then(Value::as_str)

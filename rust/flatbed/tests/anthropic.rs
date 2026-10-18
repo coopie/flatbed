@@ -117,3 +117,26 @@ fn reads_a_response() {
     assert_eq!(stop("max_tokens"), Stop::MaxTokens);
     assert_eq!(stop("pause_turn"), Stop::End);
 }
+
+#[tokio::test]
+async fn a_stop_ends_the_backoff_at_once() {
+    use flatbed::providers::anthropic::Anthropic;
+    use flatbed::{Provider, ProviderOptions, StopSignal};
+    use std::time::{Duration, Instant};
+
+    // Nothing listens on port 1, so every try is refused and the provider waits to retry.
+    let mut options = ProviderOptions::new("not a key");
+    options.base_url = Some("http://127.0.0.1:1".into());
+    let stop = StopSignal::new();
+    let mut sent = request(Vec::new(), 0);
+    sent.signal = Some(stop.clone());
+    let setter = stop.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        setter.stop("test");
+    });
+    let started = Instant::now();
+    let failed = Anthropic::new(options).complete(&sent).await;
+    assert!(failed.is_err());
+    assert!(started.elapsed() < Duration::from_millis(900));
+}

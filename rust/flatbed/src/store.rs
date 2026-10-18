@@ -1,21 +1,25 @@
 //! Where sessions live. Sessions are only ever created and appended to. The file store keeps each
 //! session as `<root>/<agent>/<session>.jsonl`, one JSON object per line, as
 //! docs/spec/sessions.md describes. The memory store keeps the same objects in a map, for tests.
+//! Both are async, as everything in the core is, so a store on a remote database fits too.
 
 use crate::error::{Error, Result};
 use crate::types::{Entry, Header, Session};
-use std::cell::RefCell;
+use async_trait::async_trait;
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
 
-pub trait Store {
+#[async_trait]
+pub trait Store: Send + Sync {
     /// The agent's session ids, oldest first.
-    fn list(&self, agent: &str) -> Result<Vec<String>>;
-    fn read(&self, agent: &str, session: &str) -> Result<Session>;
-    fn create(&self, header: &Header) -> Result<()>;
-    fn append(&self, agent: &str, session: &str, entry: &Entry) -> Result<()>;
+    async fn list(&self, agent: &str) -> Result<Vec<String>>;
+    async fn read(&self, agent: &str, session: &str) -> Result<Session>;
+    async fn create(&self, header: &Header) -> Result<()>;
+    async fn append(&self, agent: &str, session: &str, entry: &Entry) -> Result<()>;
 }
 
 pub struct FileStore {
@@ -32,16 +36,17 @@ impl FileStore {
     }
 }
 
+#[async_trait]
 impl Store for FileStore {
-    fn list(&self, agent: &str) -> Result<Vec<String>> {
-        let names = match fs::read_dir(self.root.join(agent)) {
+    async fn list(&self, agent: &str) -> Result<Vec<String>> {
+        let mut names = match fs::read_dir(self.root.join(agent)).await {
             Ok(names) => names,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
         let mut ids = Vec::new();
-        for name in names {
-            let name = name?.file_name().to_string_lossy().into_owned();
+        while let Some(name) = names.next_entry().await? {
+            let name = name.file_name().to_string_lossy().into_owned();
             if let Some(id) = name.strip_suffix(".jsonl") {
                 ids.push(id.to_string());
             }
@@ -50,28 +55,35 @@ impl Store for FileStore {
         Ok(ids)
     }
 
-    fn read(&self, agent: &str, session: &str) -> Result<Session> {
-        parse_session(&fs::read_to_string(self.file(agent, session))?)
+    async fn read(&self, agent: &str, session: &str) -> Result<Session> {
+        parse_session(&fs::read_to_string(self.file(agent, session)).await?)
     }
 
-    fn create(&self, header: &Header) -> Result<()> {
-        fs::create_dir_all(self.root.join(&header.agent))?;
+    async fn create(&self, header: &Header) -> Result<()> {
+        fs::create_dir_all(self.root.join(&header.agent)).await?;
         // `create_new` refuses to overwrite a session that already exists.
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(self.file(&header.agent, &header.id))?;
-        writeln!(file, "{}", serde_json::to_string(header)?)?;
+            .open(self.file(&header.agent, &header.id))
+            .await?;
+        file.write_all(line(header)?.as_bytes()).await?;
         Ok(())
     }
 
-    fn append(&self, agent: &str, session: &str, entry: &Entry) -> Result<()> {
+    async fn append(&self, agent: &str, session: &str, entry: &Entry) -> Result<()> {
         let mut file = OpenOptions::new()
             .append(true)
-            .open(self.file(agent, session))?;
-        writeln!(file, "{}", serde_json::to_string(entry)?)?;
+            .open(self.file(agent, session))
+            .await?;
+        file.write_all(line(entry)?.as_bytes()).await?;
         Ok(())
     }
+}
+
+/// One JSON object and its newline, written in one call so that a line is never split.
+fn line(value: &impl serde::Serialize) -> Result<String> {
+    Ok(serde_json::to_string(value)? + "\n")
 }
 
 /// Reads a session file's text: a header line, then one entry per line.
@@ -92,7 +104,7 @@ pub fn parse_session(text: &str) -> Result<Session> {
 #[derive(Default)]
 pub struct MemoryStore {
     /// Sessions by agent, then by session id, so both iterate in id order.
-    sessions: RefCell<BTreeMap<String, BTreeMap<String, Session>>>,
+    sessions: Mutex<BTreeMap<String, BTreeMap<String, Session>>>,
 }
 
 impl MemoryStore {
@@ -101,17 +113,18 @@ impl MemoryStore {
     }
 }
 
+#[async_trait]
 impl Store for MemoryStore {
-    fn list(&self, agent: &str) -> Result<Vec<String>> {
-        let sessions = self.sessions.borrow();
+    async fn list(&self, agent: &str) -> Result<Vec<String>> {
+        let sessions = self.sessions.lock().expect("store lock");
         Ok(sessions
             .get(agent)
             .map(|by_id| by_id.keys().cloned().collect())
             .unwrap_or_default())
     }
 
-    fn read(&self, agent: &str, session: &str) -> Result<Session> {
-        let sessions = self.sessions.borrow();
+    async fn read(&self, agent: &str, session: &str) -> Result<Session> {
+        let sessions = self.sessions.lock().expect("store lock");
         sessions
             .get(agent)
             .and_then(|by_id| by_id.get(session))
@@ -119,8 +132,8 @@ impl Store for MemoryStore {
             .ok_or_else(|| Error(format!("No session {agent}/{session}.")))
     }
 
-    fn create(&self, header: &Header) -> Result<()> {
-        let mut sessions = self.sessions.borrow_mut();
+    async fn create(&self, header: &Header) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("store lock");
         let by_id = sessions.entry(header.agent.clone()).or_default();
         if by_id.contains_key(&header.id) {
             return Err(Error(format!("Session {} already exists.", header.id)));
@@ -133,8 +146,8 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn append(&self, agent: &str, session: &str, entry: &Entry) -> Result<()> {
-        let mut sessions = self.sessions.borrow_mut();
+    async fn append(&self, agent: &str, session: &str, entry: &Entry) -> Result<()> {
+        let mut sessions = self.sessions.lock().expect("store lock");
         let found = sessions
             .get_mut(agent)
             .and_then(|by_id| by_id.get_mut(session))

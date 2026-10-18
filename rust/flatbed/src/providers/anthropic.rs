@@ -2,88 +2,46 @@
 //! become `tool_result` blocks in user messages, and `outputSchema` and `effort` go in
 //! `output_config`. Empty text blocks are dropped everywhere, since the API rejects them.
 
+use super::http::{post_json, ProviderOptions};
 use super::{Provider, Request};
 use crate::error::{Error, Result};
 use crate::types::{AssistantMessage, Block, Message, Stop, Usage};
+use async_trait::async_trait;
 use serde_json::{json, Map, Value};
-use std::time::Duration;
 
-const RETRIES: u32 = 3;
 /// The API allows four cache breakpoints in one request.
 const MAX_BREAKPOINTS: usize = 4;
 
 pub struct Anthropic {
-    api_key: String,
-    url: String,
-    http: ureq::Agent,
+    options: ProviderOptions,
+    http: reqwest::Client,
 }
 
 impl Anthropic {
-    pub fn new(api_key: impl Into<String>) -> Anthropic {
-        Anthropic::with_base_url(api_key, "https://api.anthropic.com")
-    }
-
-    pub fn with_base_url(api_key: impl Into<String>, base_url: &str) -> Anthropic {
+    pub fn new(options: ProviderOptions) -> Anthropic {
         Anthropic {
-            api_key: api_key.into(),
-            url: format!("{base_url}/v1/messages"),
-            http: ureq::AgentBuilder::new()
-                .timeout(Duration::from_secs(600))
-                .build(),
-        }
-    }
-
-    /// POSTs the body, retrying rate limits, server errors and network failures three times with
-    /// backoff. A client error, or a stop signal set between attempts, is final.
-    fn post(&self, body: &Value, request: &Request) -> Result<Value> {
-        let mut attempt = 0;
-        loop {
-            let failure = match self
-                .http
-                .post(&self.url)
-                .set("x-api-key", &self.api_key)
-                .set("anthropic-version", "2023-06-01")
-                .set("content-type", "application/json")
-                .send_string(&body.to_string())
-            {
-                Ok(response) => return Ok(serde_json::from_str(&response.into_string()?)?),
-                Err(ureq::Error::Status(status, response)) => {
-                    let text: String = response.into_string().unwrap_or_default();
-                    let failure = format!("HTTP {status}: {}", truncate(&text, 500));
-                    if status != 429 && status < 500 {
-                        return Err(Error(failure));
-                    }
-                    failure
-                }
-                Err(ureq::Error::Transport(transport)) => transport.to_string(),
-            };
-            if attempt == RETRIES {
-                return Err(Error(format!("{failure} (after {attempt} retries)")));
-            }
-            // Wait in short steps, so that a stop ends the backoff at once.
-            let waited = std::time::Instant::now();
-            while waited.elapsed() < Duration::from_secs(1 << attempt) {
-                if let Some(who) = request.signal.as_ref().and_then(|s| s.stopped_by()) {
-                    return Err(Error(format!("Stopped by {who}.")));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            attempt += 1;
+            http: options.client(),
+            options,
         }
     }
 }
 
+#[async_trait]
 impl Provider for Anthropic {
-    fn complete(&self, request: &Request) -> Result<AssistantMessage> {
-        let response = self.post(&anthropic_request(request), request)?;
+    async fn complete(&self, request: &Request) -> Result<AssistantMessage> {
+        let base = self.options.base_url.as_deref();
+        let url = format!(
+            "{}/v1/messages",
+            base.unwrap_or("https://api.anthropic.com")
+        );
+        let post = self
+            .http
+            .post(url)
+            .header("x-api-key", &self.options.api_key)
+            .header("anthropic-version", "2023-06-01");
+        let body = anthropic_request(request);
+        let response = post_json(post, &body, request.signal.as_ref()).await?;
         from_anthropic(&response, &request.model)
-    }
-}
-
-fn truncate(text: &str, max: usize) -> &str {
-    match text.char_indices().nth(max) {
-        Some((at, _)) => &text[..at],
-        None => text,
     }
 }
 

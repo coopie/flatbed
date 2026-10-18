@@ -6,24 +6,27 @@
 //!
 //! `chat` keeps sessions under `data/` at the repo root. It uses the model in FLATBED_MODEL, which
 //! defaults to `anthropic/claude-sonnet-5-5`; `faux/echo` answers offline by echoing you. The key
-//! comes from ANTHROPIC_API_KEY in .env at the repo root.
+//! comes from ANTHROPIC_API_KEY, or OPENAI_API_KEY for `openai/...`, in .env at the repo root.
 
+use async_trait::async_trait;
 use flatbed::providers::anthropic::Anthropic;
+use flatbed::providers::openai::OpenAi;
 use flatbed::render::{path_of, render};
 use flatbed::store::parse_session;
 use flatbed::{
     Agent, AgentConfig, AssistantMessage, Block, Contribution, Ctx, Entry, EntryBody, Event,
-    FileStore, Message, Plugin, Provider, Request, Section, Stop, Usage,
+    FileStore, Message, Plugin, Provider, ProviderOptions, Request, Section, Stop, Usage,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// An offline stand-in that echoes the last thing said, for as long as you like.
 struct EchoProvider;
 
+#[async_trait]
 impl Provider for EchoProvider {
-    fn complete(&self, request: &Request) -> flatbed::Result<AssistantMessage> {
+    async fn complete(&self, request: &Request) -> flatbed::Result<AssistantMessage> {
         let said = match request.messages.last() {
             Some(Message::User(user)) => user
                 .content
@@ -47,12 +50,13 @@ struct Printer {
     agent: String,
 }
 
+#[async_trait]
 impl Plugin for Printer {
     fn name(&self) -> &str {
         "printer"
     }
 
-    fn context(&self, _ctx: &mut Ctx) -> flatbed::Result<Contribution> {
+    async fn context(&self, _ctx: &Ctx) -> flatbed::Result<Contribution> {
         let text = format!(
             "You are {}, talking with a person in a terminal. Keep answers short.",
             self.agent
@@ -67,7 +71,7 @@ impl Plugin for Printer {
         })
     }
 
-    fn on_entry(&self, entry: &Entry, _ctx: &mut Ctx) {
+    async fn on_entry(&self, entry: &Entry, _ctx: &Ctx) {
         match &entry.body {
             EntryBody::Message {
                 message: Message::Assistant(m),
@@ -118,20 +122,27 @@ fn block_text(block: &Block) -> String {
     }
 }
 
-fn chat(agent_id: &str) -> flatbed::Result<()> {
+async fn chat(agent_id: &str) -> flatbed::Result<()> {
     let model =
         std::env::var("FLATBED_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-5-5".into());
-    let mut providers: HashMap<String, Rc<dyn Provider>> = HashMap::new();
-    providers.insert("faux".into(), Rc::new(EchoProvider));
+    let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+    providers.insert("faux".into(), Arc::new(EchoProvider));
     if let Some(key) = flatbed::env::read_env("ANTHROPIC_API_KEY") {
-        providers.insert("anthropic".into(), Rc::new(Anthropic::new(key)));
+        let anthropic = Anthropic::new(ProviderOptions::new(key));
+        providers.insert("anthropic".into(), Arc::new(anthropic));
+    }
+    if let Some(key) = flatbed::env::read_env("OPENAI_API_KEY") {
+        providers.insert(
+            "openai".into(),
+            Arc::new(OpenAi::new(ProviderOptions::new(key))),
+        );
     }
     let data = flatbed::env::repo_root().join("data");
     let mut config = AgentConfig::new(agent_id, &model);
     config.plugins.push(Box::new(Printer {
         agent: agent_id.into(),
     }));
-    let mut agent = Agent::new(config, Rc::new(FileStore::new(&data)), providers);
+    let agent = Agent::new(config, Arc::new(FileStore::new(&data)), providers)?;
     println!(
         "Talking to {agent_id} on {model}. Sessions are in {}. Press Ctrl-D to leave.",
         data.join(agent_id).display()
@@ -141,12 +152,13 @@ fn chat(agent_id: &str) -> flatbed::Result<()> {
     for line in std::io::stdin().lock().lines() {
         let line = line?;
         if !line.trim().is_empty() {
-            agent.deliver(Event {
+            let event = Event {
                 kind: "message".into(),
                 attrs: Some(BTreeMap::from([("from".to_string(), you.clone())])),
                 text: line,
-            });
-            agent.run(None)?;
+            };
+            agent.deliver(event, None);
+            agent.run(None).await?;
         }
         prompt();
     }
@@ -214,10 +226,11 @@ fn view(file: &str) -> flatbed::Result<()> {
     Ok(())
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match (args.first().map(String::as_str), args.get(1)) {
-        (Some("chat"), Some(agent)) => chat(agent),
+        (Some("chat"), Some(agent)) => chat(agent).await,
         (Some("view"), Some(file)) => view(file),
         _ => {
             eprintln!("Usage: flatbed chat <agent> | flatbed view <session-file>");

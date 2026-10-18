@@ -1,6 +1,7 @@
 //! Sessions on disk: the Rust core reads what the TypeScript core wrote, writes the same objects
 //! back, and resumes a session another process opened. The conformance suite covers the loop.
 
+use async_trait::async_trait;
 use flatbed::providers::faux::{Faux, Script, Scripted};
 use flatbed::render::{path_of, render};
 use flatbed::{
@@ -10,18 +11,18 @@ use flatbed::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ts-store")
 }
 
-#[test]
-fn reads_a_session_the_typescript_core_wrote() {
+#[tokio::test]
+async fn reads_a_session_the_typescript_core_wrote() {
     let store = FileStore::new(fixture_root());
-    let ids = store.list("fixture").unwrap();
+    let ids = store.list("fixture").await.unwrap();
     assert_eq!(ids, ["2026-10-06T22-51-41Z-1e57"]);
-    let session = store.read("fixture", &ids[0]).unwrap();
+    let session = store.read("fixture", &ids[0]).await.unwrap();
     assert_eq!(session.entries.len(), 12);
 
     // Every line comes back out as the same JSON object, so TypeScript can read what Rust writes.
@@ -54,19 +55,20 @@ fn reads_a_session_the_typescript_core_wrote() {
 /// A plugin with one `echo` tool, as a host would write one.
 struct Echo;
 
+#[async_trait]
 impl Plugin for Echo {
     fn name(&self) -> &str {
         "echo"
     }
 
-    fn context(&self, _ctx: &mut Ctx) -> flatbed::Result<Contribution> {
+    async fn context(&self, _ctx: &Ctx) -> flatbed::Result<Contribution> {
         let echo = FnTool {
             definition: ToolDefinition {
                 name: "echo".into(),
                 description: "Echo the text.".into(),
                 input_schema: json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}),
             },
-            run: |input: &serde_json::Map<String, Value>, _: &mut Ctx| {
+            run: |input: serde_json::Map<String, Value>, _: Ctx| async move {
                 Ok(ToolResult::text(input["text"].as_str().unwrap_or("")))
             },
         };
@@ -77,33 +79,33 @@ impl Plugin for Echo {
     }
 }
 
-fn agent(store: Rc<dyn Store>, script: Vec<Scripted>) -> Agent {
+fn agent(store: Arc<dyn Store>, script: Vec<Scripted>) -> Agent {
     let mut config = AgentConfig::new("tester", "faux/test");
     config.plugins.push(Box::new(Echo));
     let faux = Faux::new(script.into_iter().map(Script::Response).collect());
-    let providers = HashMap::from([("faux".to_string(), Rc::new(faux) as Rc<dyn Provider>)]);
-    Agent::new(config, store, providers)
+    let providers = HashMap::from([("faux".to_string(), Arc::new(faux) as Arc<dyn Provider>)]);
+    Agent::new(config, store, providers).unwrap()
 }
 
-#[test]
-fn resumes_a_session_another_process_opened() {
+#[tokio::test]
+async fn resumes_a_session_another_process_opened() {
     let root = std::env::temp_dir().join(format!("flatbed-test-{}", flatbed::ids::new_entry_id()));
-    let store: Rc<dyn Store> = Rc::new(FileStore::new(&root));
+    let store: Arc<dyn Store> = Arc::new(FileStore::new(&root));
     let say = |text: &str| Event {
         kind: "message".into(),
         attrs: None,
         text: text.into(),
     };
 
-    let mut first = agent(
+    let first = agent(
         store.clone(),
         vec![Scripted {
             content: vec![Block::text("Hi.")],
             ..Default::default()
         }],
     );
-    first.deliver(say("Hello"));
-    assert_eq!(first.run(None).unwrap(), Outcome::Idle);
+    first.deliver(say("Hello"), None);
+    assert_eq!(first.run(None).await.unwrap(), Outcome::Idle);
 
     // A second agent, as in a new process, finds the open session and loads the tools' code again.
     let call = json!({"type": "toolCall", "id": "c1", "name": "echo", "input": {"text": "again"}});
@@ -117,13 +119,13 @@ fn resumes_a_session_another_process_opened() {
             ..Default::default()
         },
     ];
-    let mut second = agent(store.clone(), script);
-    second.deliver(say("Echo again"));
-    assert_eq!(second.run(None).unwrap(), Outcome::Idle);
+    let second = agent(store.clone(), script);
+    second.deliver(say("Echo again"), None);
+    assert_eq!(second.run(None).await.unwrap(), Outcome::Idle);
 
-    let ids = store.list("tester").unwrap();
+    let ids = store.list("tester").await.unwrap();
     assert_eq!(ids.len(), 1);
-    let session = store.read("tester", &ids[0]).unwrap();
+    let session = store.read("tester", &ids[0]).await.unwrap();
     let results: Vec<_> = session
         .entries
         .iter()

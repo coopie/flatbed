@@ -4,8 +4,10 @@
 use super::{Provider, Request};
 use crate::error::{Error, Result};
 use crate::types::{AssistantMessage, Block, Stop, Usage};
-use std::cell::RefCell;
+use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use std::collections::VecDeque;
+use std::sync::Mutex;
 
 /// One scripted response. `usage` defaults to zero, and `stop` to `toolUse` when the content has
 /// a tool call and `end` otherwise.
@@ -16,42 +18,47 @@ pub struct Scripted {
     pub stop: Option<Stop>,
 }
 
-/// A scripted function: the response to a request, or the error the call fails with.
-pub type Respond = Box<dyn Fn(&Request) -> Result<Scripted>>;
+/// A scripted function: the response to a request, or the error the call fails with. It may take
+/// as long as it likes, or never answer.
+pub type Respond = Box<dyn Fn(&Request) -> BoxFuture<'static, Result<Scripted>> + Send + Sync>;
 
 pub enum Script {
     Response(Scripted),
     /// A function of the request, for a response that depends on what the model was sent, or
-    /// for a call that fails.
+    /// for a call that fails or hangs.
     Function(Respond),
 }
 
 pub struct Faux {
-    script: RefCell<VecDeque<Script>>,
-    requests: RefCell<Vec<Request>>,
+    script: Mutex<VecDeque<Script>>,
+    requests: Mutex<Vec<Request>>,
 }
 
 impl Faux {
     pub fn new(script: Vec<Script>) -> Faux {
         Faux {
-            script: RefCell::new(script.into()),
-            requests: RefCell::new(Vec::new()),
+            script: Mutex::new(script.into()),
+            requests: Mutex::new(Vec::new()),
         }
     }
 
     /// Every request received so far, in order.
     pub fn requests(&self) -> Vec<Request> {
-        self.requests.borrow().clone()
+        self.requests.lock().expect("faux lock").clone()
     }
 }
 
+#[async_trait]
 impl Provider for Faux {
-    fn complete(&self, request: &Request) -> Result<AssistantMessage> {
-        self.requests.borrow_mut().push(request.clone());
-        let next = self.script.borrow_mut().pop_front();
+    async fn complete(&self, request: &Request) -> Result<AssistantMessage> {
+        self.requests
+            .lock()
+            .expect("faux lock")
+            .push(request.clone());
+        let next = self.script.lock().expect("faux lock").pop_front();
         let scripted = match next {
             Some(Script::Response(scripted)) => scripted,
-            Some(Script::Function(respond)) => respond(request)?,
+            Some(Script::Function(respond)) => respond(request).await?,
             None => return Err(Error::new("No more scripted responses.")),
         };
         let has_call = scripted

@@ -5,23 +5,25 @@
 //!
 //! It reads ANTHROPIC_API_KEY from .env at the repo root, and never prints it.
 
+use async_trait::async_trait;
 use flatbed::providers::anthropic::Anthropic;
 use flatbed::{
     Agent, AgentConfig, Block, Contribution, Ctx, EntryBody, Event, FnTool, MemoryStore, Message,
-    Outcome, Plugin, Provider, Section, Store, ToolDefinition, ToolResult,
+    Outcome, Plugin, Provider, ProviderOptions, Section, Store, ToolDefinition, ToolResult,
 };
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 struct Adder;
 
+#[async_trait]
 impl Plugin for Adder {
     fn name(&self) -> &str {
         "live"
     }
 
-    fn context(&self, _ctx: &mut Ctx) -> flatbed::Result<Contribution> {
+    async fn context(&self, _ctx: &Ctx) -> flatbed::Result<Contribution> {
         let add = FnTool {
             definition: ToolDefinition {
                 name: "add".into(),
@@ -29,7 +31,7 @@ impl Plugin for Adder {
                     .into(),
                 input_schema: json!({"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}),
             },
-            run: |input: &Map<String, Value>, _: &mut Ctx| {
+            run: |input: Map<String, Value>, _: Ctx| async move {
                 let number = |key: &str| input[key].as_f64().unwrap_or(0.0);
                 Ok(ToolResult::text((number("a") + number("b")).to_string()))
             },
@@ -47,33 +49,36 @@ impl Plugin for Adder {
     }
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "calls the Anthropic API; run with FLATBED_LIVE=1 and --ignored"]
-fn live_a_short_conversation_with_one_tool_call() {
+async fn live_a_short_conversation_with_one_tool_call() {
     if std::env::var("FLATBED_LIVE").as_deref() != Ok("1") {
         eprintln!("skipped: set FLATBED_LIVE=1 to call the Anthropic API");
         return;
     }
     let api_key =
         flatbed::env::read_env("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY is not set in .env");
-    let store = Rc::new(MemoryStore::new());
+    let store = Arc::new(MemoryStore::new());
     let mut config = AgentConfig::new("live", "anthropic/claude-sonnet-5-5");
     config.max_tokens = 1024;
     config.plugins.push(Box::new(Adder));
     let providers = HashMap::from([(
         "anthropic".to_string(),
-        Rc::new(Anthropic::new(api_key)) as Rc<dyn Provider>,
+        Arc::new(Anthropic::new(ProviderOptions::new(api_key))) as Arc<dyn Provider>,
     )]);
-    let mut agent = Agent::new(config, store.clone(), providers);
-    agent.deliver(Event {
-        kind: "message".into(),
-        attrs: Some([("from".to_string(), "Tester".to_string())].into()),
-        text: "Use the add tool to work out 1234 + 4321, then tell me the answer.".into(),
-    });
-    let outcome = agent.run(None).unwrap();
+    let agent = Agent::new(config, store.clone(), providers).unwrap();
+    agent.deliver(
+        Event {
+            kind: "message".into(),
+            attrs: Some([("from".to_string(), "Tester".to_string())].into()),
+            text: "Use the add tool to work out 1234 + 4321, then tell me the answer.".into(),
+        },
+        None,
+    );
+    let outcome = agent.run(None).await.unwrap();
 
-    let ids = store.list("live").unwrap();
-    let entries = store.read("live", &ids[0]).unwrap().entries;
+    let ids = store.list("live").await.unwrap();
+    let entries = store.read("live", &ids[0]).await.unwrap().entries;
     let failure = entries.iter().find_map(|e| match &e.body {
         EntryBody::Event(event) if event.text.starts_with("The model call failed") => {
             Some(event.text.clone())
