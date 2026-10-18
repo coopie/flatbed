@@ -34,3 +34,27 @@ The lead chose one rule for all three, matching the core's own stop in `docs/spe
 Work for at most 90 minutes; stop and write up what you have when you reach it. Sam is around today. If a choice would change the shape of the work, add a `## Question for the lead` section with your best guess and carry on. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. The Anthropic key in `.env` works; never print a value from it. Run long commands in the foreground one at a time, and wait for slow Rust builds.
 
 ## Write-up
+
+All eight findings are fixed in all three languages, and `scripts/check.sh ts python rust` passes. It took about 50 minutes.
+
+**The doc.** `docs/codemode.md` now settles what a fourth host needs: the order of `params`, a 1 MiB cap on every message, what to do with a line that is not JSON, too long or a malformed `call` (end the worker; ignore unknown types), a table of the exact wording for each way a script ends, the recorded `custom` entry with its id format, the rule for calls in flight, and draining stderr. The warm-process and conformance contradictions are gone.
+
+**The worker** builds each message piece by piece with `iterencode` and gives up at the cap, so `[s]*200` never becomes a 200 MB string. Monty hands the worker 200 references to one string, not copies, so the cap is enough. A call over the cap, or holding `NaN` or `Infinity`, raises `ValueError` at the call, and nothing is sent. A value over the cap becomes an `error`. A value holding `NaN` comes back as its `repr`, measured first so that a repr cannot get round the cap.
+
+**The hosts.**
+- Each reads lines with the cap: a line splitter in TypeScript, the stream limit in Python, and a `take` reader task in Rust.
+- Each answers a `result` over the cap with an error, and refuses a `start` over it.
+- Calls the host has started run to their end and are recorded before `run_script` returns. Lines read after the end are ignored, and each call records itself.
+- TypeScript ignores EPIPE on stdin.
+- Python validates a `call` and answers even when `run_tool` raises. Rust runs each nested call in its own task, so a panic is answered.
+- stderr is read as it comes, and the group is killed before waiting at most a second for stderr's tail.
+- Rust records `type: "toolCall"` and quotes 200 characters of a bad line.
+- Rust's codemode turns on serde_json's `preserve_order`, so parameters keep the schema's order as they do in the other two. It was alphabetical before. That feature applies to the whole Rust build, core included. All tests and the conformance suite still pass.
+
+**`Place`** now uses a std mutex and waits for a place without holding it. It keeps the permit only if the tool still wants it.
+
+**Tests.** Each plugin has tests for the cap (on a call, on the value, and on a long line from a fake worker), for calls in flight (with the recorded shape), and for `NaN` and `Infinity`. TypeScript also tests EPIPE. Python also tests a call without `input`. Rust also tests the 200-character quote and the parameter order.
+
+## Question for the lead
+
+The rule says no further call starts once a script ends. Here "starts" means the host has handed the call to `runTool`. A call already handed over but still queued in the core for a place under the limit will run after a deadline or call-limit end. A stop does turn it away, with `The harness stopped before this tool ran.` A slow tool can also hold `run_script` past its deadline, because `runTool` takes no signal of its own. My guess is that this is acceptable for now. If not, the smallest fix is an optional `signal` on `runTool`, which would change the core spec.
