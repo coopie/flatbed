@@ -133,10 +133,10 @@ async fn a_stop_ends_the_backoff_at_once() {
     let setter = stop.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        setter.stop("test");
+        setter.set("test");
     });
     let started = Instant::now();
     let failed = Anthropic::new(options).complete(&sent).await;
-    assert!(failed.is_err());
+    assert_eq!(failed.unwrap_err().0, "The request was stopped.");
     assert!(started.elapsed() < Duration::from_millis(900));
 }

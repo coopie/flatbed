@@ -20,7 +20,8 @@ pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
 
     /// When a session opens: sections and tools to add. `ctx.append` fails here, since the
-    /// session's first entry must be its `context` entry.
+    /// session's first entry must be its `context` entry. An error fails the run, before anything
+    /// is written, with `The <plugin> plugin failed: <message>`.
     async fn context(&self, _ctx: &Ctx) -> Result<Contribution> {
         Ok(Contribution::default())
     }
@@ -42,10 +43,12 @@ pub trait Plugin: Send + Sync {
         Ok(result)
     }
 
-    /// After every entry is appended, for watching.
+    /// After every entry is appended, for watching. It cannot fail, so that a watcher can never
+    /// leave a turn's results half written.
     async fn on_entry(&self, _entry: &Entry, _ctx: &Ctx) {}
 
-    /// After a `reset` is appended. `ctx.append` fails here; use `ctx.deliver`.
+    /// After a `reset` is appended. It cannot fail, since the session has already ended.
+    /// `ctx.append` fails here; use `ctx.deliver`.
     async fn on_session_end(&self, _session: &Session, _ctx: &Ctx) {}
 }
 
@@ -62,7 +65,7 @@ pub trait Tool: Send + Sync {
 
     /// Runs the call. The loop has already checked `input` against the schema. An error becomes
     /// an error result carrying its message. A long tool can race its work against
-    /// `ctx.signal().stopped()` to finish early when the run is stopped.
+    /// `ctx.signal().wait()` to finish early when the run is stopped.
     async fn run(&self, input: &Map<String, Value>, ctx: &Ctx) -> Result<ToolResult>;
 }
 
@@ -117,6 +120,9 @@ pub struct Ctx {
     run: Arc<Run>,
     /// Why `append` fails, when it does: while a session opens, and after it ends.
     refuse_append: Option<&'static str>,
+    /// The index of the call this context is for, when it is for a tool call, so that the first
+    /// reset in call order wins.
+    call: Option<usize>,
 }
 
 impl Ctx {
@@ -124,6 +130,15 @@ impl Ctx {
         Ctx {
             run,
             refuse_append: None,
+            call: None,
+        }
+    }
+
+    /// A context for the call at `index` in its turn.
+    pub(crate) fn for_call(run: Arc<Run>, index: usize) -> Ctx {
+        Ctx {
+            call: Some(index),
+            ..Ctx::new(run)
         }
     }
 
@@ -179,8 +194,10 @@ impl Ctx {
     }
 
     /// Asks the loop to end the session after this turn. For tools; the core `reset` tool uses it.
-    /// The first request in a turn wins, and an empty reason counts as none.
+    /// The first request in call order wins, and an empty reason counts as none.
     pub fn request_reset(&self, reason: Option<String>) {
-        self.run.request_reset(reason.filter(|r| !r.is_empty()));
+        let call = self.call.unwrap_or(usize::MAX);
+        self.run
+            .request_reset(call, reason.filter(|r| !r.is_empty()));
     }
 }

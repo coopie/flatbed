@@ -56,12 +56,14 @@ struct ScenarioAgent {
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Hooks {
+    /// What the `context` hook does beyond giving sections and tools: try to append, or fail.
+    context: Option<OpeningJson>,
     /// A result to use in place of running the named tool.
     before_tool: Option<HashMap<String, ResultJson>>,
     /// A result to replace the named tool's result with.
     after_tool: Option<HashMap<String, ResultJson>>,
-    /// Data for a custom entry appended after each tool message.
-    on_entry: Option<CustomJson>,
+    /// Data for a custom entry appended after each tool message, or an error to throw there.
+    on_entry: Option<WatchJson>,
     /// An event to deliver when the session ends.
     on_session_end: Option<DeliverJson>,
 }
@@ -92,9 +94,27 @@ impl ResultJson {
     }
 }
 
+/// `{"append": <data>}`: try to append a custom entry, and carry on when that fails; or
+/// `{"throw": "<message>"}`: fail.
 #[derive(Clone, Deserialize)]
-struct CustomJson {
-    custom: Value,
+#[serde(untagged)]
+enum OpeningJson {
+    Append { append: Value },
+    Throw { throw: String },
+}
+
+/// `{"custom": <data>}`: append a custom entry; or `{"throw": "<message>"}`: fail, which an
+/// `on_entry` hook cannot do in Rust, so it does nothing.
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum WatchJson {
+    Custom {
+        custom: Value,
+    },
+    #[allow(dead_code)]
+    Throw {
+        throw: String,
+    },
 }
 
 #[derive(Clone, Deserialize)]
@@ -164,7 +184,15 @@ impl Plugin for ScenarioPlugin {
         "test"
     }
 
-    async fn context(&self, _ctx: &Ctx) -> flatbed::Result<Contribution> {
+    async fn context(&self, ctx: &Ctx) -> flatbed::Result<Contribution> {
+        match &self.hooks.context {
+            Some(OpeningJson::Throw { throw }) => return Err(throw.as_str().into()),
+            // `append` fails here, and the hook carries on.
+            Some(OpeningJson::Append { append }) => {
+                let _ = ctx.append("test", append.clone()).await;
+            }
+            None => {}
+        }
         Ok(Contribution {
             sections: self.sections.clone(),
             tools: self
@@ -209,8 +237,8 @@ impl Plugin for ScenarioPlugin {
                 message: Message::Tool(_)
             }
         );
-        if let (Some(hook), true) = (&self.hooks.on_entry, is_result) {
-            ctx.append("test", hook.custom.clone())
+        if let (Some(WatchJson::Custom { custom }), true) = (&self.hooks.on_entry, is_result) {
+            ctx.append("test", custom.clone())
                 .await
                 .expect("the session is open");
         }
@@ -249,18 +277,22 @@ impl ScenarioTool {
             let value = behaviour.and_then(|b| b.get(key)).and_then(Value::as_str);
             value.unwrap_or_default().to_string()
         };
+        // Any behaviour may wait first, then append, then do the rest.
         if let Some(ms) = behaviour
             .and_then(|b| b.get("sleep"))
             .and_then(Value::as_u64)
         {
             tokio::time::sleep(Duration::from_millis(ms)).await;
-            return Ok(ToolResult::text(text("text")));
         }
-        let (kind, value) = self
-            .behaviour
-            .as_object()
-            .and_then(|b| b.iter().next())
-            .ok_or("A tool's behaviour must be an object with one key.")?;
+        if let Some(data) = behaviour.and_then(|b| b.get("append")) {
+            ctx.append("test", data.clone()).await?;
+        }
+        let (kind, value) = behaviour
+            .and_then(|b| {
+                b.iter()
+                    .find(|(key, _)| *key != "sleep" && *key != "append")
+            })
+            .ok_or("A tool's behaviour must say what the tool does.")?;
         match kind.as_str() {
             "echo" => Ok(ToolResult::text(
                 match &input[value.as_str().unwrap_or("")] {
@@ -275,7 +307,7 @@ impl ScenarioTool {
                 Ok(ToolResult::text("Session will reset after this turn."))
             }
             "waitForStop" => {
-                ctx.signal().stopped().await;
+                ctx.signal().wait().await;
                 Ok(ToolResult::text(text("waitForStop")))
             }
             "deliver" => {
@@ -378,7 +410,7 @@ async fn run(scenario: &Scenario) -> Result<(), String> {
             ScriptStep::Abort { abort } => {
                 let (signal, who) = (signal.clone(), abort.clone());
                 Script::Function(Box::new(move |_| {
-                    signal.lock().unwrap().stop(who.clone());
+                    signal.lock().unwrap().set(who.clone());
                     Box::pin(async { Err("The request was cancelled.".into()) })
                 }))
             }
@@ -409,10 +441,10 @@ async fn run(scenario: &Scenario) -> Result<(), String> {
                         let (current, who) = (current.clone(), who.to_string());
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(ms)).await;
-                            current.stop(who);
+                            current.set(who);
                         });
                     }
-                    None => current.stop(who),
+                    None => current.set(who),
                 }
             }
             let outcome = match agent.run(Some(&current)).await {
