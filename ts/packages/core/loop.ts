@@ -194,7 +194,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   }
 
   /** Runs one call as docs/spec/plugins.md describes. Never throws for a tool's own failure. */
-  async function runTool(call: ToolCall, tools: Map<string, { tool: Tool; schema: Record<string, unknown> }>, ctx: ToolContext): Promise<ToolResult> {
+  async function runCall(call: ToolCall, tools: Map<string, { tool: Tool; schema: Record<string, unknown> }>, ctx: ToolContext): Promise<ToolResult> {
     const found = tools.get(call.name);
     if (found === undefined) return errorResult(`No tool named ${call.name}.`);
     const { tool, schema } = found;
@@ -249,6 +249,41 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, { tool: tools.get(t.name)!, schema: t.inputSchema }] as const] : [])));
     const limit = limiter(toolExecution === 'serial' ? 1 : maxConcurrent);
 
+    /** Runs a call under the turn's limit. Once the stop is set, a call that has not started never starts. */
+    async function runLimited(call: ToolCall, requestReset: ToolContext['requestReset']): Promise<ToolResult> {
+      await limit.acquire();
+      try {
+        return signal.aborted ? errorResult(NOT_RUN) : await runCall(call, frozen, toolContext(requestReset));
+      } finally {
+        limit.release();
+      }
+    }
+
+    /**
+     * What a tool sees. Its `runTool` gives up the tool's place under the limit while the calls it made
+     * run, and takes one back when the last of them finishes, so a tool never waits on its own place.
+     * A nested call shares the calling tool's `requestReset`.
+     */
+    function toolContext(requestReset: ToolContext['requestReset']): ToolContext {
+      let waiting = 0;
+      let back = Promise.resolve();
+      return {
+        ...contextFor(session),
+        requestReset,
+        async runTool(call) {
+          if (waiting++ === 0) {
+            await back;
+            limit.release();
+          }
+          try {
+            return await runLimited(call, requestReset);
+          } finally {
+            if (--waiting === 0) await (back = limit.acquire());
+          }
+        },
+      };
+    }
+
     // 5. Loop while the session needs a run.
     while (needsRun(session)) {
       // i. Stop when the stop is set.
@@ -283,13 +318,11 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       const calls = toolCalls(message);
       // The reset each call requested, by call index, so that the first in call order wins.
       const resets: { reason?: string }[] = [];
-      const start = (call: ToolCall, i: number) => {
-        const ctx: ToolContext = { ...contextFor(session), requestReset: (reason) => void (resets[i] ??= { reason }) };
-        return limit(async () => (signal.aborted ? errorResult(NOT_RUN) : runTool(call, frozen, ctx)));
-      };
-      const results = message.stop === 'maxTokens'
-        ? calls.map(() => errorResult('The response was cut off before this call was complete.'))
-        : await Promise.all(calls.map(start));
+      const start = (call: ToolCall, i: number) => runLimited(call, (reason) => void (resets[i] ??= { reason }));
+      let results: ToolResult[] = [];
+      if (message.stop === 'maxTokens') results = calls.map(() => errorResult('The response was cut off before this call was complete.'));
+      else if (toolExecution === 'concurrent') results = await Promise.all(calls.map(start));
+      else for (const [i, call] of calls.entries()) results.push(await start(call, i));
       for (const [i, call] of calls.entries()) {
         await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
       }
@@ -347,21 +380,21 @@ async function ignoreErrors(hook: () => unknown): Promise<void> {
   }
 }
 
-/** Runs the functions it is given, at most `size` at a time, in the order they were given. */
+/** At most `size` places, given out in the order they were asked for. */
 function limiter(size: number) {
   let active = 0;
   const waiting: (() => void)[] = [];
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (active >= size) await new Promise<void>((resolve) => waiting.push(resolve));
-    else active += 1;
-    try {
-      return await fn();
-    } finally {
-      // Hand the slot straight to the next waiter, or give it back.
+  return {
+    async acquire() {
+      if (active < size) active += 1;
+      else await new Promise<void>((resolve) => waiting.push(resolve));
+    },
+    release() {
+      // Hand the place straight to the next waiter, or give it back.
       const next = waiting.shift();
       if (next) next();
       else active -= 1;
-    }
+    },
   };
 }
 

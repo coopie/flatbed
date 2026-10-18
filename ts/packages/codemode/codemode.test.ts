@@ -12,7 +12,7 @@ const say = (text: string): ScriptStep => ({ content: [{ type: 'text', text }] }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** An agent whose tools are `slow`, `read_doc` and `send_email`, with codemode allowed the first two. */
-function setup(script: string, options: Partial<CodemodeOptions> = {}, onSlow?: (signal: AbortSignal) => void) {
+function setup(script: string, options: Partial<CodemodeOptions> = {}, onSlow?: (signal: AbortSignal) => void, agentOptions: { maxConcurrentTools?: number } = {}) {
   const spans: { label: string; start: number; end: number }[] = [];
   const sent: string[] = [];
   const tools: Plugin = {
@@ -54,7 +54,7 @@ function setup(script: string, options: Partial<CodemodeOptions> = {}, onSlow?: 
   const store = memoryStore();
   const provider = fauxProvider([call('run_script', { script }), say('Done.')]);
   const agent = createAgent(
-    { id: 'coder', model: 'faux/test', plugins: withCodemode([tools, guard], { tools: ['slow', 'read_doc'], ...options }) },
+    { id: 'coder', model: 'faux/test', ...agentOptions, plugins: withCodemode([tools, guard], { tools: ['slow', 'read_doc'], ...options }) },
     { store, providers: { faux: provider } },
   );
   agent.deliver({ kind: 'message', attrs: { from: 'Sam' }, text: 'Go.' });
@@ -84,6 +84,16 @@ test('two calls gathered in a script run at the same time, through the hooks, an
   const description = provider.requests[0]!.tools.find((t) => t.name === 'run_script')!.description;
   assert.match(description, /async def slow\(label: str\) -> str:/);
   assert.doesNotMatch(description, /send_email/);
+});
+
+test('gathered calls take turns when the agent allows one call at a time', { skip }, async () => {
+  const { agent, session, spans } = setup("import asyncio\nawait asyncio.gather(slow('a'), slow('b'))", {}, undefined, { maxConcurrentTools: 1 });
+  assert.equal(await agent.run(), 'idle');
+  assert.equal(textOf(scriptResult((await session()).entries)), '["done a", "done b"]');
+  // run_script gave up its place, so its calls could run, one after the other.
+  assert.equal(spans.length, 2);
+  const [first, second] = [...spans].sort((x, y) => x.start - y.start);
+  assert.ok(first!.end <= second!.start);
 });
 
 test('a tool off the allow-list does not exist inside the script', { skip }, async () => {

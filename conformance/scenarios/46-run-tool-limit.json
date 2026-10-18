@@ -1,0 +1,269 @@
+{
+  "name": "runTool calls share the turn's limit",
+  "description": "With maxConcurrentTools 2, the fanout tool runs three slow calls with ctx.runTool beside two slow direct calls. Nested and direct calls together never run more than two at once, and fanout does not count while it waits for its calls.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000,
+    "toolExecution": "concurrent",
+    "maxConcurrentTools": 2
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "slow",
+      "description": "Wait a while, then say so.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "sleep": 200,
+        "text": "Waited."
+      }
+    },
+    {
+      "name": "fanout",
+      "description": "Run several slow calls of its own at once.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "runTools": [
+          {
+            "name": "slow",
+            "input": {}
+          },
+          {
+            "name": "slow",
+            "input": {}
+          },
+          {
+            "name": "slow",
+            "input": {}
+          }
+        ]
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "fanout",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "slow",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c3",
+          "name": "slow",
+          "input": {}
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Done."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 3
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Fan out beside two slow calls"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "slow",
+              "description": "Wait a while, then say so.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "fanout",
+              "description": "Run several slow calls of its own at once.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Fan out beside two slow calls"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "fanout",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "slow",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c3",
+                "name": "slow",
+                "input": {}
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "fanout",
+            "content": [
+              {
+                "type": "text",
+                "text": "Waited.\nWaited.\nWaited."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "slow",
+            "content": [
+              {
+                "type": "text",
+                "text": "Waited."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c3",
+            "name": "slow",
+            "content": [
+              {
+                "type": "text",
+                "text": "Waited."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Done."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 3
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "maxRunning": 2
+  }
+}

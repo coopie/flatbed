@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
-import { checkInput, type Plugin, type Tool, type ToolCall, type ToolContext, type ToolResult, type ToolDefinition } from '@flatbed/core';
+import type { Plugin, Tool, ToolCall, ToolContext, ToolResult, ToolDefinition } from '@flatbed/core';
 
 export type CodemodeOptions = {
   /** The tools a script may call, by name. A script cannot call any other tool. */
@@ -27,7 +27,6 @@ export type CodemodeOptions = {
 
 export const DEFAULT_MAX_CALLS = 25;
 export const DEFAULT_TIMEOUT_MS = 60_000;
-const NOT_RUN = 'The harness stopped before this tool ran.';
 const WORKER_DIR = fileURLToPath(new URL('../../../codemode/', import.meta.url));
 
 /** The worker command: `uv run` in the worker's own project, so its one dependency stays its own. */
@@ -37,17 +36,17 @@ export const defaultWorker = () => ({
 });
 
 const text = (t: string, isError = false): ToolResult => ({ content: [{ type: 'text', text: t }], isError });
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
  * Adds codemode to a list of plugins. It returns the plugins with their `context` hooks wrapped, so
- * that codemode can find the code for the tools they add, followed by the codemode plugin itself.
+ * that codemode can see the tools they add, followed by the codemode plugin itself.
  *
- * The wrapping is a stopgap: the core gives a tool no way to run another call through the loop's own
- * runner, so codemode runs nested calls itself, the same way, with the agent's plugins' hooks.
+ * Codemode needs the allowed tools' descriptions and schemas to write `run_script`'s description,
+ * and a `context` hook sees nothing of the tools other plugins add. The calls themselves run through
+ * the core, with `ctx.runTool`.
  */
 export function withCodemode(plugins: Plugin[], options: CodemodeOptions): Plugin[] {
-  const code = new Map<string, Tool>();
+  const seen = new Map<string, ToolDefinition>();
   const wrapped = plugins.map((plugin): Plugin => {
     const { context } = plugin;
     if (context === undefined) return plugin;
@@ -55,36 +54,35 @@ export function withCodemode(plugins: Plugin[], options: CodemodeOptions): Plugi
       ...plugin,
       async context(ctx) {
         const added = await context.call(plugin, ctx);
-        for (const tool of added?.tools ?? []) code.set(tool.name, tool);
+        for (const tool of added?.tools ?? []) seen.set(tool.name, tool);
         return added;
       },
     };
   });
-  return [...wrapped, codemodePlugin(code, options)];
+  return [...wrapped, codemodePlugin(seen, options)];
 }
 
-function codemodePlugin(code: Map<string, Tool>, options: CodemodeOptions): Plugin {
-  const allowed = new Set(options.tools);
+function codemodePlugin(seen: Map<string, ToolDefinition>, options: CodemodeOptions): Plugin {
   return {
     name: 'codemode',
     context() {
       const callable = options.tools.flatMap((name) => {
-        const tool = code.get(name);
+        const tool = seen.get(name);
         return tool === undefined ? [] : [tool];
       });
-      return { tools: [runScriptTool(callable, code, allowed, options)] };
+      return { tools: [runScriptTool(callable, options)] };
     },
   };
 }
 
-function runScriptTool(callable: ToolDefinition[], code: Map<string, Tool>, allowed: Set<string>, options: CodemodeOptions): Tool {
+function runScriptTool(callable: ToolDefinition[], options: CodemodeOptions): Tool {
   const maxCalls = options.maxCalls ?? DEFAULT_MAX_CALLS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return {
     name: 'run_script',
     description: describe(callable, maxCalls, timeoutMs),
     inputSchema: { type: 'object', properties: { script: { type: 'string' } }, required: ['script'] },
-    run: (input, ctx) => runScript(String(input.script), callable, code, allowed, options, ctx),
+    run: (input, ctx) => runScript(String(input.script), callable, options, ctx),
   };
 }
 
@@ -131,16 +129,13 @@ type WorkerMessage =
   | { type: 'error'; output: string; error: string };
 
 /** Runs one script in a fresh worker process, answering its calls, until it finishes or a limit ends it. */
-async function runScript(
-  script: string, callable: ToolDefinition[], code: Map<string, Tool>, allowed: Set<string>, options: CodemodeOptions, ctx: ToolContext,
-): Promise<ToolResult> {
+async function runScript(script: string, callable: ToolDefinition[], options: CodemodeOptions, ctx: ToolContext): Promise<ToolResult> {
   const maxCalls = options.maxCalls ?? DEFAULT_MAX_CALLS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const worker = options.worker ?? defaultWorker();
   const scriptId = randomBytes(4).toString('hex');
-  const limit = limiter(ctx.agent.toolExecution === 'serial' ? 1 : ctx.agent.maxConcurrentTools ?? 4);
-  // The schemas the session's context entry froze, as the loop checks them.
-  const frozen = new Map((ctx.session.entries.find((e) => e.type === 'context')?.tools ?? []).map((t) => [t.name, t.inputSchema]));
+  // Checked here as well as in the worker, so that a worker that misbehaves still reaches only these.
+  const allowed = new Set(callable.map((tool) => tool.name));
 
   // An empty environment but for what `uv` needs to find itself and its cache: no keys reach the worker.
   const env = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' };
@@ -188,12 +183,14 @@ async function runScript(
       calls += 1;
       if (calls > maxCalls) return finish(text(`The script made more than ${maxCalls} tool calls, so it was stopped.`, true));
       const call: ToolCall = { type: 'toolCall', id: `${scriptId}-${message.id}`, name: message.name, input: message.input };
-      void limit(async () => {
-        const result = ctx.signal.aborted ? text(NOT_RUN, true) : await runNested(call, code, allowed, frozen, ctx);
+      // The core runs the call as it runs the model's, under the turn's limit. A name off the
+      // allow-list is as unknown as a name nobody has.
+      void (async () => {
+        const result = allowed.has(call.name) ? await ctx.runTool(call) : text(`No tool named ${call.name}.`, true);
         if (settled) return;
         await ctx.append({ type: 'custom', plugin: 'codemode', data: { call, result } }).catch(() => {});
         send({ type: 'result', id: message.id, text: result.content.map((b) => (b.type === 'text' ? b.text : '')).join(''), isError: result.isError });
-      });
+      })();
     });
 
     send({
@@ -217,61 +214,4 @@ function killGroup(pid: number | undefined) {
   } catch {
     // Already gone.
   }
-}
-
-/**
- * Runs one nested call as docs/spec/plugins.md describes for a direct call: name, input check,
- * `beforeTool`, the tool, `afterTool`. A name off the allow-list is as unknown as a name nobody has.
- */
-async function runNested(
-  call: ToolCall, code: Map<string, Tool>, allowed: Set<string>, frozen: Map<string, Record<string, unknown>>, ctx: ToolContext,
-): Promise<ToolResult> {
-  const tool = code.get(call.name);
-  const schema = frozen.get(call.name);
-  if (!allowed.has(call.name) || tool === undefined || schema === undefined) return text(`No tool named ${call.name}.`, true);
-  const problem = checkInput(call.input, schema);
-  if (problem !== undefined) return text(`Invalid input for ${call.name}: ${problem}.`, true);
-  const plugins = ctx.agent.plugins ?? [];
-  let result: ToolResult | undefined;
-  for (const plugin of plugins) {
-    try {
-      result = (await plugin.beforeTool?.(call, ctx)) ?? undefined;
-    } catch (error) {
-      return text(`The ${plugin.name} plugin failed: ${messageOf(error)}`, true);
-    }
-    if (result !== undefined) break;
-  }
-  if (result === undefined) {
-    try {
-      const output = await tool.run(call.input, ctx);
-      result = typeof output === 'string' ? text(output) : output;
-    } catch (error) {
-      result = text(messageOf(error), true);
-    }
-  }
-  for (const plugin of plugins) {
-    try {
-      result = (await plugin.afterTool?.(call, result, ctx)) ?? result;
-    } catch (error) {
-      return text(`The ${plugin.name} plugin failed: ${messageOf(error)}`, true);
-    }
-  }
-  return result;
-}
-
-/** Runs the functions it is given, at most `size` at a time, in the order they were given. */
-function limiter(size: number) {
-  let active = 0;
-  const waiting: (() => void)[] = [];
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (active >= size) await new Promise<void>((resolve) => waiting.push(resolve));
-    else active += 1;
-    try {
-      return await fn();
-    } finally {
-      const next = waiting.shift();
-      if (next) next();
-      else active -= 1;
-    }
-  };
 }

@@ -113,6 +113,12 @@ export type PluginContext = {
 
 export type ToolContext = PluginContext & {
   requestReset(reason?: string): void;
+  /**
+   * Runs another call as the loop runs the model's calls, through the same hooks and under the turn's
+   * limit, and returns its result without appending a `tool` message. The calling tool gives up its
+   * place under the limit while it waits.
+   */
+  runTool(call: ToolCall): Promise<ToolResult>;
 };
 
 export type ToolResult = { content: (TextBlock | ImageBlock)[]; isError: boolean };

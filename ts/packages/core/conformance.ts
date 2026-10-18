@@ -17,6 +17,7 @@ const AGENT = 'test';
 /** What a tool does, after waiting `sleep` milliseconds and appending a custom entry with `append`'s data, when given. */
 type Behaviour = { sleep?: number; append?: unknown } & (
   | { echo: string } | { text: string } | { error: string } | { reset: string } | { deliver: Event } | { waitForStop: string }
+  | { runTools: { name: string; input: Record<string, unknown> }[] }
 );
 type Step =
   | { deliver: Event }
@@ -60,7 +61,7 @@ function toolFor({ behaviour, ...definition }: ToolDefinition & { behaviour: Beh
     async run(input, ctx) {
       running.most = Math.max(running.most, ++running.now);
       try {
-        return await behave(behaviour, input, ctx);
+        return await behave(behaviour, input, ctx, running);
       } finally {
         running.now--;
       }
@@ -68,13 +69,20 @@ function toolFor({ behaviour, ...definition }: ToolDefinition & { behaviour: Beh
   };
 }
 
-async function behave(behaviour: Behaviour, input: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+async function behave(behaviour: Behaviour, input: Record<string, unknown>, ctx: ToolContext, running: Running): Promise<string> {
   if (behaviour.sleep !== undefined) await new Promise((resolve) => setTimeout(resolve, behaviour.sleep));
   if (behaviour.append !== undefined) await ctx.append({ type: 'custom', plugin: 'test', data: behaviour.append });
   if ('echo' in behaviour) return String(input[behaviour.echo]);
   if ('waitForStop' in behaviour) {
     if (!ctx.signal.aborted) await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
     return behaviour.waitForStop;
+  }
+  if ('runTools' in behaviour) {
+    // The tool gives up its place while its calls run, so it does not count as running then.
+    running.now--;
+    const results = await Promise.all(behaviour.runTools.map(({ name, input }, i) => ctx.runTool({ type: 'toolCall', id: `nested-${i}`, name, input })));
+    running.most = Math.max(running.most, ++running.now);
+    return results.map((r) => r.content.map((b) => (b.type === 'text' ? b.text : '')).join('')).join('\n');
   }
   if ('text' in behaviour) return behaviour.text;
   if ('error' in behaviour) throw new Error(behaviour.error);
