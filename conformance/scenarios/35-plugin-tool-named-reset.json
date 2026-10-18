@@ -1,0 +1,49 @@
+{
+  "name": "a plugin tool named reset",
+  "description": "The test plugin adds a tool named reset, which shares its name with the core tool, so the run fails before it writes anything.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "reset",
+      "description": "A plugin's own reset.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "text": "Reset."
+      }
+    }
+  ],
+  "script": [],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Hi"
+      }
+    },
+    {
+      "run": {},
+      "expect": {
+        "error": "Two tools are named reset."
+      }
+    }
+  ],
+  "expect": {
+    "sessions": []
+  }
+}

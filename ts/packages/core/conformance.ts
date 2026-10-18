@@ -9,15 +9,17 @@ import { createAgent } from './loop.ts';
 import { pathOf } from './render.ts';
 import { fauxProvider, type ScriptStep } from './providers/faux.ts';
 import { memoryStore, newEntryId, newSessionId } from './store.ts';
-import type { Entry, EntryBody, Event, ParentLink, Plugin, Section, Tool, ToolDefinition, ToolResult } from './types.ts';
+import type { AgentConfig, Entry, EntryBody, Event, ParentLink, Plugin, Section, Tool, ToolContext, ToolDefinition, ToolResult } from './types.ts';
 
 const SCENARIOS = fileURLToPath(new URL('../../../conformance/scenarios/', import.meta.url));
 const AGENT = 'test';
 
-type Behaviour = { echo: string } | { text: string } | { error: string } | { reset: string } | { deliver: Event };
+type Behaviour =
+  | { echo: string } | { text: string } | { error: string } | { reset: string } | { deliver: Event }
+  | { sleep: number; text: string } | { waitForStop: string };
 type Step =
   | { deliver: Event }
-  | { run: { stop?: string }; expect?: string }
+  | { run: { stop?: string; stopAfter?: number }; expect?: string | { error: string } }
   | { crash: EntryBody }
   | { rewind: number }
   | { header: Record<string, never> };
@@ -33,30 +35,55 @@ type PluginHooks = {
 
 type Scenario = {
   name: string;
-  agent: { model: string; softLimit?: number; hardLimit?: number; maxTokens?: number; parent?: ParentLink };
+  agent: Omit<AgentConfig, 'id' | 'plugins'>;
   sections?: Section[];
   tools?: (ToolDefinition & { behaviour: Behaviour })[];
   plugin?: PluginHooks;
-  script: (ScriptStep | { abort: string })[];
+  script: (ScriptStep | { abort: string } | { hang: true })[];
   steps: Step[];
-  expect: { sessions: unknown[][]; requests?: unknown[] };
+  expect: { sessions: unknown[][]; requests?: unknown[]; maxRunning?: number };
 };
 
-function toolFor({ behaviour, ...definition }: ToolDefinition & { behaviour: Behaviour }): Tool {
+/** A scenario that takes longer than this fails, so that a hung run cannot hang the suite. */
+const TIMEOUT_MS = 10_000;
+/** The keys of a request that `expect.requests` may compare, when an item is an object. */
+const REQUEST_KEYS = ['messages', 'sections', 'tools', 'maxTokens', 'effort'] as const;
+
+/** How many tool calls are running now, and the most there have been at once. */
+type Running = { now: number; most: number };
+
+function toolFor({ behaviour, ...definition }: ToolDefinition & { behaviour: Behaviour }, running: Running): Tool {
   return {
     ...definition,
-    run(input, ctx) {
-      if ('echo' in behaviour) return String(input[behaviour.echo]);
-      if ('text' in behaviour) return behaviour.text;
-      if ('error' in behaviour) throw new Error(behaviour.error);
-      if ('reset' in behaviour) {
-        ctx.requestReset(behaviour.reset);
-        return 'Session will reset after this turn.';
+    async run(input, ctx) {
+      running.most = Math.max(running.most, ++running.now);
+      try {
+        return await behave(behaviour, input, ctx);
+      } finally {
+        running.now--;
       }
-      ctx.deliver(behaviour.deliver);
-      return 'Delivered.';
     },
   };
+}
+
+async function behave(behaviour: Behaviour, input: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  if ('echo' in behaviour) return String(input[behaviour.echo]);
+  if ('sleep' in behaviour) {
+    await new Promise((resolve) => setTimeout(resolve, behaviour.sleep));
+    return behaviour.text;
+  }
+  if ('waitForStop' in behaviour) {
+    if (!ctx.signal.aborted) await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
+    return behaviour.waitForStop;
+  }
+  if ('text' in behaviour) return behaviour.text;
+  if ('error' in behaviour) throw new Error(behaviour.error);
+  if ('reset' in behaviour) {
+    ctx.requestReset(behaviour.reset);
+    return 'Session will reset after this turn.';
+  }
+  ctx.deliver(behaviour.deliver);
+  return 'Delivered.';
 }
 
 /** A hook's result, or the error `{"throw": "<message>"}` asks it to throw. */
@@ -65,11 +92,11 @@ function hookResult(result: HookResult | undefined): ToolResult | undefined {
   return result;
 }
 
-function testPlugin(scenario: Scenario): Plugin {
+function testPlugin(scenario: Scenario, running: Running): Plugin {
   const hooks = scenario.plugin ?? {};
   return {
     name: 'test',
-    context: () => ({ sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map(toolFor) }),
+    context: () => ({ sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map((tool) => toolFor(tool, running)) }),
     beforeTool: (call) => hookResult(hooks.beforeTool?.[call.name]),
     afterTool: (call) => hookResult(hooks.afterTool?.[call.name]),
     async onEntry(entry, ctx) {
@@ -88,6 +115,8 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
   let controller = new AbortController();
   // `{"abort": "<who>"}` sets the stop signal while the call is in flight, and the call fails.
   const script = scenario.script.map((step): ScriptStep => {
+    // `{"hang": true}` never answers and ignores the signal.
+    if ('hang' in step) return () => new Promise(() => {});
     if (!('abort' in step)) return step;
     return () => {
       controller.abort(step.abort);
@@ -95,7 +124,8 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
     };
   });
   const faux = fauxProvider(script);
-  const plugin = testPlugin(scenario);
+  const running: Running = { now: 0, most: 0 };
+  const plugin = testPlugin(scenario, running);
   const agent = createAgent({ id: AGENT, ...scenario.agent, plugins: [plugin] }, { store, providers: { faux } });
   const current = async () => store.read(AGENT, (await store.list(AGENT)).at(-1)!);
   const rewoundTo = new Set<string>();
@@ -106,10 +136,23 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
       agent.deliver(step.deliver, rewind === undefined ? {} : { parentId: rewind });
       rewind = undefined;
     } else if ('run' in step) {
-      controller = new AbortController();
-      if (step.run.stop !== undefined) controller.abort(step.run.stop);
-      const outcome = await agent.run({ signal: controller.signal });
-      if (step.expect !== undefined && outcome !== step.expect) return `step ${i}: run ended ${outcome}, expected ${step.expect}`;
+      const stop = new AbortController();
+      controller = stop;
+      const { stop: who, stopAfter } = step.run;
+      const timer = who === undefined ? undefined : setTimeout(() => stop.abort(who), stopAfter ?? 0);
+      if (who !== undefined && stopAfter === undefined) stop.abort(who);
+      let outcome: string;
+      try {
+        outcome = await agent.run({ signal: stop.signal });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (typeof step.expect === 'object' && message === step.expect.error) continue;
+        return `step ${i}: run failed with ${JSON.stringify(message)}`;
+      } finally {
+        clearTimeout(timer);
+      }
+      const expected = typeof step.expect === 'object' ? `to fail with ${JSON.stringify(step.expect.error)}` : step.expect;
+      if (step.expect !== undefined && outcome !== step.expect) return `step ${i}: run ended ${outcome}, expected ${expected}`;
     } else if ('crash' in step) {
       const session = await current();
       const entry = { id: newEntryId(), parentId: session.entries.at(-1)?.id ?? null, at: new Date().toISOString(), ...step.crash } as Entry;
@@ -154,10 +197,22 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
     const difference = firstDifference(JSON.parse(JSON.stringify(actual)), expected, `sessions[${s}]`);
     if (difference) return difference;
   }
-  if (scenario.expect.requests !== undefined) {
-    const received = JSON.parse(JSON.stringify(faux.requests.map((r) => r.messages)));
-    return firstDifference(received, scenario.expect.requests, 'requests');
+  const { requests, maxRunning } = scenario.expect;
+  if (requests !== undefined) {
+    if (faux.requests.length !== requests.length) return `requests: received ${faux.requests.length}, expected ${requests.length}`;
+    for (const [r, want] of requests.entries()) {
+      // An item is the messages, or an object with any of REQUEST_KEYS, each compared.
+      const got = faux.requests[r]! as Record<string, unknown>;
+      const keys = Array.isArray(want) ? ['messages'] : Object.keys(want as object);
+      for (const key of keys) {
+        if (!(REQUEST_KEYS as readonly string[]).includes(key)) return `requests[${r}]: unknown key ${key}`;
+        const expected = Array.isArray(want) ? want : (want as Record<string, unknown>)[key];
+        const difference = firstDifference(JSON.parse(JSON.stringify(got[key] ?? null)), expected, `requests[${r}].${key}`);
+        if (difference) return difference;
+      }
+    }
   }
+  if (maxRunning !== undefined && running.most !== maxRunning) return `maxRunning: got ${running.most}, expected ${maxRunning}`;
   return undefined;
 }
 
@@ -190,7 +245,10 @@ for (const file of files) {
   const scenario = JSON.parse(await readFile(`${SCENARIOS}${file}`, 'utf8')) as Scenario;
   let difference: string | undefined;
   try {
-    difference = await runScenario(scenario);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<string>((resolve) => (timer = setTimeout(resolve, TIMEOUT_MS, `took longer than ${TIMEOUT_MS / 1000} seconds`)));
+    difference = await Promise.race([runScenario(scenario), timeout]);
+    clearTimeout(timer);
   } catch (error) {
     difference = `threw ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -204,4 +262,5 @@ if (files.length === 0) {
   console.log('FAIL no scenarios found');
   failed++;
 }
-process.exitCode = failed > 0 ? 1 : 0;
+// Exit outright, since a scenario that timed out may have left a run waiting.
+process.exit(failed > 0 ? 1 : 0);

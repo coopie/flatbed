@@ -34,7 +34,7 @@ A session needs a run when the last entry on its path, ignoring `custom` and `co
 
 - a `tool` message
 - an `event` whose `attrs.from` is not `harness`, including an event with no `from`
-- the soft-limit notice, so that the model can bring its notes up to date, even when the run that appended it was stopped or the process restarted
+- the soft-limit notice, or a `Stopped by <who>.` notice with nothing but other such notices between it and the soft-limit notice, so that the model can bring its notes up to date, even when the run that appended it was stopped or the process restarted
 
 Work this out from the session's entries every time, never from a flag held in memory.
 

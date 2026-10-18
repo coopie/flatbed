@@ -1,0 +1,253 @@
+{
+  "name": "a stop during a turn's calls",
+  "description": "Two calls are running, at the limit of two, when the stop is set. Both see the stop and finish, and their results are kept. The third call has not started, so it never starts and gets the repair text. Then the stop notice follows, and the run ends with stopped.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000,
+    "toolExecution": "concurrent",
+    "maxConcurrentTools": 2
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "patient",
+      "description": "Work until the run is stopped.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "waitForStop": "Stopped early."
+      }
+    },
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "patient",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "patient",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c3",
+          "name": "echo",
+          "input": {
+            "text": "three"
+          }
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 9
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Start"
+      }
+    },
+    {
+      "run": {
+        "stop": "Sam",
+        "stopAfter": 500
+      },
+      "expect": "stopped"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "patient",
+              "description": "Work until the run is stopped.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Start"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "patient",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "patient",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c3",
+                "name": "echo",
+                "input": {
+                  "text": "three"
+                }
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 9
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "patient",
+            "content": [
+              {
+                "type": "text",
+                "text": "Stopped early."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "patient",
+            "content": [
+              {
+                "type": "text",
+                "text": "Stopped early."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c3",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "The harness stopped before this tool ran."
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Stopped by Sam."
+        }
+      ]
+    ],
+    "maxRunning": 2
+  }
+}
