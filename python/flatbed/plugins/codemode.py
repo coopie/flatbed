@@ -19,12 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..loop import check_input, error_result, message_of, settled
+from ..loop import error_result, message_of, settled
 from ..types import ContextAddition, Plugin, Tool, ToolCall, ToolContext, ToolDefinition, ToolResult
 
 DEFAULT_MAX_CALLS = 25
 DEFAULT_TIMEOUT = 60.0
-NOT_RUN = "The harness stopped before this tool ran."
 WORKER_DIR = Path(__file__).resolve().parents[3] / "codemode"
 
 
@@ -57,12 +56,12 @@ def text_result(text: str, is_error: bool = False) -> ToolResult:
 def with_codemode(plugins: list[Plugin], options: CodemodeOptions) -> list[Plugin]:
     """Adds codemode to a list of plugins.
 
-    It returns the plugins with their `context` hooks wrapped, so that codemode can find the code for the
-    tools they add, followed by the codemode plugin itself. The wrapping is a stopgap: the core gives a
-    tool no way to run another call through the loop's own runner, so codemode runs nested calls itself,
-    the same way, with the agent's plugins' hooks.
+    It returns the plugins with their `context` hooks wrapped, so that codemode can see the tools they
+    add, followed by the codemode plugin itself. Codemode needs the allowed tools' descriptions and
+    schemas to write `run_script`'s description, and a `context` hook sees nothing of the tools other
+    plugins add. The calls themselves run through the core, with `ctx.run_tool`.
     """
-    code: dict[str, Tool] = {}
+    seen: dict[str, ToolDefinition] = {}
 
     def wrap(plugin: Plugin) -> Plugin:
         context = plugin.context
@@ -72,13 +71,13 @@ def with_codemode(plugins: list[Plugin], options: CodemodeOptions) -> list[Plugi
         async def capture(ctx: Any) -> ContextAddition | None:
             added = await settled(context(ctx))
             for tool in added.tools if added else []:
-                code[tool.name] = tool
+                seen[tool.name] = tool.definition()
             return added
 
         return replace(plugin, context=capture)
 
     def codemode_context(ctx: Any) -> ContextAddition:
-        callable_tools = [code[name].definition() for name in options.tools if name in code]
+        callable_tools = [seen[name] for name in options.tools if name in seen]
         tool = Tool(
             name="run_script",
             description=describe(callable_tools, options.max_calls, options.timeout),
@@ -88,7 +87,7 @@ def with_codemode(plugins: list[Plugin], options: CodemodeOptions) -> list[Plugi
                 "required": ["script"],
             },
             run=lambda tool_input, tool_ctx: run_script(
-                str(tool_input["script"]), callable_tools, code, options, tool_ctx
+                str(tool_input["script"]), callable_tools, options, tool_ctx
             ),
         )
         return ContextAddition(tools=[tool])
@@ -154,7 +153,6 @@ def params(tool: ToolDefinition) -> tuple[list[str], list[str]]:
 async def run_script(
     script: str,
     callable_tools: list[ToolDefinition],
-    code: dict[str, Tool],
     options: CodemodeOptions,
     ctx: ToolContext,
 ) -> ToolResult:
@@ -176,7 +174,7 @@ async def run_script(
     except FileNotFoundError:
         return error_result(f"The codemode worker could not start: {command[0]} was not found.")
 
-    session = Script(process, code, options, ctx)
+    session = Script(process, callable_tools, options, ctx)
     try:
         async with asyncio.timeout(options.timeout):
             return await ctx.signal.unless_set(session.talk(script, callable_tools))
@@ -199,19 +197,19 @@ class Script:
     """One script's conversation with its worker."""
 
     def __init__(
-        self, process: asyncio.subprocess.Process, code: dict[str, Tool], options: CodemodeOptions, ctx
+        self,
+        process: asyncio.subprocess.Process,
+        callable_tools: list[ToolDefinition],
+        options: CodemodeOptions,
+        ctx: ToolContext,
     ):
         self.process = process
-        self.code = code
+        # Checked here as well as in the worker, so that a worker that misbehaves still reaches only these.
+        self.allowed = {tool["name"] for tool in callable_tools}
         self.options = options
-        self.ctx: ToolContext = ctx
+        self.ctx = ctx
         self.id = secrets.token_hex(4)
         self.done = False
-        serial = ctx.agent.tool_execution == "serial"
-        self.slots = asyncio.Semaphore(1 if serial else ctx.agent.max_concurrent_tools)
-        # The schemas the session's context entry froze, as the loop checks them.
-        context = next((e for e in ctx.session.entries if e["type"] == "context"), None)
-        self.frozen = {t["name"]: t["inputSchema"] for t in (context or {}).get("tools", [])}
 
     def send(self, message: dict[str, Any]) -> None:
         assert self.process.stdin is not None
@@ -263,8 +261,12 @@ class Script:
             "name": message["name"],
             "input": message["input"],
         }
-        async with self.slots:
-            result = error_result(NOT_RUN) if self.ctx.signal.is_set else await self.run_nested(call)
+        # The core runs the call as it runs the model's, under the turn's limit. A name off the
+        # allow-list is as unknown as a name nobody has.
+        if call["name"] in self.allowed:
+            result = await self.ctx.run_tool(call)
+        else:
+            result = error_result(f"No tool named {call['name']}.")
         if self.done:
             return
         with contextlib.suppress(Exception):
@@ -273,41 +275,6 @@ class Script:
             )
         text = "".join(block.get("text", "") for block in result["content"])
         self.send({"type": "result", "id": message["id"], "text": text, "isError": result["isError"]})
-
-    async def run_nested(self, call: ToolCall) -> ToolResult:
-        """Runs one nested call as docs/spec/plugins.md describes for a direct call. A name off the
-        allow-list is as unknown as a name nobody has."""
-        name = call["name"]
-        tool = self.code.get(name)
-        if name not in self.options.tools or tool is None or name not in self.frozen:
-            return error_result(f"No tool named {name}.")
-        problem = check_input(call["input"], self.frozen[name])
-        if problem is not None:
-            return error_result(f"Invalid input for {name}: {problem}.")
-        plugins = self.ctx.agent.plugins
-        result: ToolResult | None = None
-        for plugin in plugins:
-            try:
-                if (
-                    plugin.before_tool
-                    and (result := await settled(plugin.before_tool(call, self.ctx))) is not None
-                ):
-                    break
-            except Exception as error:
-                return error_result(f"The {plugin.name} plugin failed: {message_of(error)}")
-        if result is None:
-            try:
-                output = await settled(tool.run(call["input"], self.ctx))
-                result = text_result(output) if isinstance(output, str) else output
-            except Exception as error:
-                result = error_result(message_of(error))
-        for plugin in plugins:
-            try:
-                if plugin.after_tool:
-                    result = await settled(plugin.after_tool(call, result, self.ctx)) or result
-            except Exception as error:
-                return error_result(f"The {plugin.name} plugin failed: {message_of(error)}")
-        return result
 
 
 def joined(output: str, last: str | None) -> str:

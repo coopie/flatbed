@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -111,6 +112,52 @@ def message_of(error: BaseException) -> str:
 def plugin_failed(plugin: str, error: BaseException) -> ToolResult:
     """A throwing hook is the plugin's bug: the call gets an error result, and no later hook runs."""
     return error_result(f"The {plugin} plugin failed: {message_of(error)}")
+
+
+class Place:
+    """A tool's place under the turn's limit.
+
+    While the calls a tool made with `run_tool` run, the tool gives up its place, and it takes one back
+    when the last of them finishes, so a tool never waits on its own place. `finish` gives the place
+    back when the tool ends, unless it ended without one, while calls it made were still running.
+    """
+
+    def __init__(self, places: asyncio.Semaphore) -> None:
+        self.places = places
+        self.holding = True
+        self.finished = False
+        self.waiting = 0
+        self.back: asyncio.Future[None] | None = None
+
+    async def give_up_while(self, call: Awaitable[ToolResult]) -> ToolResult:
+        self.waiting += 1
+        if self.waiting == 1:
+            if self.back is not None:
+                await asyncio.shield(self.back)
+            if self.holding:
+                self.places.release()
+            self.holding = False
+        try:
+            return await call
+        finally:
+            self.waiting -= 1
+            if self.waiting == 0 and not self.finished:
+                # Shielded, so that a cancelled tool still gets the place `finish` will give back.
+                self.back = asyncio.ensure_future(self._take_back())
+                await asyncio.shield(self.back)
+
+    async def _take_back(self) -> None:
+        await self.places.acquire()
+        if self.finished:
+            self.places.release()
+        else:
+            self.holding = True
+
+    def finish(self) -> None:
+        self.finished = True
+        if self.holding:
+            self.places.release()
+        self.holding = False
 
 
 class Agent:
@@ -435,23 +482,38 @@ class Agent:
         """Runs a turn's calls by the agent's `tool_execution`, and returns their results in call order.
         Records in `resets` the first reset each call requests, by call index.
 
-        Calls queue for a slot in call order. Serial execution is one slot. Once the stop is set, a call
-        that has not started does not start: it gets the same result as a call a crash left unanswered.
+        Calls queue for a place in call order, and a call a tool makes with `run_tool` queues the same
+        way. Serial execution starts each call after the one before and has one place. Once the stop is
+        set, a call that has not started does not start: it gets the same result as a call a crash left
+        unanswered.
         """
         serial = self.config.tool_execution == "serial"
-        slots = asyncio.Semaphore(1 if serial else self.config.max_concurrent_tools)
+        places = asyncio.Semaphore(1 if serial else self.config.max_concurrent_tools)
 
-        async def run_one(index: int, call: ToolCall) -> ToolResult:
+        async def run_limited(call: ToolCall, request_reset: Callable[[str | None], None]) -> ToolResult:
+            await places.acquire()
+            if self._stop.is_set:
+                places.release()
+                return error_result(REPAIR_TEXT)
+            place = Place(places)
             ctx = ToolContext(
                 **vars(self._context(session)),
-                request_reset=lambda reason: resets.setdefault(index, reason),
+                request_reset=request_reset,
+                run_tool=lambda nested: place.give_up_while(run_limited(nested, request_reset)),
             )
-            async with slots:
-                if ctx.signal.is_set:
-                    return error_result(REPAIR_TEXT)
+            try:
                 return await self._run_tool(call, definitions, code, ctx)
+            finally:
+                place.finish()
 
-        return await asyncio.gather(*(run_one(index, call) for index, call in enumerate(calls)))
+        def requester(index: int) -> Callable[[str | None], None]:
+            return lambda reason: resets.setdefault(index, reason)
+
+        if serial:
+            return [await run_limited(call, requester(index)) for index, call in enumerate(calls)]
+        return await asyncio.gather(
+            *(run_limited(call, requester(index)) for index, call in enumerate(calls))
+        )
 
     async def _run_tool(
         self, call: ToolCall, definitions: list[ToolDefinition], code: dict[str, Tool], ctx: ToolContext

@@ -112,3 +112,37 @@ test('every hook sees the run stop signal, and a stop with no name is by the hos
   const last = entries.at(-1);
   equal(last?.type === 'event' && last.text, 'Stopped by the host.');
 });
+
+test('a tool that ends while a call it made still runs leaves the limit as it found it', async () => {
+  // With one place: `leave` starts a slow call and returns at once, then two `slow` calls follow.
+  let running = 0;
+  let most = 0;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const slow: Tool = {
+    name: 'slow',
+    description: 'Wait a moment.',
+    inputSchema: { type: 'object' },
+    async run() {
+      most = Math.max(most, ++running);
+      await sleep(50);
+      running--;
+      return 'Waited.';
+    },
+  };
+  const leave: Tool = {
+    name: 'leave',
+    description: 'Start a slow call and return without waiting for it.',
+    inputSchema: { type: 'object' },
+    run(_input, ctx) {
+      void ctx.runTool({ type: 'toolCall', id: 'n1', name: 'slow', input: {} });
+      return 'Left.';
+    },
+  };
+  const calls = ['leave', 'slow', 'slow'].map((name, i) => ({ type: 'toolCall' as const, id: `c${i}`, name, input: {} }));
+  const plugin: Plugin = { name: 'test', context: () => ({ tools: [slow, leave] }) };
+  const providers = { faux: fauxProvider([{ content: calls }, { content: [{ type: 'text', text: 'Done.' }] }]) };
+  const agent = createAgent({ id: 'a', model: 'faux/test', plugins: [plugin], maxConcurrentTools: 1 }, { store: memoryStore(), providers });
+  agent.deliver({ kind: 'message', text: 'Go' });
+  equal(await agent.run(), 'idle');
+  equal(most, 1);
+});

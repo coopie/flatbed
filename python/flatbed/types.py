@@ -207,6 +207,14 @@ class PluginContext:
 @dataclass
 class ToolContext(PluginContext):
     request_reset: Callable[[str | None], None] = lambda reason: None
+    # Runs another call as the loop runs the model's calls, through the same hooks and under the
+    # turn's limit, and returns its result without appending a `tool` message. The calling tool gives
+    # up its place under the limit while it waits.
+    run_tool: Callable[[ToolCall], Awaitable[ToolResult]] = lambda call: _no_runner(call)
+
+
+async def _no_runner(call: ToolCall) -> ToolResult:
+    raise RuntimeError("This context cannot run tools; only a tool's context from the loop can.")
 
 
 class StopSignal:

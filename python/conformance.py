@@ -56,6 +56,20 @@ def make_tool(spec: dict[str, Any], running: Running) -> Tool:
             return behaviour["waitForStop"]
         if "echo" in behaviour:
             return str(tool_input[behaviour["echo"]])
+        if "runTools" in behaviour:
+            # The tool gives up its place while its calls run, so it does not count as running then.
+            running.now -= 1
+            results = await asyncio.gather(
+                *(
+                    ctx.run_tool(
+                        {"type": "toolCall", "id": f"nested-{i}", "name": c["name"], "input": c["input"]}
+                    )
+                    for i, c in enumerate(behaviour["runTools"])
+                )
+            )
+            running.now += 1
+            running.most = max(running.most, running.now)
+            return "\n".join("".join(b.get("text", "") for b in r["content"]) for r in results)
         if "text" in behaviour:
             return behaviour["text"]
         if "error" in behaviour:

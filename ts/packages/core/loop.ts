@@ -252,36 +252,54 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     /** Runs a call under the turn's limit. Once the stop is set, a call that has not started never starts. */
     async function runLimited(call: ToolCall, requestReset: ToolContext['requestReset']): Promise<ToolResult> {
       await limit.acquire();
-      try {
-        return signal.aborted ? errorResult(NOT_RUN) : await runCall(call, frozen, toolContext(requestReset));
-      } finally {
+      if (signal.aborted) {
         limit.release();
+        return errorResult(NOT_RUN);
+      }
+      const { ctx, finish } = toolContext(requestReset);
+      try {
+        return await runCall(call, frozen, ctx);
+      } finally {
+        finish();
       }
     }
 
     /**
      * What a tool sees. Its `runTool` gives up the tool's place under the limit while the calls it made
      * run, and takes one back when the last of them finishes, so a tool never waits on its own place.
-     * A nested call shares the calling tool's `requestReset`.
+     * `finish` gives the place back when the tool ends, unless it ended without one, while calls it
+     * made were still running. A nested call shares the calling tool's `requestReset`.
      */
-    function toolContext(requestReset: ToolContext['requestReset']): ToolContext {
+    function toolContext(requestReset: ToolContext['requestReset']) {
+      let holding = true;
+      let finished = false;
       let waiting = 0;
       let back = Promise.resolve();
-      return {
+      const ctx: ToolContext = {
         ...contextFor(session),
         requestReset,
         async runTool(call) {
           if (waiting++ === 0) {
             await back;
-            limit.release();
+            if (holding) limit.release();
+            holding = false;
           }
           try {
             return await runLimited(call, requestReset);
           } finally {
-            if (--waiting === 0) await (back = limit.acquire());
+            if (--waiting === 0 && !finished) {
+              back = limit.acquire().then(() => (finished ? limit.release() : void (holding = true)));
+              await back;
+            }
           }
         },
       };
+      const finish = () => {
+        finished = true;
+        if (holding) limit.release();
+        holding = false;
+      };
+      return { ctx, finish };
     }
 
     // 5. Loop while the session needs a run.

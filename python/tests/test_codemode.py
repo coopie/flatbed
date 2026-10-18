@@ -10,7 +10,7 @@ from flatbed.plugins.codemode import CodemodeOptions, with_codemode
 from flatbed.providers import FauxProvider
 
 
-def setup(script: str, on_slow=None, **options):
+def setup(script: str, on_slow=None, max_concurrent_tools: int = 4, **options):
     """An agent whose tools are `slow`, `read_doc` and `send_email`, with codemode allowed the first two."""
     spans: list[tuple[float, float]] = []
     sent: list[str] = []
@@ -64,7 +64,11 @@ def setup(script: str, on_slow=None, **options):
     )
     store = MemoryStore()
     agent = Agent(
-        AgentConfig(id="coder", model="faux/test", plugins=plugins), store=store, providers={"faux": faux}
+        AgentConfig(
+            id="coder", model="faux/test", plugins=plugins, max_concurrent_tools=max_concurrent_tools
+        ),
+        store=store,
+        providers={"faux": faux},
     )
     agent.deliver({"kind": "message", "attrs": {"from": "Sam"}, "text": "Go."})
 
@@ -105,6 +109,16 @@ class Codemode(unittest.IsolatedAsyncioTestCase):
         description = next(t for t in faux.requests[0].tools if t["name"] == "run_script")["description"]
         self.assertIn("async def slow(label: str) -> str:", description)
         self.assertNotIn("send_email", description)
+
+    async def test_gathered_calls_take_turns_when_the_agent_allows_one_call_at_a_time(self):
+        agent, entries, _, spans, _ = setup(
+            "import asyncio\nawait asyncio.gather(slow('a'), slow('b'))", max_concurrent_tools=1
+        )
+        self.assertEqual(await agent.run(), "idle")
+        self.assertEqual(script_result(await entries()), ('["done a", "done b"]', False))
+        # run_script gave up its place, so its calls could run, one after the other.
+        first, second = sorted(spans)
+        self.assertLessEqual(first[1], second[0])
 
     async def test_a_tool_off_the_allow_list_does_not_exist_inside_the_script(self):
         agent, entries, _, _, sent = setup("await send_email('someone@example.com')")

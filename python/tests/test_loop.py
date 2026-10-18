@@ -40,6 +40,48 @@ class ConcurrentTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(most, 2)
         self.assertEqual(await tool_texts(store, "a"), [f"done {n}" for n in range(5)])
 
+    async def test_a_tool_that_ends_while_a_call_it_made_still_runs_leaves_the_limit_as_it_found_it(self):
+        # With one place: `leave` starts a slow call and returns at once, then two `slow` calls follow.
+        active = most = 0
+        left: list[asyncio.Task] = []
+
+        async def slow(tool_input, ctx):
+            nonlocal active, most
+            active += 1
+            most = max(most, active)
+            await asyncio.sleep(0.05)
+            active -= 1
+            return "Waited."
+
+        def leave(tool_input, ctx):
+            left.append(
+                asyncio.ensure_future(
+                    ctx.run_tool({"type": "toolCall", "id": "n1", "name": "slow", "input": {}})
+                )
+            )
+            return "Left."
+
+        tools = [
+            Tool(name="slow", description="Wait a moment.", input_schema={"type": "object"}, run=slow),
+            Tool(
+                name="leave",
+                description="Start a call and leave.",
+                input_schema={"type": "object"},
+                run=leave,
+            ),
+        ]
+        names = ["leave", "slow", "slow"]
+        calls = [{"type": "toolCall", "id": f"c{i}", "name": n, "input": {}} for i, n in enumerate(names)]
+        plugin = Plugin(name="test", context=lambda ctx: ContextAddition(tools=tools))
+        faux = FauxProvider([{"content": calls}, {"content": [{"type": "text", "text": "Done."}]}])
+        config = AgentConfig(id="a", model="faux/test", plugins=[plugin], max_concurrent_tools=1)
+        agent = Agent(config, store=MemoryStore(), providers={"faux": faux})
+        agent.deliver({"kind": "message", "text": "Go"})
+
+        self.assertEqual(await agent.run(), "idle")
+        await asyncio.gather(*left)
+        self.assertEqual(most, 1)
+
     def test_a_bad_setting_fails_at_once_in_the_words_host_md_gives(self):
         faux = FauxProvider([])
 
