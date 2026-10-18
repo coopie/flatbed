@@ -1,0 +1,162 @@
+{
+  "name": "soft-limit notice answered after a restart",
+  "description": "A process appended the soft-limit notice and stopped before the model answered it. The next run works out from the session that the notice needs an answer, and calls the model with nothing new delivered. Passing the limit again adds no second notice.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 100,
+    "hardLimit": 1000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Hi."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Notes are up to date."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 150,
+        "output": 5
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Hi"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    },
+    {
+      "crash": {
+        "type": "event",
+        "kind": "notice",
+        "attrs": {
+          "from": "harness"
+        },
+        "text": "This session is nearly full. Bring your notes up to date, then call reset."
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Hi"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hi."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "end"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "This session is nearly full. Bring your notes up to date, then call reset."
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Notes are up to date."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 150,
+              "output": 5
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ]
+  }
+}

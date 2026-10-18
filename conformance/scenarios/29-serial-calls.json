@@ -1,0 +1,237 @@
+{
+  "name": "serial calls never overlap",
+  "description": "With toolExecution serial, each call starts only after the one before it has finished, even though maxConcurrentTools allows four.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000,
+    "toolExecution": "serial",
+    "maxConcurrentTools": 4
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "slow",
+      "description": "Wait a while, then say so.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "sleep": 50,
+        "text": "Waited."
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "slow",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "slow",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c3",
+          "name": "slow",
+          "input": {}
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 9
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Done."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 30,
+        "output": 2
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Three slow things"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "slow",
+              "description": "Wait a while, then say so.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Three slow things"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "slow",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "slow",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c3",
+                "name": "slow",
+                "input": {}
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 9
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "slow",
+            "content": [
+              {
+                "type": "text",
+                "text": "Waited."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "slow",
+            "content": [
+              {
+                "type": "text",
+                "text": "Waited."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c3",
+            "name": "slow",
+            "content": [
+              {
+                "type": "text",
+                "text": "Waited."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Done."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 30,
+              "output": 2
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "maxRunning": 1
+  }
+}

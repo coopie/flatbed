@@ -1,0 +1,109 @@
+{
+  "name": "a stop abandons a model call that hangs",
+  "description": "The model call never answers and ignores the stop signal. Half a second into the run the stop is set, and the loop abandons the call at once: it appends only the stop notice and ends with stopped.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [],
+  "script": [
+    {
+      "hang": true
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Start"
+      }
+    },
+    {
+      "run": {
+        "stop": "Sam",
+        "stopAfter": 500
+      },
+      "expect": "stopped"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Start"
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Stopped by Sam."
+        }
+      ]
+    ],
+    "requests": [
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            },
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">Start</message>"
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}
