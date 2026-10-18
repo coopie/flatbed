@@ -1,22 +1,23 @@
 """A scripted fake model for tests.
 
 It answers each request with the next scripted message, or calls the next scripted function with the
-request, and records every request it receives. docs/spec/providers.md describes it.
+request, which may be async, and records every request it receives. docs/spec/providers.md describes it.
 """
 
 from __future__ import annotations
 
 import copy
 import dataclasses
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..types import AssistantMessage, ProviderRequest
 
 # A scripted step is a partial assistant message with at least `content`, or a function of the request
-# that returns one.
+# that returns one, or a coroutine function that does.
 type Scripted = dict[str, Any]
-type ScriptStep = Scripted | Callable[[ProviderRequest], Scripted]
+type ScriptStep = Scripted | Callable[[ProviderRequest], Scripted | Awaitable[Scripted]]
 
 
 class FauxProvider:
@@ -30,6 +31,8 @@ class FauxProvider:
             raise RuntimeError("No more scripted responses.")
         step = self.steps.pop(0)
         scripted = step(request) if callable(step) else step
+        if inspect.isawaitable(scripted):
+            scripted = await scripted
         content = scripted["content"]
         has_call = any(block["type"] == "toolCall" for block in content)
         return {

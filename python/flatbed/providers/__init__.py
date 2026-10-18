@@ -2,5 +2,6 @@
 
 from .anthropic import AnthropicProvider
 from .faux import FauxProvider
+from .openai import OpenAIProvider
 
-__all__ = ["AnthropicProvider", "FauxProvider"]
+__all__ = ["AnthropicProvider", "FauxProvider", "OpenAIProvider"]

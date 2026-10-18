@@ -6,7 +6,7 @@ checks, and output shaped for reading rather than parsing.
 
 `chat` keeps sessions under `data/` at the repo root. It uses the model in FLATBED_MODEL, which
 defaults to `anthropic/claude-sonnet-5-5`; `faux/echo` answers offline by echoing you. The key comes
-from ANTHROPIC_API_KEY in .env at the repo root.
+from ANTHROPIC_API_KEY, or OPENAI_API_KEY for an `openai/...` model, in .env at the repo root.
 """
 
 import asyncio
@@ -16,9 +16,9 @@ import os
 import sys
 from pathlib import Path
 
-from . import Agent, ContextAddition, FileStore, Plugin, Runner, parse_session, path_of, render
+from . import Agent, AgentConfig, ContextAddition, FileStore, Plugin, parse_session, path_of, render
 from .env import read_env
-from .providers import AnthropicProvider, FauxProvider
+from .providers import AnthropicProvider, FauxProvider, OpenAIProvider
 from .types import Block, Message, Provider
 
 DATA = Path(__file__).resolve().parents[2] / "data"
@@ -74,13 +74,16 @@ async def chat(agent_id: str) -> None:
     providers: dict[str, Provider] = {"faux": FauxProvider([echo_step] * 1000)}
     if api_key := read_env("ANTHROPIC_API_KEY"):
         providers["anthropic"] = AnthropicProvider(api_key)
+    if api_key := read_env("OPENAI_API_KEY"):
+        providers["openai"] = OpenAIProvider(api_key)
     soul = f"You are {agent_id}, talking with a person in a terminal. Keep answers short."
     printer = Plugin(
         name="printer",
         context=lambda ctx: ContextAddition(sections=[{"name": "soul", "text": soul, "cache": True}]),
         on_entry=print_entry,
     )
-    runner = Runner(Agent(id=agent_id, model=model, plugins=[printer]), FileStore(DATA), providers)
+    config = AgentConfig(id=agent_id, model=model, plugins=[printer])
+    agent = Agent(config, store=FileStore(DATA), providers=providers)
     print(f"Talking to {agent_id} on {model}. Sessions are in {DATA / agent_id}/. Press Ctrl-D to leave.")
     while True:
         try:
@@ -89,8 +92,8 @@ async def chat(agent_id: str) -> None:
             print()
             return
         if line.strip():
-            runner.deliver({"kind": "message", "attrs": {"from": getpass.getuser()}, "text": line})
-            await runner.run()
+            agent.deliver({"kind": "message", "attrs": {"from": getpass.getuser()}, "text": line})
+            await agent.run()
 
 
 def view(file: str) -> None:

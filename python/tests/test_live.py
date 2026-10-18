@@ -6,7 +6,7 @@ The key comes from ANTHROPIC_API_KEY in .env at the repo root, and is never prin
 import os
 import unittest
 
-from flatbed import Agent, ContextAddition, MemoryStore, Plugin, Runner, Tool
+from flatbed import Agent, AgentConfig, ContextAddition, MemoryStore, Plugin, Tool
 from flatbed.env import read_env
 from flatbed.providers import AnthropicProvider
 
@@ -35,12 +35,12 @@ class LiveAnthropic(unittest.IsolatedAsyncioTestCase):
             ),
         )
         store = MemoryStore()
-        agent = Agent(id="live", model="anthropic/claude-sonnet-5-5", plugins=[plugin])
-        runner = Runner(agent, store, {"anthropic": AnthropicProvider(api_key)})
-        runner.deliver({"kind": "message", "attrs": {"from": "Ana"}, "text": "Please echo the word pumpkin."})
+        config = AgentConfig(id="live", model="anthropic/claude-sonnet-5-5", plugins=[plugin])
+        agent = Agent(config, store=store, providers={"anthropic": AnthropicProvider(api_key)})
+        agent.deliver({"kind": "message", "attrs": {"from": "Ana"}, "text": "Please echo the word pumpkin."})
 
-        self.assertEqual(await runner.run(), "idle")
-        entries = store.read("live", store.list("live")[-1]).entries
+        self.assertEqual(await agent.run(), "idle")
+        entries = (await store.read("live", (await store.list("live"))[-1])).entries
         results = [e["message"] for e in entries if e["type"] == "message" and e["message"]["role"] == "tool"]
         self.assertEqual(results[0]["content"][0]["text"].lower(), "pumpkin")
         self.assertEqual(entries[-1]["message"]["stop"], "end")
