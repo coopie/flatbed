@@ -40,7 +40,7 @@ Written 18 October 2026, after about 35 minutes. Commit `bcdcf9a` holds the chan
 
 **For Sam to decide.**
 - The gist's tone paragraph, still unconfirmed in the handover, is now in flatbed's writing guide too.
-- Eighteen merged briefs are still in `docs/kickoffs/`. `leading.md` says to delete them after merge; `decisions.md` links `core-fixes.md` as "history in git". I left them for the lead.
+- Seventeen finished and merged briefs are still in `docs/kickoffs/` (all but `align-fixes`, `codemode` and this one). `leading.md` says to delete them after merge; `decisions.md` links `core-fixes.md` as "history in git". I left them for the lead.
 - The old `flatbed view <session>` command never existed; `stack.md` now gives the three real ones.
 
 **How it went.** Quick, because the gist and handover are clear. Writing the overview's plan meant reading six write-ups to learn what was true; a dated line in the overview after each merge would save that.
