@@ -60,6 +60,12 @@ A call that fails at step 1 or 2 never reaches the plugins. Nor does a call in a
 
 The session's `context` entry decides which tools exist; the plugins supply their code. When a session opens and two of its tools would share a name, including a plugin's tool named `reset`, the run fails before writing anything, with the error `Two tools are named <name>.` When a run resumes a session that an earlier process opened, the loop calls the `context` hooks again for the tools' code and ignores the sections.
 
+## A tool that runs other tools
+
+A tool's `ctx` also has `runTool(call)`, for a tool that calls other tools on the model's behalf, such as codemode's `run_script`. It runs the call exactly as the loop runs a call from the model, steps 1 to 5 above, against the session's frozen tools, with the same hooks, schema check and error wording, and returns the result. It appends no `tool` message, since the call is the calling tool's own business; the calling tool records what it needs as `custom` entries.
+
+Calls made with `runTool` share the turn's limit of `maxConcurrentTools` with the model's own calls, so a turn never runs more calls at once than its agent allows. While a tool waits for a call it made with `runTool`, it gives up its own place under the limit and takes one back before it carries on, so a tool that calls others can never wait on a place it is holding itself.
+
 ## Tools in other languages
 
 A tool written in another language joins an agent through the `mcp` plugin, which connects to MCP servers when a session opens and adds their tools. The core needs nothing for this.
