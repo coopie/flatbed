@@ -1,83 +1,77 @@
 # Ways of working
 
-You are reading this because you are about to change flatbed. Most changes are made by coding agents working from a short brief, and the lead, Sam or an agent he delegates to, reads every change before it merges. This page says how we work, so that every change comes out the same shape and the next person can pick it up.
+Agents working here start with only the repo: the code and its docs. The aim is for that to be enough for any fresh agent to build and review work well, with no extra context from a person or from another agent. When that holds, the team can trust the system, run more work at once and move quickly.
 
-We value four things: the smallest thing that works, complexity that has earned its place, a quick way to see your work, and docs that stay high level and say why. flatbed is meant to be read as an example of how to build an agent, so simplicity matters more here than in most projects. When a reader cannot hold a module in their head, it is too big.
+Every agent shares that aim, whatever its role. When you learn something a fresh agent would need, such as a correction, a preference or the reason behind a choice, put it in the right doc before your session ends, because nobody after you can see your conversation.
 
-## Starting a piece of work
+Most changes here are made by coding agents in three roles. Builders do a piece of work from a brief. Reviewers check a finished piece and fix what they can. The lead, Sam or an agent he delegates to, sets the work, does a final review, and looks for ways to improve the process. [leading.md](leading.md) is the lead's side of it.
 
-A piece of work starts from a brief in `docs/kickoffs/`. Read `docs/overview.md` and the spec, skim `docs/decisions.md` for a choice that already covers your question, then read the brief. Restate the task to yourself in one line.
-
-When two readings of the brief would lead to different work, ask the lead before you build. If nobody is there to answer, add a `## Question for the lead` section at the bottom of the brief with the question and your best guess, then carry on with the guess, unless getting it wrong would waste most of the work.
-
-Keep each change to what was asked, and put anything else you notice in your write-up as a suggestion. Every brief has a time limit. When you reach it, stop and write up what you have, including what is left.
+This page is our agreed guidance on how a piece of work runs. It is mostly guidance, with a few instructions where other things depend on them. If you find a better way, or a case where it does not fit, depart from it and say why in your write-up, so the lead can improve the page.
 
 ## How we build
 
-Build the smallest thing that works. Complexity has to earn its place, usually through a second use. An interface with one implementation, a setting nobody asked for and a module holding one function all cost more to carry than to add later.
+flatbed is meant to be read as an example of how to build an agent, so its size is the point. A reader who can hold the whole core in their head can see how a product is built on it, and every feature added to the core makes that harder. Features that only some agents need have stayed out of the core as plugins, and the core has never had to know which plugins exist.
 
-The spec comes first. When an implementation needs behaviour the spec does not describe, change the spec and the conformance suite in the same change, and say so in the write-up. The three implementations stay in step through the suite, not through reading each other's code.
+The spec in `docs/spec/` is the contract between the three implementations, and they stay in step through the conformance suite, without reading each other's code. When an implementation needs behaviour the spec does not describe, changing the spec and the suite in the same change, and saying so in the write-up, has kept the three alike. Comparisons that found them drifting, such as the one on 18 October, found it where the suite could not see.
 
-When a piece of code has to behave differently for two callers, pass the difference in, as a value or a function, rather than adding a flag for the code to check. Plugins are how flatbed does this at the top level: the core never knows which plugins exist.
+Adding an abstraction once a second use appears has kept the code easier to change than adding it up front. An interface with one implementation, a setting nobody asked for, or a module holding one function is something every later change has to work around.
 
-Put care in proportion to how central the code is. The core is finished work: named well, handling the errors that can happen, and asserting where a case cannot happen. A one-off script may be rough, as long as it says so at the top.
+We lean gently towards small, well-scoped functions that compose, working on data that does not change, because they have been the easiest to read, test and reuse. Mutation tends to be worth it where it makes the code much simpler, or where performance needs it. Objects help when some state and the behaviour around it belong together and functions alone get awkward. When two callers need different behaviour, passing the difference in as a value or a function has kept code simpler than adding a flag.
 
-Type what is ours and worth holding, such as entries and messages, and let data that is passing through pass through as data. Check data where it enters from outside our control, such as a model's response or a tool's input, and trust it after that.
+The care worth putting into code grows with how central it is. The core is finished work: named well, handling the errors that can happen, and asserting where a case cannot happen. A one-off script can be rough, and saying so at its top lets the next reader judge it. Types have paid off on what is ours and worth holding, such as entries and messages, while data passing through, such as a tool's input, can stay plain data once it has been checked where it enters.
 
-Write code a reader can follow from top to bottom. Let the code say what it does and the comment say why.
+When a piece grows, rethinking it as a whole tends to keep it coherent, for the same reasons the writing guide gives for docs.
 
-## Stack
-
-- **TypeScript** in `ts/`, a pnpm workspace of small packages named `@flatbed/<name>`. Strict mode, and erasable syntax only (no enums, no parameter properties, no namespaces), so Node 24 runs the source directly. `tsc --noEmit` checks types and `node --test` runs the tests.
-- **Python** in `python/`, managed with uv. Python 3.13 with `asyncio`, the standard library first and `httpx` for async HTTP, `ruff` for format and lint, `unittest` for tests.
-- **Rust** in `rust/`, a Cargo workspace on the stable toolchain, async on `tokio` with `reqwest` for HTTP. `cargo fmt`, `cargo clippy` and `cargo test`.
-
-The three implementations share one host API, in [docs/spec/host.md](../spec/host.md), and are async throughout. Where an idiom differs between languages, such as how a stop is made, the behaviour is the same and the suite checks it.
-- **The example app** in `examples/assistant/`: SvelteKit on Node, plain CSS on the tokens in `docs/design.md`, Postgres for storage.
-
-Talk to model providers over plain HTTP rather than through their SDKs. It keeps the core free of dependencies and the three implementations alike. Add a dependency when it saves work you can name.
+A few tests of the behaviour a person would notice, at the boundary of a component, have caught most of what mattered. Here that boundary is mostly the conformance suite: one scenario showing that a reset carries over correctly tells the next reader more than ten unit tests on helpers. Agents tend to write too many tests, and a wall of them makes the next change expensive.
 
 ## Tooling
 
-- **One check script.** `scripts/check.sh` runs every implementation's format, lint, types and tests, then the conformance suite against each. It is the gate before a merge. Each language has its own section, and `scripts/check.sh ts` runs one.
-- **See your work.** `flatbed view <session>` in each implementation, or the example app's session page, shows a session as the model saw it. Use it when a run surprises you.
-- **Script a workflow the second time you do it**, in `scripts/`, and mention it in your write-up.
+Three kinds of tooling have been worth setting up early, because every later piece leans on them. flatbed has all three, and `AGENTS.md` lists them.
 
-## Testing
+- **One command that runs every check**, `scripts/check.sh`. Running it before you hand work back catches problems while they are cheap to fix.
+- **A way to see the work.** Each CLI's `view` command, and the example app's sessions page, show a session as the model saw it. For work judged by eye or feel, such as a layout or a prompt's output, a quick way to compare the result with the goal has saved many rounds of polishing the wrong thing.
+- **Scripts for repeated steps**, in `scripts/`, once the same steps come up a second time.
 
-Keep the tests few and useful. The conformance suite in `conformance/` is the main test of every implementation: it drives the loop with a scripted fake model and checks the session that comes out. Add a scenario when you add behaviour to the spec. Unit tests cover what the suite cannot reach, such as a provider adapter's translation.
+## Starting a piece of work
 
-Tests that call a real model are skipped unless `FLATBED_LIVE=1`, so the ordinary run is fast, free and passes on a fresh clone. Live runs read `ANTHROPIC_API_KEY` from `.env` at the repo root. Never print, log or commit a value from `.env`.
+Most pieces start from a brief, a short doc that sets out the piece, with a time limit. Briefs live in `docs/kickoffs/`, one file per piece. When the limit comes, stop and write up what you have, because a partial result with a clear write-up is easy to pick up. Each piece has gone most smoothly on its own branch, in its own worktree, merged after the final review. Small asks made directly in a conversation, such as fixing one bug, can skip the brief: do the work, run the checks, and put the write-up in your reply. The write-up still matters there, because How it went is how the docs improve.
 
-## Docs and decisions
+Most ambiguity is yours to decide: pick the reading the docs support best, and note it in the write-up. Two kinds are worth raising with the lead once you have looked at the task. If a choice could reasonably go the other way and would be costly to redo, a short heads-up, such as "I'm reading it as X and carrying on", lets the lead step in without needing to reply. If the task looks wrong, or a wrong guess would waste most of the work, ask, and keep working on what the answer does not affect. A lead running several agents has found one message covering everything easier to handle than a stream of them. If the piece turns out too big for one agent, say so, and the lead can split it.
 
-Docs are how one session hands its understanding to the next, so keep them true.
+If you can message the lead directly, or a person is in the conversation, ask there. Otherwise, add a `## Question for the lead` section to the brief with the question and your best guess, and carry on with the guess, so the work does not stall. If a wrong guess would waste most of the work, stop and write up what you have, with the question at the top.
 
-- **What we are building, why, and where we are** goes in `docs/overview.md`. Its *Where we are* section is a lightly held plan. Rewrite it whenever the plan changes.
-- **The core's behaviour** goes in `docs/spec/`. The spec is the contract between implementations, so it is the one place for low-level detail such as field names.
-- **A choice another builder could reasonably have made differently** goes in `docs/decisions.md`.
-- **How a plugin or library works** goes in its own README, beside its code.
+Anything you notice outside the brief goes in the write-up as a suggestion, so the lead can decide whether it becomes a piece of its own.
 
-Rewrite a state doc so it says how things are now. Add to a history doc, such as the decisions, and leave what is there as it was. When a conversation settles something, write it down before the conversation ends.
+## Docs
+
+Docs are how one session hands its understanding to the next. You can create one whenever the work needs it. Linking each new doc from `AGENTS.md`, with when to read it, is how the next session finds it. Each fact lives in one doc, and everything else links to it. flatbed has these, in the places shown:
+
+- **The overview**, in `docs/overview.md`: what we are building, why, how the parts fit together, and where we are.
+- **Decisions**, in `docs/decisions.md`: choices that outlive the piece they came from and constrain later work. A short entry with the date, what was chosen, why, and what it rules out lets the next session skim them before making a choice of its own.
+- **The stack**, in `docs/stack.md`: what flatbed is built with, how to check and run it, and tips that would have saved an earlier session time.
+- **The spec**, in `docs/spec/`: the rules every implementation follows. It is the one place for low-level detail such as field names, because three implementations must agree on it.
+- **Design notes** for a part that needs them, such as `docs/design.md` for the example app's look and `docs/codemode.md` for codemode.
+- **A README beside each plugin or library**, saying how it works.
+
+Step-by-step detail tends to live best in the code and its comments, next to what it describes.
+
+Docs that describe how things are now, such as the overview and the stack, are worth rewriting in the part that changed, so the next reader does not act on old facts. Decisions are a history, so new entries go at the bottom. This page and the writing guide are agreements the team shares, so put changes to them in your write-up as suggestions for the lead.
 
 ## Finishing a piece of work
 
-Run `scripts/check.sh` in full and fix what it finds. Commit on your branch as you go, with messages that say what changed. Then write up the piece at the bottom of its brief, in 300 words or fewer:
+Run `scripts/check.sh` and fix what it finds. Then write up the piece at the bottom of its brief, or in your reply if there is no brief, in about 300 words, so the reviewer and the lead can take it in quickly:
 
 - what changed and why
-- the choices you made that someone could have made differently
-- the commands you ran and what they printed
-- what you left out on purpose, and what is left
-- **How it went**: what slowed you down, where the docs or the spec were wrong, missing or misleading, the tool you wished you had, and what you would change about the brief or this page
+- the choices someone could have made differently
+- how you know it works, such as the commands you ran and what they printed
+- what is left
 
-## Reviewing and merging
+End with **How it went**: what went well, what slowed you down, and where the docs or the spec were wrong, missing or misleading. The lead uses it to decide what to improve next, so the more specific it is, the more useful.
 
-The lead reads every write-up and every change, and a review agent reads each wave of work before it merges, findings first. The lead fixes small findings directly and sends larger ones back.
+## Reviewing a piece of work
 
-After the merge, delete the brief, since git keeps it. Then act on *How it went*: fix a doc that misled, write a brief for a missing tool, and rewrite this page when the same trouble comes up twice.
+Anything larger than a small change, such as a one-file fix with an obvious test, gets a review from a fresh agent before the lead's final look. The reviewer is fresh so that it judges the work only by what the repo holds. When reviewers keep the codebase in good shape from the repo alone, the team can trust them, and the lead can spend less time on each change.
 
-## Habits worth trading for better ones
+As the reviewer, you have the brief, the change and the repo. Read the change against the brief and the docs, and ask whether it leaves the codebase in a good place. Fix what you are confident about directly, so the work moves on without another round. Flag what you are unsure of.
 
-- **Keep the core small.** When a feature could be a plugin, make it one. The core's size is the point of flatbed.
-- **Test what matters most.** One conformance scenario that shows a reset carries over correctly tells the next reader more than ten unit tests on helpers.
-- **Report plainly.** Say which command you ran and what it printed.
+Add your review below the builder's write-up: what you changed, what you flagged, and where the docs did not give you enough to judge. That last part shows where knowledge has not reached the repo yet, which makes it the most useful part for the lead.

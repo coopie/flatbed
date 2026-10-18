@@ -14,7 +14,7 @@ flatbed succeeds if a reader can understand the whole core in one sitting, and t
 
 **Plugins.** A plugin is a plain object with up to five hooks: adding context sections and tools when a session opens, checking a tool call before it runs, seeing a tool's result, seeing every entry, and seeing a session end. Plugins are how the core stays small.
 
-**Providers.** A provider turns flatbed's messages into one API's format and back. Each implementation has a scripted fake provider for tests and an Anthropic one; TypeScript also has an OpenAI-compatible one.
+**Providers.** A provider turns flatbed's messages into one API's format and back. Each implementation has a scripted fake provider for tests, an Anthropic one and an OpenAI-compatible one.
 
 **Plugins and libraries, in `ts/packages/`:**
 
@@ -27,34 +27,37 @@ flatbed succeeds if a reader can understand the whole core in one sitting, and t
 
 ## When you add to it
 
-Keep the session log as the one record: anything that wants to know what happened reads it. Add behaviour as a plugin unless every agent needs it. Keep the three implementations in step through the spec and the conformance suite.
+The session log is the one record of what an agent did. The supervisor reads it to check a session, and the example app reads it to show each session as the model saw it, so nothing needs a second account that could disagree with it. Behaviour that every agent needs belongs in the core and its spec. Everything else has fitted as a plugin so far, which keeps the core small enough to read in one sitting. The three implementations stay in step through the spec and the conformance suite, as [ways of working](ways-of-working/README.md) describes.
 
 ## Where we are
 
-A lightly held plan, started on 6 October 2026.
+A lightly held plan, started on 6 October 2026 and last rewritten on 18 October.
 
 **Done**
 
 - The docs and the spec.
-- The core in TypeScript, Python and Rust, each passing the same 27 conformance scenarios, with the fake and Anthropic providers and a rough CLI each; TypeScript also has an OpenAI-compatible provider. TypeScript and Python run a turn's tool calls together, at most `maxConcurrentTools` at once; Rust runs them one at a time. Python is async throughout and has passed the live check against Anthropic.
+- The core in TypeScript, Python and Rust, aligned on 18 October to one async host API ([spec/host.md](spec/host.md)). Each passes the same 37 conformance scenarios and has the fake, Anthropic and OpenAI-compatible providers and a rough CLI. Each runs a turn's tool calls together or one at a time, by the agent's `toolExecution`. Python and Rust have passed the live check against Anthropic.
 - The docs plugin: documents pinned as context, and the timeline.
 - The supervisor: the spec format, one-call and agent runners, and the guard plugin.
 - The MCP plugin, with a Python MCP server as the example, and the dispatch plugin for sub-agents.
 - The example app in `examples/assistant`, in demo mode, reviewed and fixed. Google mode and the Docker image are untested.
-- An interactive walkthrough, [walkthrough.html](walkthrough.html).
+- The codemode design, agreed by Sam on 18 October after a spike: [codemode.md](codemode.md).
+- An interactive walkthrough from the first night, [walkthrough.html](walkthrough.html).
 
 **Now**
 
-- Sam's review of the overnight build. Start with [walkthrough.html](walkthrough.html) and the entries marked *for review* in the decisions.
+- Closing the eight gaps a review of the three cores found after the alignment, with a conformance scenario for each that the suite can check.
+- Codemode in all three languages, on one shared Monty worker process.
+- Bringing these docs in line with Sam's updated starter docs.
 
 **Next**
 
-- Live checks in all three languages once there is a working key, then a real model through the example app.
-- Sam's calls on codemode, messaging, the GitHub repo, a Google web client and deploying to Cloud Run.
+- A real model through the example app.
+- Sam's calls on messaging, the GitHub repo, a Google web client and deploying to Cloud Run, and on the entries in [decisions.md](decisions.md) still marked *for review*.
+- Sam's call on which tools a codemode script may call, in [codemode.md](codemode.md).
 - A `callId` on the tool context, so the app need not match a proposal to its call by input.
 
 **Later, if it earns its place**
 
-- Codemode: the model writes a short script that calls several tools at once. See [codemode.md](codemode.md). Sam wants to look at the design first.
 - Messages to and from the assistant over WhatsApp or iMessage.
 - Finding tools progressively, a sandbox for files and code, and computer use.

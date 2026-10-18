@@ -1,8 +1,10 @@
 # Decisions
 
-Choices already made, with their reasons, so that nobody has to make them again. Add an entry when you make a choice another builder could reasonably have made differently, in about 120 words: a heading that names the choice, the date, then **Chose**, **Because** and **Rules out**, with a link to the evidence. Newest at the bottom. When a later choice replaces an entry, move the old one to `docs/decisions-archive.md`.
+Choices that outlive the piece they came from and constrain later work, with their reasons. Skimming them before you make a choice of your own saves making one twice.
 
-Entries marked *for review* were made overnight on 6 October 2026 while Sam was asleep. Sam reviews them and removes the mark.
+Each entry is about 120 words: a heading that names the choice, the date, then **Chose**, **Because** and **Rules out**, with a link to the evidence where there is one. A choice another builder could reasonably have made differently is worth an entry. The page is a history, so new entries go at the bottom and earlier ones stay as written. When a later choice replaces an entry, the new entry says which one it replaces.
+
+Entries marked *for review* were made while Sam was away, most of them overnight on 6 October 2026. The mark comes off once he has reviewed them.
 
 ## Our own session format, shaped after pi's
 
