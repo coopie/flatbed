@@ -12,21 +12,44 @@ import asyncio
 import json
 import sys
 import tempfile
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from flatbed import Agent, ContextAddition, FileStore, Plugin, Runner, StopSignal, Tool, path_of
+from flatbed import Agent, AgentConfig, ContextAddition, FileStore, Plugin, StopSignal, Tool, path_of
 from flatbed.providers import FauxProvider
 from flatbed.store import new_entry_id, new_session_id, now_iso
 
 SCENARIOS = Path(__file__).resolve().parent.parent / "conformance" / "scenarios"
 
 
-def make_tool(spec: dict[str, Any]) -> Tool:
+class Running:
+    """Counts the tool calls running at once, for `expect.maxRunning`."""
+
+    def __init__(self) -> None:
+        self.now = 0
+        self.most = 0
+
+
+def make_tool(spec: dict[str, Any], running: Running) -> Tool:
     behaviour = spec["behaviour"]
 
-    def run(tool_input: dict[str, Any], ctx: Any) -> str:
+    async def run(tool_input: dict[str, Any], ctx: Any) -> str:
+        running.now += 1
+        running.most = max(running.most, running.now)
+        try:
+            return await behave(tool_input, ctx)
+        finally:
+            running.now -= 1
+
+    async def behave(tool_input: dict[str, Any], ctx: Any) -> str:
+        if "sleep" in behaviour:
+            await asyncio.sleep(behaviour["sleep"] / 1000)
+            return behaviour["text"]
+        if "waitForStop" in behaviour:
+            await ctx.signal.wait()
+            return behaviour["waitForStop"]
         if "echo" in behaviour:
             return str(tool_input[behaviour["echo"]])
         if "text" in behaviour:
@@ -44,9 +67,9 @@ def make_tool(spec: dict[str, Any]) -> Tool:
     return Tool(name=spec["name"], description=spec["description"], input_schema=spec["inputSchema"], run=run)
 
 
-def make_plugin(scenario: dict[str, Any]) -> Plugin:
+def make_plugin(scenario: dict[str, Any], running: Running) -> Plugin:
     """The test plugin: the scenario's sections and tools, and any hooks its `plugin` field gives."""
-    tools = [make_tool(spec) for spec in scenario["tools"]]
+    tools = [make_tool(spec, running) for spec in scenario["tools"]]
     hooks = scenario.get("plugin") or {}
     before, after = hooks.get("beforeTool", {}), hooks.get("afterTool", {})
 
@@ -84,6 +107,21 @@ def abort_step(who: str) -> Any:
     return step
 
 
+def hang_step(release: asyncio.Event) -> Any:
+    """A scripted step that never answers and ignores the stop, and even its own cancellation, until the
+    scenario is over. The run ends only if the loop abandons the call."""
+
+    async def step(request: Any) -> Any:
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        return {"content": [{"type": "text", "text": "The scenario is over."}]}
+
+    return step
+
+
 def first_difference(expected: Any, actual: Any, where: str = "") -> str | None:
     """Where two JSON values first differ, as a path such as `[1].message.content`, or None."""
     if isinstance(expected, dict) and isinstance(actual, dict):
@@ -109,39 +147,54 @@ def first_difference(expected: Any, actual: Any, where: str = "") -> str | None:
 
 async def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
     """Runs one scenario and returns its first difference, or None when it passes."""
+    release = asyncio.Event()
+    try:
+        return await check_scenario(scenario, root, release)
+    finally:
+        # Let a hanging call the loop abandoned finish, so that nothing is left running.
+        release.set()
+
+
+async def check_scenario(scenario: dict[str, Any], root: Path, release: asyncio.Event) -> str | None:
     store = FileStore(root)
     spec = scenario["agent"]
-    agent = Agent(
+    running = Running()
+    config = AgentConfig(
         id="test",
         model=spec["model"],
-        plugins=[make_plugin(scenario)],
+        plugins=[make_plugin(scenario, running)],
         soft_limit=spec["softLimit"],
         hard_limit=spec["hardLimit"],
         max_tokens=spec.get("maxTokens", 8_192),
+        effort=spec.get("effort"),
+        tool_execution=spec.get("toolExecution", "concurrent"),
+        max_concurrent_tools=spec.get("maxConcurrentTools", 4),
         parent=spec.get("parent"),
     )
-    faux = FauxProvider(
-        [abort_step(step["abort"]) if "abort" in step else step for step in scenario["script"]]
-    )
-    runner = Runner(agent, store, {"faux": faux})
+    steps = []
+    for step in scenario["script"]:
+        if "abort" in step:
+            steps.append(abort_step(step["abort"]))
+        elif step.get("hang"):
+            steps.append(hang_step(release))
+        else:
+            steps.append(step)
+    faux = FauxProvider(steps)
+    agent = Agent(config, store=store, providers={"faux": faux})
     rewind_to: str | None = None
     rewind_targets: set[str] = set()
 
     for index, step in enumerate(scenario["steps"]):
         if "deliver" in step:
-            runner.deliver(step["deliver"], rewind_to)
+            agent.deliver(step["deliver"], parent_id=rewind_to)
             rewind_to = None
         elif "run" in step:
-            stop = StopSignal()
-            if "stop" in step["run"]:
-                stop.set(step["run"]["stop"])
-            outcome = await runner.run(stop)
-            if "expect" in step and outcome != step["expect"]:
-                return f"step {index} ended {outcome}, expected {step['expect']}"
+            if found := await run_step(agent, step, index):
+                return found
         elif "crash" in step:
             # Append straight to the newest session, as a crashed process would have.
-            newest = store.list("test")[-1]
-            entries = store.read("test", newest).entries
+            newest = (await store.list("test"))[-1]
+            entries = (await store.read("test", newest)).entries
             entry = {
                 "type": step["crash"]["type"],
                 "id": new_entry_id(),
@@ -149,10 +202,10 @@ async def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
                 "at": now_iso(),
             }
             entry.update(step["crash"])
-            store.append("test", newest, entry)
+            await store.append("test", newest, entry)
         elif "header" in step:
             # Only the header of a new session, as a process that stopped before its context entry left.
-            ids = store.list("test")
+            ids = await store.list("test")
             now = datetime.now(UTC)
             header: Any = {
                 "type": "session",
@@ -163,20 +216,20 @@ async def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
             }
             if ids:
                 header["parent"] = {"session": ids[-1], "reason": "reset"}
-            store.create(header)
+            await store.create(header)
         elif "rewind" in step:
-            path = path_of(store.read("test", store.list("test")[-1]).entries)
+            path = path_of((await store.read("test", (await store.list("test"))[-1])).entries)
             rewind_to = path[step["rewind"]]["id"]
             rewind_targets.add(rewind_to)
         else:
             raise ValueError(f"Unknown step {step}.")
 
     expected_sessions = scenario["expect"]["sessions"]
-    ids = store.list("test")
+    ids = await store.list("test")
     if len(ids) != len(expected_sessions):
         return f"there are {len(ids)} sessions, expected {len(expected_sessions)}"
     for number, (session_id, expected) in enumerate(zip(ids, expected_sessions, strict=True)):
-        session = store.read("test", session_id)
+        session = await store.read("test", session_id)
         if expected and "header" in expected[0]:
             want = expected[0]["header"]["parent"]
             got = session.header.get("parent")
@@ -200,11 +253,57 @@ async def run_scenario(scenario: dict[str, Any], root: Path) -> str | None:
         if found := first_difference(expected, stripped, f"session {number}"):
             return found
 
-    if "requests" in scenario["expect"]:
-        received = [request.messages for request in faux.requests]
-        if found := first_difference(scenario["expect"]["requests"], received, "requests"):
-            return found
+    expected_requests = scenario["expect"].get("requests")
+    if expected_requests is not None:
+        if len(faux.requests) != len(expected_requests):
+            return f"the model received {len(faux.requests)} requests, expected {len(expected_requests)}"
+        for number, (want, request) in enumerate(zip(expected_requests, faux.requests, strict=True)):
+            # An item is the messages alone, or an object naming the parts of the request to compare.
+            got = request_parts(request, want) if isinstance(want, dict) else request.messages
+            if found := first_difference(want, got, f"requests[{number}]"):
+                return found
+
+    if "maxRunning" in scenario["expect"] and running.most != scenario["expect"]["maxRunning"]:
+        return f"at most {running.most} tool calls ran at once, expected {scenario['expect']['maxRunning']}"
     return None
+
+
+async def run_step(agent: Agent, step: dict[str, Any], index: int) -> str | None:
+    """Runs the agent for a `run` step, with the stop it asks for, and checks the outcome."""
+    stop = StopSignal()
+    timer = None
+    if "stop" in step["run"]:
+        if "stopAfter" in step["run"]:
+            # Set from another thread, as a host may, since a stop must work from anywhere.
+            timer = threading.Timer(step["run"]["stopAfter"] / 1000, stop.set, [step["run"]["stop"]])
+            timer.start()
+        else:
+            stop.set(step["run"]["stop"])
+    expected = step.get("expect")
+    try:
+        outcome = await agent.run(stop=stop)
+    except Exception as error:
+        if isinstance(expected, dict) and str(error) == expected.get("error"):
+            return None
+        raise
+    finally:
+        if timer is not None:
+            timer.cancel()
+    if expected is not None and outcome != expected:
+        return f"step {index} ended {outcome}, expected {json.dumps(expected)}"
+    return None
+
+
+def request_parts(request: Any, want: dict[str, Any]) -> dict[str, Any]:
+    """The parts of a request the scenario names, by their spec names."""
+    parts = {
+        "messages": request.messages,
+        "sections": request.sections,
+        "tools": request.tools,
+        "maxTokens": request.max_tokens,
+        "effort": request.effort,
+    }
+    return {name: parts[name] for name in want if name in parts}
 
 
 async def main() -> int:

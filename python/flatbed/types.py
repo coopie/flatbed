@@ -8,6 +8,8 @@ TypedDicts below say which keys they carry, with the spec's own field names.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
@@ -166,8 +168,13 @@ class Plugin:
     on_session_end: Callable[[Session, PluginContext], MaybeAwaitable[object]] | None = None
 
 
+type ToolExecution = Literal["concurrent", "serial"]
+
+
 @dataclass
-class Agent:
+class AgentConfig:
+    """An agent's configuration, as docs/spec/host.md describes."""
+
     id: str
     # `<provider>/<model-name>`, such as `anthropic/claude-opus-5-5`.
     model: str
@@ -175,10 +182,11 @@ class Agent:
     soft_limit: int = 120_000
     hard_limit: int = 180_000
     max_tokens: int = 8_192
-    # How many of a turn's tool calls run at once.
-    max_concurrent_tools: int = 4
     # Passed to providers that take it, such as Anthropic's `output_config.effort`. Optional.
     effort: str | None = None
+    # How a turn's tool calls run: together, at most `max_concurrent_tools` at once, or one at a time.
+    tool_execution: ToolExecution = "concurrent"
+    max_concurrent_tools: int = 4
     # The parent of the agent's first session, such as the session that dispatched it: `session`,
     # `reason`, and optionally `entry` and `agent`, as docs/spec/sessions.md describes.
     parent: dict[str, str] | None = None
@@ -186,7 +194,7 @@ class Agent:
 
 @dataclass
 class PluginContext:
-    agent: Agent
+    agent: AgentConfig
     session: Session
     # Adds a `custom` entry to the open session now. Await it.
     append: Callable[[Entry], Awaitable[None]]
@@ -202,47 +210,74 @@ class ToolContext(PluginContext):
 
 
 class StopSignal:
-    """Set by the host to stop a run. It records who stopped it.
+    """Set by the host to stop a run, with who stopped it. The first `set` wins.
 
-    Set it from the run's event loop; from another thread, use `loop.call_soon_threadsafe`. A stop ends
-    a model call in flight at once, and otherwise takes effect at the run's next turn.
+    `set` is safe from any task or thread: it wakes every waiter on its own event loop. A stop
+    abandons a model call in flight at once, and stops a turn's calls that have not started.
     """
 
     def __init__(self) -> None:
         self.who: str | None = None
-        self._event = asyncio.Event()
+        self._lock = threading.Lock()
+        self._waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = []
 
     def set(self, who: str) -> None:
-        self.who = who
-        self._event.set()
+        with self._lock:
+            if self.who is not None:
+                return
+            self.who = who
+            waiters, self._waiters = self._waiters, []
+        for loop, future in waiters:
+            # A loop that has closed has nobody left waiting on it.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(_finish, future)
 
     @property
     def is_set(self) -> bool:
-        return self._event.is_set()
+        return self.who is not None
 
-    async def wait(self, seconds: float) -> bool:
-        """Waits up to `seconds`, and returns True as soon as the signal is set."""
+    def _when_set(self) -> asyncio.Future[None]:
+        """A future on the running loop that is done once the signal is set."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        with self._lock:
+            if self.who is None:
+                # Leave out waiters that were cancelled, so a long run does not pile them up.
+                self._waiters = [waiter for waiter in self._waiters if not waiter[1].done()]
+                self._waiters.append((loop, future))
+                return future
+        future.set_result(None)
+        return future
+
+    async def wait(self, seconds: float | None = None) -> bool:
+        """Waits until the signal is set, or up to `seconds`. Returns whether it is set."""
         try:
             async with asyncio.timeout(seconds):
-                await self._event.wait()
+                await self._when_set()
         except TimeoutError:
             return False
         return True
 
     async def unless_set[T](self, work: Awaitable[T]) -> T:
-        """Awaits `work`, but cancels it and raises `Stopped` as soon as the signal is set."""
+        """Awaits `work`, but abandons it and raises `Stopped` as soon as the signal is set, even when
+        `work` ignores its cancellation."""
         task = asyncio.ensure_future(work)
-        waiter = asyncio.ensure_future(self._event.wait())
+        when_set = self._when_set()
         try:
-            await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({task, when_set}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            waiter.cancel()
+            when_set.cancel()
             cut_short = not task.done()
             if cut_short:
                 task.cancel()
         if cut_short:
             raise Stopped(f"Stopped by {self.who}.")
         return task.result()
+
+
+def _finish(future: asyncio.Future[None]) -> None:
+    if not future.done():
+        future.set_result(None)
 
 
 class Stopped(Exception):
