@@ -392,3 +392,128 @@ async fn gathered_calls_take_turns_when_the_agent_allows_one_call_at_a_time() {
     assert_eq!(spans.len(), 2);
     assert!(spans[0].1 <= spans[1].0);
 }
+
+#[tokio::test]
+async fn a_script_cannot_pass_the_message_cap_with_a_call_or_its_value() {
+    if !has_uv() {
+        return;
+    }
+    let big = "s = 'x' * 1000000\n";
+    let s = setup(
+        &format!("{big}try:\n    await read_doc(s + s)\nexcept ValueError as e:\n    print(e)\nlen([s] * 200)"),
+        |_| {},
+        None,
+    );
+    s.agent.run(None).await.unwrap();
+    let found = entries(&s.store).await;
+    assert_eq!(
+        script_result(&found),
+        (
+            "read_doc() was given more than the 1048576-byte limit for a message.\n200".to_string(),
+            false
+        )
+    );
+    assert!(nested(&found).is_empty());
+
+    let s = setup(&format!("{big}[s] * 200"), |_| {}, None);
+    s.agent.run(None).await.unwrap();
+    assert_eq!(
+        script_result(&entries(&s.store).await),
+        (
+            "The script's result is larger than the 1048576-byte limit for a message.".to_string(),
+            true
+        )
+    );
+}
+
+#[tokio::test]
+async fn the_host_stops_at_a_line_longer_than_the_cap_and_quotes_little_of_a_bad_line() {
+    let worker = |code: &str| Some(["python3", "-c", code].map(String::from).to_vec());
+    let s = setup(
+        "1",
+        |o| {
+            o.worker =
+                worker("import time; print('x' * 2 * 1024 * 1024, flush=True); time.sleep(5)")
+        },
+        None,
+    );
+    let started = Instant::now();
+    s.agent.run(None).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(
+        script_result(&entries(&s.store).await).0,
+        "The codemode worker sent a line longer than 1048576 bytes."
+    );
+
+    let s = setup(
+        "1",
+        |o| o.worker = worker("print('x' * 100000, flush=True)"),
+        None,
+    );
+    s.agent.run(None).await.unwrap();
+    assert_eq!(
+        script_result(&entries(&s.store).await).0,
+        format!(
+            "The codemode worker sent a line that is not JSON: {}",
+            "x".repeat(200)
+        )
+    );
+}
+
+#[tokio::test]
+async fn calls_a_script_started_finish_and_are_recorded_before_run_script_returns() {
+    if !has_uv() {
+        return;
+    }
+    // The limit is 1, so the second call ends the script while the first is still running.
+    let s = setup(
+        "import asyncio\nawait asyncio.gather(slow('a'), slow('b'))",
+        |o| o.max_calls = 1,
+        None,
+    );
+    s.agent.run(None).await.unwrap();
+    let found = entries(&s.store).await;
+    assert_eq!(
+        script_result(&found),
+        (
+            "The script made more than 1 tool calls, so it was stopped.".to_string(),
+            true
+        )
+    );
+    assert_eq!(s.seen.spans.lock().unwrap().len(), 1);
+    let records: Vec<&Value> = found
+        .iter()
+        .filter_map(|e| match &e.body {
+            EntryBody::Custom { plugin, data } if plugin == "codemode" => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(records.len(), 1);
+    let call = &records[0]["call"];
+    assert_eq!(call["type"], "toolCall");
+    let id = call["id"].as_str().unwrap();
+    assert!(id.len() == 10 && id.ends_with("-1"), "{id}");
+    assert_eq!(
+        records[0]["result"],
+        json!({"content": [{"type": "text", "text": "done a"}], "isError": false})
+    );
+}
+
+#[tokio::test]
+async fn nan_and_infinity_never_reach_the_host_as_invalid_json() {
+    if !has_uv() {
+        return;
+    }
+    let s = setup(
+        "try:\n    await read_doc(float('nan'))\nexcept ValueError as e:\n    print('refused')\n[float('inf'), 1]",
+        |_| {},
+        None,
+    );
+    s.agent.run(None).await.unwrap();
+    let found = entries(&s.store).await;
+    assert_eq!(
+        script_result(&found),
+        ("refused\n[inf, 1]".to_string(), false)
+    );
+    assert!(nested(&found).is_empty());
+}

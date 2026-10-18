@@ -204,7 +204,7 @@ impl Ctx {
         let Some((turn, place)) = &self.turn else {
             return ToolResult::error("Only a tool's context can run other tools.");
         };
-        place.give_up().await;
+        place.give_up();
         let index = self.call.unwrap_or(usize::MAX);
         let result = Box::pin(turn.run_limited(&call, index)).await;
         place.take_back().await;

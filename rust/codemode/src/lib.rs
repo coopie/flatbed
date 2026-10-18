@@ -17,7 +17,8 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 pub const DEFAULT_MAX_CALLS: usize = 25;
@@ -297,21 +298,106 @@ fn joined(output: &str, last: Option<&str>) -> String {
     .join("\n")
 }
 
+/// The most bytes in one message to or from the worker, not counting its newline.
+/// docs/codemode.md explains why.
+pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+
 /// Ends the worker's process group, which holds Monty's interpreter process too.
-fn kill_group(child: &mut Child) {
-    if let Some(pid) = child.id() {
+fn kill_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
         // SAFETY: `kill` takes plain integers and has no memory effects.
         unsafe {
             libc::kill(-(pid as i32), libc::SIGKILL);
         }
     }
-    let _ = child.start_kill();
+}
+
+/// A line from the worker's stdout, as the reader saw it.
+enum Line {
+    Text(Vec<u8>),
+    TooLong,
+}
+
+/// Reads stdout a line at a time, never holding more than a line at the cap, until it closes or
+/// a line passes the cap.
+async fn read_lines(stdout: ChildStdout, lines: mpsc::Sender<Line>) {
+    let mut reader = BufReader::new(stdout);
+    loop {
+        let mut line = Vec::new();
+        // The cap, a newline, and one byte more to tell a line at the cap from a longer one.
+        let read = (&mut reader)
+            .take(MAX_MESSAGE_BYTES as u64 + 2)
+            .read_until(b'\n', &mut line)
+            .await;
+        if !matches!(read, Ok(n) if n > 0) {
+            return;
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.len() > MAX_MESSAGE_BYTES {
+            let _ = lines.send(Line::TooLong).await;
+            return;
+        }
+        if lines.send(Line::Text(line)).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Keeps the last 2,000 characters of stderr, read as they come, so that a worker that writes a
+/// lot there cannot block on a full pipe.
+async fn read_stderr(mut stderr: ChildStderr, tail: Arc<Mutex<String>>) {
+    let mut chunk = [0u8; 4096];
+    while let Ok(n) = stderr.read(&mut chunk).await {
+        if n == 0 {
+            return;
+        }
+        let mut tail = tail.lock().expect("codemode lock");
+        tail.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        if tail.len() > 2000 {
+            let mut cut = tail.len() - 2000;
+            while !tail.is_char_boundary(cut) {
+                cut += 1;
+            }
+            tail.drain(..cut);
+        }
+    }
+}
+
+/// The `result` message for a call, or an error in its place when it would pass the cap.
+fn reply(id: &str, call: &ToolCall, result: &ToolResult) -> String {
+    let line =
+        json!({"type": "result", "id": id, "text": text_of(result), "isError": result.is_error})
+            .to_string();
+    if line.len() <= MAX_MESSAGE_BYTES {
+        return line;
+    }
+    let text = format!(
+        "The result of {} is larger than the {MAX_MESSAGE_BYTES}-byte limit for a message.",
+        call.name
+    );
+    json!({"type": "result", "id": id, "text": text, "isError": true}).to_string()
+}
+
+/// The first 200 characters of a line, for an error that quotes it.
+fn quote(line: &[u8]) -> String {
+    String::from_utf8_lossy(line).chars().take(200).collect()
 }
 
 impl RunScript {
     /// Runs one script in a fresh worker process, answering its calls, until it ends or a limit
     /// ends it.
     async fn run_script(&self, script: &str, ctx: &Ctx) -> ToolResult {
+        if ctx.signal().is_set() {
+            return ToolResult::error("The harness stopped this script.");
+        }
+        let start = self.start(script).to_string();
+        if start.len() > MAX_MESSAGE_BYTES {
+            return ToolResult::error(format!(
+                "The script is too long: a message to the worker may be at most {MAX_MESSAGE_BYTES} bytes."
+            ));
+        }
         let command = self.options.worker.clone().unwrap_or_else(default_worker);
         let mut builder = Command::new(&command[0]);
         builder
@@ -340,26 +426,50 @@ impl RunScript {
             }
             Err(e) => return ToolResult::error(format!("The codemode worker failed: {e}")),
         };
+        let pid = child.id();
+        let stdin = child.stdin.take().expect("piped stdin");
+        let (line_tx, lines) = mpsc::channel(1);
+        tokio::spawn(read_lines(
+            child.stdout.take().expect("piped stdout"),
+            line_tx,
+        ));
+        let tail = Arc::new(Mutex::new(String::new()));
+        let mut stderr = tokio::spawn(read_stderr(
+            child.stderr.take().expect("piped stderr"),
+            tail.clone(),
+        ));
+
+        // The calls the host has started, which run to their end even when the script ends first.
+        let mut started = JoinSet::new();
+        let talk = Talk {
+            run_script: self,
+            ctx,
+            pid,
+            stdin,
+            lines,
+            stderr: &mut stderr,
+            tail: &tail,
+            started: &mut started,
+        };
         let result = tokio::select! {
-            result = self.talk(script, &mut child, ctx) => result,
+            result = talk.run(start) => result,
             _ = ctx.signal().wait() => ToolResult::error("The harness stopped this script."),
             _ = tokio::time::sleep(self.options.timeout) => ToolResult::error(format!(
                 "The script ran for more than {} seconds, so it was stopped.",
                 self.options.timeout.as_secs_f64()
             )),
         };
-        drop(child.stdin.take());
-        kill_group(&mut child);
+        kill_group(pid);
+        let _ = child.start_kill();
         let _ = child.wait().await;
+        stderr.abort();
+        // So that their results are recorded and the turn's limit holds, as docs/codemode.md
+        // describes.
+        while started.join_next().await.is_some() {}
         result
     }
 
-    async fn talk(&self, script: &str, child: &mut Child, ctx: &Ctx) -> ToolResult {
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
-        let mut stderr = child.stderr.take().expect("piped stderr");
-        let script_id = flatbed::ids::new_entry_id();
-
+    fn start(&self, script: &str) -> Value {
         let mut start = json!({
             "type": "start",
             "script": script,
@@ -376,82 +486,135 @@ impl RunScript {
         if let Some(time) = &self.options.start_time {
             start["startTime"] = json!(time);
         }
-        if let Err(e) = send(&mut stdin, &start).await {
-            return ToolResult::error(format!("The codemode worker failed: {e}"));
-        }
-
-        let mut calls = 0;
-        let mut answering: JoinSet<(String, ToolCall, ToolResult)> = JoinSet::new();
-        loop {
-            tokio::select! {
-                line = lines.next_line() => {
-                    let line = match line {
-                        Ok(Some(line)) => line,
-                        _ => {
-                            let mut text = String::new();
-                            let _ = stderr.read_to_string(&mut text).await;
-                            let text = text.trim();
-                            let tail = &text[text.len().saturating_sub(2000)..];
-                            let mut message = "The codemode worker ended without finishing the script.".to_string();
-                            if !tail.is_empty() {
-                                message = format!("{message}\n{tail}");
-                            }
-                            return ToolResult::error(message);
-                        }
-                    };
-                    let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                        return ToolResult::error(format!("The codemode worker sent a line that is not JSON: {line}"));
-                    };
-                    let field = |name: &str| message.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
-                    match field("type").as_str() {
-                        "done" => {
-                            let text = joined(&field("output"), message.get("value").and_then(Value::as_str));
-                            return text_result(if text.is_empty() { "The script returned nothing.".into() } else { text });
-                        }
-                        "error" => return ToolResult::error(joined(&field("output"), Some(&field("error")))),
-                        "call" => {
-                            calls += 1;
-                            if calls > self.options.max_calls {
-                                return ToolResult::error(format!(
-                                    "The script made more than {} tool calls, so it was stopped.",
-                                    self.options.max_calls
-                                ));
-                            }
-                            let id = field("id");
-                            let call = ToolCall {
-                                id: format!("{script_id}-{id}"),
-                                name: field("name"),
-                                input: message.get("input").cloned().unwrap_or(json!({})),
-                            };
-                            let (allowed, ctx) = (self.allowed.contains(&call.name), ctx.clone());
-                            // The core runs the call as it runs the model's, under the turn's
-                            // limit. A name off the allow-list is as unknown as a name nobody has.
-                            answering.spawn(async move {
-                                let result = if allowed {
-                                    ctx.run_tool(call.clone()).await
-                                } else {
-                                    ToolResult::error(format!("No tool named {}.", call.name))
-                                };
-                                (id, call, result)
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-                Some(Ok((id, call, result))) = answering.join_next() => {
-                    let data = json!({"call": call, "result": {"content": result.content, "isError": result.is_error}});
-                    let _ = ctx.append("codemode", data).await;
-                    let reply = json!({"type": "result", "id": id, "text": text_of(&result), "isError": result.is_error});
-                    if send(&mut stdin, &reply).await.is_err() {
-                        // The worker has gone; the next read says so.
-                    }
-                }
-            }
-        }
+        start
     }
 }
 
-async fn send(stdin: &mut tokio::process::ChildStdin, message: &Value) -> std::io::Result<()> {
-    stdin.write_all(format!("{message}\n").as_bytes()).await?;
+/// One script's conversation with its worker.
+struct Talk<'a> {
+    run_script: &'a RunScript,
+    ctx: &'a Ctx,
+    pid: Option<u32>,
+    stdin: ChildStdin,
+    lines: mpsc::Receiver<Line>,
+    stderr: &'a mut tokio::task::JoinHandle<()>,
+    tail: &'a Arc<Mutex<String>>,
+    started: &'a mut JoinSet<()>,
+}
+
+impl Talk<'_> {
+    async fn run(mut self, start: String) -> ToolResult {
+        let _ = send(&mut self.stdin, &start).await;
+        let (reply_tx, mut replies) = mpsc::unbounded_channel::<String>();
+        // 8 hexadecimal characters, fresh for each script.
+        let script_id = flatbed::ids::new_entry_id();
+        let options = &self.run_script.options;
+        let mut calls = 0;
+        loop {
+            let line = tokio::select! {
+                line = self.lines.recv() => line,
+                Some(reply) = replies.recv() => {
+                    // When the worker has gone, the next read says so.
+                    let _ = send(&mut self.stdin, &reply).await;
+                    continue;
+                }
+            };
+            let line = match line {
+                Some(Line::Text(line)) => line,
+                Some(Line::TooLong) => {
+                    return ToolResult::error(format!(
+                        "The codemode worker sent a line longer than {MAX_MESSAGE_BYTES} bytes."
+                    ))
+                }
+                None => return self.ended().await,
+            };
+            let Ok(message) = serde_json::from_slice::<Value>(&line) else {
+                return ToolResult::error(format!(
+                    "The codemode worker sent a line that is not JSON: {}",
+                    quote(&line)
+                ));
+            };
+            let field = |name: &str| message.get(name).and_then(Value::as_str);
+            match field("type") {
+                Some("done") => {
+                    let text = joined(field("output").unwrap_or(""), field("value"));
+                    return text_result(if text.is_empty() {
+                        "The script returned nothing.".into()
+                    } else {
+                        text
+                    });
+                }
+                Some("error") => {
+                    return ToolResult::error(joined(field("output").unwrap_or(""), field("error")))
+                }
+                Some("call") => {}
+                _ => continue,
+            }
+            let (Some(id), Some(name), Some(input)) = (
+                field("id"),
+                field("name"),
+                message.get("input").filter(|i| i.is_object()),
+            ) else {
+                return ToolResult::error(format!(
+                    "The codemode worker sent a call it cannot make: {}",
+                    quote(&line)
+                ));
+            };
+            calls += 1;
+            if calls > options.max_calls {
+                return ToolResult::error(format!(
+                    "The script made more than {} tool calls, so it was stopped.",
+                    options.max_calls
+                ));
+            }
+            let id = id.to_string();
+            let call = ToolCall {
+                id: format!("{script_id}-{id}"),
+                name: name.to_string(),
+                input: input.clone(),
+            };
+            let allowed = self.run_script.allowed.contains(&call.name);
+            let (ctx, replies) = (self.ctx.clone(), reply_tx.clone());
+            self.started.spawn(async move {
+                // The core runs the call as it runs the model's, under the turn's limit. A name
+                // off the allow-list is as unknown as a name nobody has.
+                let result = if allowed {
+                    // In a task of its own, so that a tool that panics still gets an answer, and
+                    // the script never waits for one that will not come.
+                    let (ctx, nested) = (ctx.clone(), call.clone());
+                    tokio::spawn(async move { ctx.run_tool(nested).await })
+                        .await
+                        .unwrap_or_else(|_| {
+                            ToolResult::error(format!("The {} tool panicked.", call.name))
+                        })
+                } else {
+                    ToolResult::error(format!("No tool named {}.", call.name))
+                };
+                let data = json!({
+                    "call": {"type": "toolCall", "id": call.id, "name": call.name, "input": call.input},
+                    "result": {"content": result.content, "isError": result.is_error},
+                });
+                let _ = ctx.append("codemode", data).await;
+                let _ = replies.send(reply(&id, &call, &result));
+            });
+        }
+    }
+
+    /// stdout closed before `done` or `error`. Killed first, so that a stray process holding
+    /// stderr open cannot delay the end.
+    async fn ended(self) -> ToolResult {
+        kill_group(self.pid);
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.stderr).await;
+        let tail = self.tail.lock().expect("codemode lock").trim().to_string();
+        let mut message = "The codemode worker ended without finishing the script.".to_string();
+        if !tail.is_empty() {
+            message = format!("{message}\n{tail}");
+        }
+        ToolResult::error(message)
+    }
+}
+
+async fn send(stdin: &mut ChildStdin, line: &str) -> std::io::Result<()> {
+    stdin.write_all(format!("{line}\n").as_bytes()).await?;
     stdin.flush().await
 }

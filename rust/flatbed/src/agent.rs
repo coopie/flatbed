@@ -432,7 +432,7 @@ impl Turn {
         }
         let place = Arc::new(Place {
             places: self.places.clone(),
-            state: tokio::sync::Mutex::new(PlaceState {
+            state: std::sync::Mutex::new(PlaceState {
                 permit: Some(permit),
                 waiting: 0,
                 finished: false,
@@ -440,7 +440,7 @@ impl Turn {
         });
         let ctx = Ctx::for_call(self.run.clone(), index, self.clone(), place.clone());
         let result = run_call(&self.run, &self.tools, &self.definitions, call, &ctx).await;
-        place.finish().await;
+        place.finish();
         result
     }
 }
@@ -451,7 +451,7 @@ impl Turn {
 /// place to give back, and takes none.
 pub(crate) struct Place {
     places: Arc<Semaphore>,
-    state: tokio::sync::Mutex<PlaceState>,
+    state: std::sync::Mutex<PlaceState>,
 }
 
 struct PlaceState {
@@ -461,25 +461,34 @@ struct PlaceState {
 }
 
 impl Place {
-    pub(crate) async fn give_up(&self) {
-        let mut state = self.state.lock().await;
+    pub(crate) fn give_up(&self) {
+        let mut state = self.state.lock().expect("place lock");
         state.waiting += 1;
         state.permit = None;
     }
 
-    /// Holds the lock while it waits for a place, so that a call made meanwhile sees the place
-    /// taken back and gives it up again.
+    /// Waits for a place without holding the lock, so that a call made meanwhile can give up the
+    /// place at once, and keeps it only if the tool still wants it once the place is free.
     pub(crate) async fn take_back(&self) {
-        let mut state = self.state.lock().await;
-        state.waiting -= 1;
-        if state.waiting == 0 && !state.finished {
-            let permit = self.places.clone().acquire_owned().await;
-            state.permit = Some(permit.expect("the semaphore is never closed"));
+        {
+            let mut state = self.state.lock().expect("place lock");
+            state.waiting -= 1;
+            if state.waiting > 0 || state.finished {
+                return;
+            }
+        }
+        let permit = self.places.clone().acquire_owned().await;
+        let permit = permit.expect("the semaphore is never closed");
+        let mut state = self.state.lock().expect("place lock");
+        // Otherwise the place goes back as `permit` drops: a newer call gave it up, the tool
+        // ended, or another take_back got there first.
+        if state.waiting == 0 && !state.finished && state.permit.is_none() {
+            state.permit = Some(permit);
         }
     }
 
-    async fn finish(&self) {
-        let mut state = self.state.lock().await;
+    fn finish(&self) {
+        let mut state = self.state.lock().expect("place lock");
         state.finished = true;
         state.permit = None;
     }
