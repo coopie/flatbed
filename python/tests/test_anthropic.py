@@ -46,6 +46,10 @@ class ToAnthropic(unittest.TestCase):
         self.assertEqual(body["cache_control"], {"type": "ephemeral"})  # The history.
         self.assertEqual(body["output_config"], {"effort": "low"})
 
+    def test_no_sections_leave_out_the_system_prompt(self):
+        body = to_anthropic(request(sections=[{"name": "empty", "text": ""}]))
+        self.assertNotIn("system", body)
+
     def test_a_tool_result_with_no_text_says_so(self):
         messages = [
             {

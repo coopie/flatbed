@@ -200,13 +200,13 @@ class PluginContext:
     append: Callable[[Entry], Awaitable[None]]
     # Queues an event for the next delivery point.
     deliver: Callable[[Event], None]
+    # The run's stop signal, so that a long hook or tool can stop when the run is stopped.
+    signal: StopSignal
 
 
 @dataclass
 class ToolContext(PluginContext):
     request_reset: Callable[[str | None], None] = lambda reason: None
-    # The run's stop signal, so that a long tool can stop when the run is stopped.
-    signal: StopSignal = field(default_factory=lambda: StopSignal())
 
 
 class StopSignal:
@@ -221,7 +221,7 @@ class StopSignal:
         self._lock = threading.Lock()
         self._waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = []
 
-    def set(self, who: str) -> None:
+    def set(self, who: str = "the host") -> None:
         with self._lock:
             if self.who is not None:
                 return

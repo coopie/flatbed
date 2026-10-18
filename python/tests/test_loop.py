@@ -40,16 +40,23 @@ class ConcurrentTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(most, 2)
         self.assertEqual(await tool_texts(store, "a"), [f"done {n}" for n in range(5)])
 
-    def test_a_bad_setting_fails_before_anything_is_stored(self):
+    def test_a_bad_setting_fails_at_once_in_the_words_host_md_gives(self):
         faux = FauxProvider([])
-        with self.assertRaises(ValueError):
-            Agent(
-                AgentConfig(id="a", model="faux/test", max_concurrent_tools=0),
-                store=MemoryStore(),
-                providers={"faux": faux},
-            )
-        with self.assertRaises(ValueError):
-            Agent(AgentConfig(id="a", model="none/test"), store=MemoryStore(), providers={"faux": faux})
+
+        def fails(config: AgentConfig, message: str) -> None:
+            with self.assertRaises(ValueError) as caught:
+                Agent(config, store=MemoryStore(), providers={"faux": faux})
+            self.assertEqual(str(caught.exception), message)
+
+        fails(AgentConfig(id="a", model="none/test"), "No provider named none for the model none/test.")
+        fails(
+            AgentConfig(id="a", model="faux/test", max_concurrent_tools=0),
+            "max_concurrent_tools must be at least 1, not 0.",
+        )
+        fails(
+            AgentConfig(id="a", model="faux/test", tool_execution="parallel"),  # type: ignore[arg-type]
+            "tool_execution must be concurrent or serial, not parallel.",
+        )
 
 
 class Stopping(unittest.IsolatedAsyncioTestCase):
@@ -69,9 +76,40 @@ class Stopping(unittest.IsolatedAsyncioTestCase):
         agent = Agent(AgentConfig(id="a", model="deaf/test"), store=store, providers={"deaf": Deaf()})
         agent.deliver({"kind": "message", "text": "Hello"})
 
-        self.assertEqual(await asyncio.wait_for(agent.run(stop=stop), 0.3), "stopped")
+        self.assertEqual(await asyncio.wait_for(agent.run(signal=stop), 0.3), "stopped")
         entries = (await store.read("a", (await store.list("a"))[0])).entries
         self.assertEqual(entries[-1]["text"], "Stopped by Sam.")
+
+    async def test_every_hook_sees_the_stop_and_a_stop_with_no_name_is_by_the_host(self):
+        stop = StopSignal()
+        seen: list[bool] = []
+
+        def wait(tool_input, ctx):
+            stop.set()
+            return "Stopped."
+
+        tool = Tool(name="wait", description="Stop the run.", input_schema={"type": "object"}, run=wait)
+
+        def context(ctx):
+            seen.append(ctx.signal is stop)
+            return ContextAddition(tools=[tool])
+
+        plugin = Plugin(
+            name="test", context=context, on_entry=lambda entry, ctx: seen.append(ctx.signal is stop)
+        )
+        call = {"type": "toolCall", "id": "c1", "name": "wait", "input": {}}
+        store = MemoryStore()
+        agent = Agent(
+            AgentConfig(id="a", model="faux/test", plugins=[plugin]),
+            store=store,
+            providers={"faux": FauxProvider([{"content": [call]}])},
+        )
+        agent.deliver({"kind": "message", "text": "Wait"})
+
+        self.assertEqual(await agent.run(signal=stop), "stopped")
+        self.assertTrue(len(seen) > 1 and all(seen))
+        entries = (await store.read("a", (await store.list("a"))[0])).entries
+        self.assertEqual(entries[-1]["text"], "Stopped by the host.")
 
     async def test_the_first_to_stop_is_the_one_recorded(self):
         stop = StopSignal()
