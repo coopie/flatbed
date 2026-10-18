@@ -40,7 +40,7 @@ A tool is a name, a description, an input schema and a function:
 
 - Write the description to say when to call the tool, in the voice of [writing.md](../ways-of-working/writing.md).
 - `run` may return a string, which becomes one text block with `isError: false`.
-- `ctx` is the plugin context, plus `requestReset(reason)` and `signal`, the run's stop signal, so a long tool such as a sub-agent or a remote call can stop when the run is stopped.
+- `ctx` is the plugin context, plus `requestReset(reason)`. Its `signal` lets a long tool, such as a sub-agent or a remote call, stop when the run is stopped. When several calls of a turn request a reset, the first in call order wins, as [loop.md](loop.md) describes.
 
 ## Running a tool call
 
