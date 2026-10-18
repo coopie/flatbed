@@ -41,7 +41,7 @@ function setup(script: string, options: Partial<CodemodeOptions> = {}, onSlow?: 
           name: 'send_email',
           description: 'Send an email.',
           inputSchema: { type: 'object', properties: { to: { type: 'string' } }, required: ['to'] },
-          run: (input) => void sent.push(String(input.to)) ?? 'sent',
+          run: (input) => (sent.push(String(input.to)), "sent"),
         },
       ],
     }),

@@ -26,6 +26,7 @@ class Worker:
     def __init__(self) -> None:
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.next_id = 0
+        self.running: asyncio.Future[Any] | None = None
 
     def send(self, message: dict[str, Any]) -> None:
         sys.stdout.write(json.dumps(message) + "\n")
@@ -62,10 +63,10 @@ class Worker:
                 future = self.pending.pop(str(message.get("id")), None)
                 if future is not None and not future.done():
                     future.set_result(message)
-        # The host closed stdin: nothing more will come, so the script cannot finish.
-        for future in self.pending.values():
-            if not future.done():
-                future.set_exception(RuntimeError("The host went away."))
+        # The host closed stdin, so it has gone or given up on the script. Cancelling the run closes
+        # the Monty pool, which ends its interpreter process, rather than leave a script running.
+        if self.running is not None:
+            self.running.cancel()
 
     async def run(self, start: dict[str, Any], reader: asyncio.StreamReader) -> None:
         lookup = {tool["name"]: self.tool(tool["name"], list(tool.get("params", []))) for tool in start["tools"]}
@@ -73,16 +74,24 @@ class Worker:
         if start.get("startTime"):
             policy["datetime"] = datetime.datetime.fromisoformat(start["startTime"])
         limits = {"max_memory": start.get("maxMemory") or DEFAULT_MAX_MEMORY, "max_suspensions": MAX_SUSPENSIONS}
+        if start.get("timeoutMs"):
+            # A backstop for the host's own deadline. Monty counts only time spent running the script.
+            limits["max_feed_duration_secs"] = start["timeoutMs"] / 1000
         printed = CollectString(max_bytes=MAX_OUTPUT_BYTES)
         results = asyncio.create_task(self.read_results(reader))
         try:
             # One script, one fresh session: a session that hit a limit cannot be trusted afterwards.
             async with AsyncMonty(max_processes=1) as pool, pool.checkout(limits=limits, os_policy=policy) as session:
-                value = await session.feed_run(start["script"], external_lookup=lookup, print_callback=printed)
+                self.running = asyncio.ensure_future(
+                    session.feed_run(start["script"], external_lookup=lookup, print_callback=printed)
+                )
+                value = await self.running
         except (MontyRuntimeError, MontySyntaxError) as error:
             self.send({"type": "error", "output": printed.output, "error": error.display("traceback")})
         except MontyError as error:
             self.send({"type": "error", "output": printed.output, "error": str(error)})
+        except asyncio.CancelledError:
+            return
         else:
             self.send({"type": "done", "output": printed.output, "value": describe(value)})
         finally:

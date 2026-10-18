@@ -61,6 +61,12 @@ importers:
         specifier: ^7.3.7
         version: 7.3.7(@types/node@24.19.1)
 
+  packages/codemode:
+    dependencies:
+      '@flatbed/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/core: {}
 
   packages/dispatch:

@@ -144,7 +144,8 @@ async function runScript(
 
   // An empty environment but for what `uv` needs to find itself and its cache: no keys reach the worker.
   const env = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' };
-  const child = spawn(worker.command, worker.args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  // Its own process group, so that ending it ends Monty's interpreter process too.
+  const child = spawn(worker.command, worker.args, { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   let stderr = '';
   child.stderr.on('data', (chunk) => (stderr = (stderr + chunk).slice(-2000)));
   const send = (message: object) => {
@@ -159,7 +160,8 @@ async function runScript(
       settled = true;
       clearTimeout(timer);
       ctx.signal.removeEventListener('abort', onStop);
-      child.kill('SIGKILL');
+      child.stdin.end();
+      killGroup(child.pid);
       resolve(result);
     };
     const timer = setTimeout(() => finish(text(`The script ran for more than ${timeoutMs / 1000} seconds, so it was stopped.`, true)), timeoutMs);
@@ -180,8 +182,8 @@ async function runScript(
       } catch {
         return finish(text(`The codemode worker sent a line that is not JSON: ${line.slice(0, 200)}`, true));
       }
-      if (message.type === 'done') return finish(text([message.output, message.value ?? ''].filter(Boolean).join('\n') || 'The script returned nothing.'));
-      if (message.type === 'error') return finish(text([message.output, message.error].filter(Boolean).join('\n'), true));
+      if (message.type === 'done') return finish(text(joined(message.output, message.value) || 'The script returned nothing.'));
+      if (message.type === 'error') return finish(text(joined(message.output, message.error), true));
       if (message.type !== 'call') return;
       calls += 1;
       if (calls > maxCalls) return finish(text(`The script made more than ${maxCalls} tool calls, so it was stopped.`, true));
@@ -198,10 +200,23 @@ async function runScript(
       type: 'start',
       script,
       tools: callable.map((tool) => ({ name: tool.name, params: [...params(tool).required, ...params(tool).optional] })),
+      timeoutMs,
       ...(options.maxMemory === undefined ? {} : { maxMemory: options.maxMemory }),
       ...(options.startTime === undefined ? {} : { startTime: options.startTime.toISOString() }),
     });
   });
+}
+
+/** What the script printed, then its value or error on a line of its own. */
+const joined = (output: string, last: string | null) => [output.replace(/\n$/, ''), last ?? ''].filter(Boolean).join('\n');
+
+function killGroup(pid: number | undefined) {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    // Already gone.
+  }
 }
 
 /**
