@@ -19,7 +19,8 @@ use std::sync::Arc;
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
 
-    /// When a session opens: sections and tools to add. `ctx.append` fails here, since the
+    /// When a session opens: sections and tools to add, and tools a tool may add later with
+    /// `ctx.add_tools`. `ctx.append` fails here, since the
     /// session's first entry must be its `context` entry. An error fails the run, before anything
     /// is written, with `The <plugin> plugin failed: <message>`.
     async fn context(&self, _ctx: &Ctx) -> Result<Contribution> {
@@ -52,11 +53,13 @@ pub trait Plugin: Send + Sync {
     async fn on_session_end(&self, _session: &Session, _ctx: &Ctx) {}
 }
 
-/// What a plugin's `context` hook adds to a session.
+/// What a plugin's `context` hook adds to a session. `available` tools stay out of the session
+/// until a tool adds them with `Ctx::add_tools`.
 #[derive(Default)]
 pub struct Contribution {
     pub sections: Vec<Section>,
     pub tools: Vec<Box<dyn Tool>>,
+    pub available: Vec<Box<dyn Tool>>,
 }
 
 #[async_trait]
@@ -209,6 +212,16 @@ impl Ctx {
         let result = Box::pin(turn.run_limited(&call, index)).await;
         place.take_back().await;
         result
+    }
+
+    /// Adds tools from the plugins' `available` ones to the session, after the turn's results.
+    /// Leaves out a name that is not available or a tool already in the session, and returns the
+    /// names it added. Only a tool's context can add tools; any other adds none.
+    pub fn add_tools(&self, names: &[String]) -> Vec<String> {
+        match &self.turn {
+            Some((turn, _)) => turn.add_tools(names),
+            None => Vec::new(),
+        }
     }
 
     /// Asks the loop to end the session after this turn. For tools; the core `reset` tool uses it.

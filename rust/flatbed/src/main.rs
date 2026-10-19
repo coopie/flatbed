@@ -67,7 +67,7 @@ impl Plugin for Printer {
                 text,
                 cache: Some(true),
             }],
-            tools: Vec::new(),
+            ..Contribution::default()
         })
     }
 

@@ -33,6 +33,8 @@ struct Scenario {
     #[serde(default)]
     tools: Vec<ScenarioTool>,
     #[serde(default)]
+    available: Vec<ScenarioTool>,
+    #[serde(default)]
     plugin: Hooks,
     script: Vec<ScriptStep>,
     steps: Vec<Value>,
@@ -171,10 +173,12 @@ struct Expect {
     max_running: Option<usize>,
 }
 
-/// The test plugin: the scenario's sections and tools, from its `context` hook.
+/// The test plugin: the scenario's sections and tools, and its available tools, from its
+/// `context` hook.
 struct ScenarioPlugin {
     sections: Vec<Section>,
     tools: Vec<ScenarioTool>,
+    available: Vec<ScenarioTool>,
     hooks: Hooks,
 }
 
@@ -193,13 +197,15 @@ impl Plugin for ScenarioPlugin {
             }
             None => {}
         }
+        let boxed = |tools: &[ScenarioTool]| {
+            (tools.iter())
+                .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
+                .collect()
+        };
         Ok(Contribution {
             sections: self.sections.clone(),
-            tools: self
-                .tools
-                .iter()
-                .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
-                .collect(),
+            tools: boxed(&self.tools),
+            available: boxed(&self.available),
         })
     }
 
@@ -340,6 +346,15 @@ impl ScenarioTool {
                     .collect();
                 Ok(ToolResult::text(texts.join("\n")))
             }
+            "addTools" => {
+                let names: Vec<String> = serde_json::from_value(value.clone())?;
+                let added = ctx.add_tools(&names);
+                Ok(ToolResult::text(if added.is_empty() {
+                    "none".to_string()
+                } else {
+                    added.join(", ")
+                }))
+            }
             "deliver" => {
                 ctx.deliver(serde_json::from_value(value.clone())?);
                 Ok(ToolResult::text("Delivered."))
@@ -410,13 +425,18 @@ fn agent(
         .max_concurrent_tools
         .unwrap_or(config.max_concurrent_tools);
     config.parent = given.parent.clone();
-    let tools = scenario.tools.iter().map(|tool| ScenarioTool {
-        running: running.clone(),
-        ..tool.clone()
-    });
+    let counted = |tools: &[ScenarioTool]| {
+        (tools.iter())
+            .map(|tool| ScenarioTool {
+                running: running.clone(),
+                ..tool.clone()
+            })
+            .collect()
+    };
     config.plugins.push(Box::new(ScenarioPlugin {
         sections: scenario.sections.clone(),
-        tools: tools.collect(),
+        tools: counted(&scenario.tools),
+        available: counted(&scenario.available),
         hooks: scenario.plugin.clone(),
     }));
     let providers = HashMap::from([("faux".to_string(), faux as Arc<dyn Provider>)]);
@@ -451,8 +471,9 @@ async fn run(scenario: &Scenario) -> Result<(), String> {
         .collect();
     let faux = Arc::new(Faux::new(script));
     let running = Arc::new(Running::default());
-    let agent =
-        agent(scenario, store.clone(), faux.clone(), running.clone()).map_err(|e| e.to_string())?;
+    let new_agent =
+        || agent(scenario, store.clone(), faux.clone(), running.clone()).map_err(|e| e.to_string());
+    let mut agent = new_agent()?;
 
     let mut rewind_to: Option<String> = None;
     let mut rewind_targets = Vec::new();
@@ -506,6 +527,10 @@ async fn run(scenario: &Scenario) -> Result<(), String> {
                 .append("test", &session.header.id, &entry)
                 .await
                 .map_err(|e| fail(e.to_string()))?;
+        } else if step.get("restart").is_some() {
+            // A new agent on the same store, as a new process would make, with nothing kept in
+            // memory.
+            agent = new_agent()?;
         } else if step.get("header").is_some() {
             // Only the header of a new session, as a process that stopped before its context
             // entry would leave.
