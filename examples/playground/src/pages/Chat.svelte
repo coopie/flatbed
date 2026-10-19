@@ -1,14 +1,14 @@
 <script lang="ts">
   import type { Project } from '../lib/project.svelte.ts';
   import { markdown } from '../lib/markdown.ts';
-  import { chatItems } from '../lib/view.ts';
+  import { chatItems, foldActivity, summaryOf, type ChatItem } from '../lib/view.ts';
   import Ruling from './Ruling.svelte';
 
   // The conversation, after the first message: every reply, each tool call as a short line, the
   // supervisor's rulings, and the one-click asks and a box for the visitor's own.
   let { project }: { project: Project } = $props();
   let draft = $state('');
-  const items = $derived(chatItems(project.sessions));
+  const lines = $derived(foldActivity(chatItems(project.sessions)));
   const canSend = $derived(!project.readOnly && !project.running);
 
   async function send(text: string) {
@@ -19,26 +19,55 @@
     list_docs: 'listed documents', read_doc: 'read', write_doc: 'wrote', edit_doc: 'edited', pin_doc: 'pinned',
     add_to_timeline: 'added to the timeline:', fetch_page: 'fetched', reset: 'reset the session',
   };
+  // One mark per line in a folded run, so what happened inside shows at a glance.
+  const mark: Record<string, string> = {
+    fetch_page: '↓', read_doc: '◦', list_docs: '≡', write_doc: '✎', edit_doc: '✎', pin_doc: '▪', add_to_timeline: '·',
+  };
+  const markOf = (item: ChatItem) =>
+    item.kind === 'ruling' ? '✓' : item.kind === 'tool' ? (item.isError ? '✗' : (mark[item.name] ?? '•')) : '•';
 </script>
+
+{#snippet quiet(item: ChatItem)}
+  {#if item.kind === 'tool'}
+    <div class="tool" class:failed={item.isError}>
+      <details>
+        <summary>{verb[item.name] ?? item.name} {item.target}{item.isError ? ' (refused or failed)' : ''}</summary>
+        <pre>{item.result}</pre>
+      </details>
+    </div>
+  {:else if item.kind === 'ruling'}
+    <div class="ruling"><Ruling ruling={item.ruling} example={project.example} /></div>
+  {:else if item.kind === 'agent'}
+    <p class="tool narration">{item.text}</p>
+  {/if}
+{/snippet}
 
 <div class="chat">
   <ol class="plain log">
     <li class="agent"><p class="label">agent</p><div class="md">{@html markdown(project.template.opening)}</div></li>
-    {#each items as item, i (i)}
-      {#if item.kind === 'visitor'}
-        <li class="visitor"><p class="label">you</p><pre>{item.text}</pre></li>
-      {:else if item.kind === 'agent'}
-        <!-- markdown() escapes the reply before it adds its own tags, so no HTML from the model reaches the page. -->
-        <li class="agent"><p class="label">agent</p><div class="md">{@html markdown(item.text)}</div></li>
-      {:else if item.kind === 'tool'}
-        <li class="tool" class:failed={item.isError}>
+    {#each lines as item, i (i)}
+      {#if item.kind === 'activity'}
+        <li class="tool activity">
           <details>
-            <summary>{verb[item.name] ?? item.name} {item.target}{item.isError ? ' (refused or failed)' : ''}</summary>
-            <pre>{item.result}</pre>
+            <summary>
+              <span>{summaryOf(item)}</span>
+              <span class="marks" aria-hidden="true">{#each item.items.filter((inner) => inner.kind !== 'agent') as inner}<span class:failed={inner.kind === 'tool' && inner.isError}>{markOf(inner)}</span>{/each}</span>
+              <span class="rule"></span>
+            </summary>
+            <ol class="plain inner">
+              {#each item.items as inner, j (j)}
+                <li>{@render quiet(inner)}</li>
+              {/each}
+            </ol>
           </details>
         </li>
-      {:else if item.kind === 'ruling'}
-        <li class="ruling"><Ruling ruling={item.ruling} example={project.example} /></li>
+      {:else if item.kind === 'visitor'}
+        <li class="visitor"><p class="label">you</p><pre>{item.text}</pre></li>
+      {:else if item.kind === 'agent' && !item.narration}
+        <!-- markdown() escapes the reply before it adds its own tags, so no HTML from the model reaches the page. -->
+        <li class="agent"><p class="label">agent</p><div class="md">{@html markdown(item.text)}</div></li>
+      {:else if item.kind === 'tool' || item.kind === 'ruling' || item.kind === 'agent'}
+        <li>{@render quiet(item)}</li>
       {:else if item.kind === 'notice'}
         <li class="tool"><span class="label">harness</span> {item.text}</li>
       {:else if item.kind === 'reset'}
@@ -86,7 +115,15 @@
   .md :global(a) { color: var(--t-accent); }
   .tool { font-size: 0.8rem; color: var(--t-muted); font-family: var(--mono); padding-inline: 14px; }
   .tool pre { margin-top: 6px; max-height: 18em; overflow: auto; border-left: 2px solid var(--t-line); padding-left: 10px; }
-  .failed summary { color: var(--t-accent); }
+  .failed summary, .marks .failed { color: var(--t-accent); }
+  .activity summary { display: flex; align-items: center; gap: 10px; cursor: var(--hand); list-style: none; }
+  .activity summary::-webkit-details-marker { display: none; }
+  .activity details[open] > summary > span:first-child { color: var(--t-fg); }
+  .marks { display: flex; gap: 4px; flex-shrink: 0; }
+  .rule { flex: 1; border-top: 1px solid var(--t-line); }
+  .inner { display: grid; gap: 6px; margin-top: 8px; border-left: 2px solid var(--t-line); padding-left: 10px; }
+  .inner .tool { padding-inline: 0; }
+  .narration { font-family: var(--t-body); font-style: italic; }
   .working { animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.4; } }
   .compose { display: grid; gap: 8px; }

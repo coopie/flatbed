@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Session } from '@flatbed/core';
-import { facts, steps } from './view.ts';
+import { facts, foldActivity, steps, summaryOf, type Activity } from './view.ts';
 
 const call = (name: string, input: Record<string, unknown>) => ({ type: 'toolCall', id: name, name, input });
 const session = (...calls: ReturnType<typeof call>[]) =>
@@ -23,4 +23,23 @@ test('a fact keeps its page apart from its text', () => {
     { text: 'Founded in 2019 in Leeds', source: 'sources/acme-about' },
     { text: 'Customers: not stated' },
   ]);
+});
+
+test('three or more quiet lines fold into one, and a refused ruling stays in view', () => {
+  const tool = (name: string) => ({ kind: 'tool' as const, name, target: '', isError: false, result: '' });
+  const ruling = (refused: boolean) => ({
+    kind: 'ruling' as const,
+    ruling: { session: 's', at: 't', record: { mode: 'enforce' as const, refused, verdict: { status: 'given', spec: 'x', items: { a: { analysis: '', ok: !refused } }, summary: '', model: 'm', usage: { input: 0, output: 0 } } } },
+  });
+  const lines = foldActivity([
+    { kind: 'visitor', text: 'hi' },
+    tool('fetch_page'), { kind: 'agent', text: 'Now the pricing page.', narration: true }, tool('fetch_page'), tool('write_doc'), ruling(false),
+    ruling(true),
+    tool('write_doc'), tool('read_doc'),
+    { kind: 'agent', text: 'done' },
+  ] as never);
+  assert.deepEqual(lines.map((l) => l.kind), ['visitor', 'activity', 'ruling', 'tool', 'tool', 'agent']);
+  const activity = lines[1] as Activity;
+  assert.equal(activity.items.length, 5);
+  assert.equal(summaryOf(activity), 'did four things');
 });

@@ -10,7 +10,7 @@ export type Ruling = { session: string; at: string; call?: ToolCall; record: Gua
 
 export type ChatItem =
   | { kind: 'visitor'; text: string }
-  | { kind: 'agent'; text: string }
+  | { kind: 'agent'; text: string; narration?: boolean }
   | { kind: 'tool'; name: string; target: string; isError: boolean; result: string }
   | { kind: 'ruling'; ruling: Ruling }
   | { kind: 'notice'; text: string }
@@ -32,8 +32,11 @@ export function chatItems(sessions: Session[]): ChatItem[] {
       else if (entry.type === 'event' && entry.kind === 'notice') items.push({ kind: 'notice', text: entry.text });
       else if (entry.type === 'event' && entry.kind === 'reveal') items.push({ kind: 'notice', text: `You revealed ${entry.attrs?.folder ?? 'a sealed folder'}, and the agent was given its documents.` });
       else if (entry.type === 'message' && entry.message.role === 'assistant') {
+        // Text in a reply that also calls tools is the agent narrating its work, such as "Now let me
+        // read the pricing page"; only a reply with no calls is the agent answering the visitor.
+        const narration = entry.message.content.some((block) => block.type === 'toolCall');
         for (const block of entry.message.content) {
-          if (block.type === 'text' && block.text.trim() !== '') items.push({ kind: 'agent', text: block.text.trim() });
+          if (block.type === 'text' && block.text.trim() !== '') items.push({ kind: 'agent', text: block.text.trim(), ...(narration ? { narration } : {}) });
           if (block.type === 'toolCall') calls.set(block.id, block);
         }
       } else if (entry.type === 'message' && entry.message.role === 'tool') {
@@ -49,6 +52,49 @@ export function chatItems(sessions: Session[]): ChatItem[] {
   }
   return items;
 }
+
+/** A stretch of quiet lines between two messages, folded to one. */
+export type Activity = { kind: 'activity'; items: Extract<ChatItem, { kind: 'tool' } | { kind: 'ruling' } | { kind: 'agent' }>[] };
+export type ChatLine = ChatItem | Activity;
+
+/**
+ * Folds every run of three or more quiet lines, the tool calls, the agent's narration between them and
+ * the rulings that passed, into
+ * one line, "did six things", as Otherworldly's chat does, so the conversation stays short. A
+ * ruling that refused or failed anything ends a run and stays in view, since the supervisor catching something is what a
+ * visitor should not miss. Two lines read shorter as two, so they stay as they are.
+ */
+export function foldActivity(items: ChatItem[]): ChatLine[] {
+  const lines: ChatLine[] = [];
+  let run: Activity['items'] = [];
+  const flush = () => {
+    if (run.length >= 3) lines.push({ kind: 'activity', items: run });
+    else lines.push(...run);
+    run = [];
+  };
+  for (const item of items) {
+    const quiet = item.kind === 'tool' || (item.kind === 'agent' && item.narration === true) || (item.kind === 'ruling' && passed(item.ruling));
+    if (quiet) run.push(item as Activity['items'][number]);
+    else {
+      flush();
+      lines.push(item);
+    }
+  }
+  flush();
+  return lines;
+}
+
+/** A ruling where every check passed: one with any failed item, or none at all, stays in view. */
+const passed = (ruling: Ruling): boolean =>
+  !ruling.record.refused && ruling.record.verdict.status === 'given' && Object.values(ruling.record.verdict.items).every((item) => item.ok);
+
+const WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve'];
+
+/** The one line a run folds to. */
+export const summaryOf = (activity: Activity): string => {
+  const things = activity.items.filter((item) => item.kind !== 'agent').length;
+  return `did ${WORDS[things] ?? things} things`;
+};
 
 export function rulings(sessions: Session[]): Ruling[] {
   return chatItems(sessions).flatMap((item) => (item.kind === 'ruling' ? [item.ruling] : []));
