@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Project } from '../lib/project.svelte.ts';
+  import { markdown } from '../lib/markdown.ts';
   import { chatItems } from '../lib/view.ts';
   import Ruling from './Ruling.svelte';
 
@@ -22,12 +23,13 @@
 
 <div class="chat">
   <ol class="plain log">
-    <li class="agent"><p class="label">agent</p><pre>{project.template.opening}</pre></li>
+    <li class="agent"><p class="label">agent</p><div class="md">{@html markdown(project.template.opening)}</div></li>
     {#each items as item, i (i)}
       {#if item.kind === 'visitor'}
         <li class="visitor"><p class="label">you</p><pre>{item.text}</pre></li>
       {:else if item.kind === 'agent'}
-        <li class="agent"><p class="label">agent</p><pre>{item.text}</pre></li>
+        <!-- markdown() escapes the reply before it adds its own tags, so no HTML from the model reaches the page. -->
+        <li class="agent"><p class="label">agent</p><div class="md">{@html markdown(item.text)}</div></li>
       {:else if item.kind === 'tool'}
         <li class="tool" class:failed={item.isError}>
           <details>
@@ -78,7 +80,16 @@
   .agent, .visitor { padding: 12px 14px; border: 1px solid var(--t-line); }
   .visitor { margin-left: 12%; background: color-mix(in srgb, var(--t-accent) 7%, transparent); }
   .agent { margin-right: 12%; }
-  .agent pre, .visitor pre { font-family: var(--t-body); line-height: 1.55; }
+  .agent .md, .visitor pre { font-family: var(--t-body); line-height: 1.55; }
+  .md { overflow-wrap: anywhere; }
+  .md :global(:is(p, ul, ol, blockquote, h4, h5, h6) + :is(p, ul, ol, blockquote, h4, h5, h6)) { margin-top: 0.7em; }
+  .md :global(:is(ul, ol)) { padding-left: 1.3em; }
+  .md :global(ul) { list-style: disc; }
+  .md :global(ol) { list-style: decimal; }
+  .md :global(blockquote) { border-left: 2px solid var(--t-line); padding-left: 10px; color: var(--t-muted); }
+  .md :global(:is(h4, h5, h6)) { font-size: 1em; font-weight: 600; }
+  .md :global(code) { font: 0.9em var(--mono); }
+  .md :global(a) { color: var(--t-accent); }
   .tool { font-size: 0.8rem; color: var(--t-muted); font-family: var(--mono); padding-inline: 14px; }
   .tool pre { margin-top: 6px; max-height: 18em; overflow: auto; border-left: 2px solid var(--t-line); padding-left: 10px; }
   .failed summary { color: var(--t-accent); }

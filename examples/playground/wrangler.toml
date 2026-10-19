@@ -13,12 +13,18 @@ run_worker_first = ["/api/*"]
 
 [vars]
 # The day's budget in dollars. At about $0.01 to $0.03 a turn, $10 is several hundred turns.
+# Anything but a positive number, or leaving it out, keeps the playground read-only.
 DAILY_BUDGET_USD = "10"
 
-[[kv_namespaces]]
-binding = "BUDGET"
-# Replace with the id `wrangler kv namespace create BUDGET` prints, before the first deploy.
-id = "00000000000000000000000000000000"
+# The day's spend, kept by one Durable Object (worker/budget.ts) so that checking the budget and
+# adding to it happen in one step. SQLite-backed, which the free plan allows.
+[[durable_objects.bindings]]
+name = "BUDGET"
+class_name = "Budget"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Budget"]
 
 [[ratelimits]]
 name = "LIMITER"

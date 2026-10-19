@@ -41,9 +41,9 @@
     {
       "id": "tone_matches_voice_guide",
       "title": "Sounds like the company",
-      "lookFor": "Compare the draft's register with `notes/voice-guide`, from the context or the session, and with how the `sources/` pages are written. Ok means a reader of the company's site would find it believable as the company's own writing: the same formality, the same way of referring to itself, no words the guide says it avoids. A plain, short draft passes. When there is no voice guide in the session, judge against the pages alone. Name the mismatch, such as \"The guide says the company writes short, informal sentences; the draft is formal and uses 'leverage' three times\".",
+      "lookFor": "Compare the draft's register with `notes/voice-guide`, from the context or the session, and with how the `sources/` pages are written. Ok means a reader of the company's site would find it believable as the company's own writing: the same formality, the same way of referring to itself, no words the guide says it avoids. The site this draft is shown on sets no em dashes (the long dash, \u2014), so fail a draft that uses one and quote it. A plain, short draft passes. When there is no voice guide in the session, judge against the pages alone. Name the mismatch, such as \"The guide says the company writes short, informal sentences; the draft is formal and uses 'leverage' three times\".",
       "severity": "warn",
-      "guidance": "Reread notes/voice-guide and match its register: formality, sentence length, and how the company refers to itself."
+      "guidance": "Reread notes/voice-guide and match its register: formality, sentence length, and how the company refers to itself. Replace each em dash with a comma, a colon or a full stop."
     }
   ]
 }

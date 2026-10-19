@@ -34,28 +34,56 @@ function rolePlugin(template: Template): Plugin {
   return { name: 'role', context: () => ({ sections: [{ name: 'role', text }] }) };
 }
 
+/** The text of everything in a session that can hold a whole document: context sections, tool results and events. */
+function sessionText(entries: readonly Entry[]): string {
+  const parts: string[] = [];
+  for (const entry of entries) {
+    if (entry.type === 'context') parts.push(...entry.sections.map((s) => s.text));
+    else if (entry.type === 'event') parts.push(entry.text);
+    else if (entry.type === 'message' && entry.message.role === 'tool') {
+      for (const block of entry.message.content) if (block.type === 'text') parts.push(block.text);
+    }
+  }
+  return parts.join('\n');
+}
+
 /**
  * The guard on reviewed folders. The supervisor makes one call and sees only the agent's session,
- * so it also gets the document as the write would leave it, and every document in the template's
- * read and sealed folders: the facts a notice must match, the pages a press release rests on, or
- * the sealed solution a casebook must not give away.
+ * so it also gets the document as the write would leave it, and every document in the folders the
+ * agent can see: the facts a chapter must match, the pages a press release rests on, and the notes
+ * and chapters written before a reset, which the session no longer shows.
+ *
+ * A sealed folder is left out until the visitor reveals it. The supervisor's analysis is shown to
+ * the agent and the visitor, so a supervisor that could read the solution could give it away in
+ * explaining a refusal, and no instruction makes that safe. Without it the casebook's spoiler check
+ * judges what the evidence found so far supports, which the agent, who cannot see the solution
+ * either, cannot get past by guessing.
+ *
+ * A document whose text is already in the session, such as a page `fetch_page` just returned, is
+ * not sent twice, which keeps a full press session's supervisor call under the Worker's cap.
  */
-function reviewGuard(deps: AgentDeps): Plugin {
+function reviewGuard(deps: AgentDeps, folders: () => Template['folders']): Plugin {
   const { template, docs } = deps;
-  const evidence = new Set(template.folders.filter((f) => f.mode === 'read' || f.mode === 'sealed').map((f) => f.path));
+  const single = singlePass({ complete: (request) => deps.provider.complete(request), model: MODEL, maxTokens: 4096 });
   return supervisorGuard({
     mode: deps.reviewMode ?? 'enforce',
-    supervise: singlePass({ complete: (request) => deps.provider.complete(request), model: MODEL, maxTokens: 4096 }),
+    supervise: (input) => {
+      const seen = sessionText(input.entries);
+      const references = (input.references ?? []).filter((r, i) => i === 0 || !seen.includes(r.text));
+      return single({ ...input, references });
+    },
     specs: (call) => {
       const target = writeTarget(call);
       const folder = target === undefined ? undefined : folderOf(template.folders, target);
       return folder?.mode === 'reviewed' ? template.specs[folder.path] : undefined;
     },
     references: async (call) => {
+      const visible = new Set(folders().filter((f) => f.mode !== 'sealed').map((f) => f.path));
       const after = await afterWrite(docs, call);
-      const material = (await docs.list()).filter((d) => evidence.has(folderOf(template.folders, d.name)?.path ?? ''));
+      const material = (await docs.list()).filter((d) => d.name !== after?.name && visible.has(folderOf(template.folders, d.name)?.path ?? ''));
+      // The first reference is always sent: it is what the check is about.
       return [
-        ...(after ? [{ name: `${after.name}, as this call would leave it`, text: renderDoc(after) }] : []),
+        { name: after ? `${after.name}, as this call would leave it` : 'the write', text: after ? renderDoc(after) : 'The write names no document.' },
         ...material.map((d) => ({ name: d.name, text: renderDoc(d) })),
       ];
     },
@@ -70,14 +98,16 @@ export function templateAgent(deps: AgentDeps): Agent {
   const plugins: Plugin[] = [
     rolePlugin(template),
     docsPlugin({ store: docs, seeds: template.seeds, folders }),
-    reviewGuard(deps),
+    reviewGuard(deps, folders),
     { name: 'app-tools', context: () => ({ tools }) },
     { name: 'watch', onEntry: (entry) => deps.onEntry?.(entry) },
   ];
   return createAgent(
     // Limits well under Haiku's window, since every call re-sends the session and the day's budget
-    // is small. The agent writes its notes and resets when the soft limit's notice comes.
-    { id: AGENT_ID, model: `anthropic/${MODEL}`, plugins, maxTokens: 4096, softLimit: 60_000, hardLimit: 100_000 },
+    // is small. The agent writes its notes and resets when the soft limit's notice comes. A
+    // supervisor call carries the session and its references, so the hard limit is set to keep that
+    // under the Worker's 512 KB request cap (worker/api.ts) with six fetched pages in the session.
+    { id: AGENT_ID, model: `anthropic/${MODEL}`, plugins, maxTokens: 4096, softLimit: 40_000, hardLimit: 60_000 },
     { store: deps.store, providers: { anthropic: deps.provider } },
   );
 }
