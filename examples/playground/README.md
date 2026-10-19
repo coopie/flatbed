@@ -49,7 +49,7 @@ node scripts/record.ts holmes --then "Have Watson write up the attic visit as th
 node scripts/record.ts press --ask https://example.com --shadow
 ```
 
-It runs the template's agent in memory, through the local Worker, sends the answer to `ask` when the template has one and then its three prompts, and saves `recordings/<template>.json`. `--then` adds messages after the prompts, `--prompts <n>` sends only the first few, `--reveal` opens the sealed folders before the last message, and `--shadow` records the supervisor's verdicts without refusing, which is the way to try a new spec. Read the recording on the site before you commit it: a recording is what visitors see when the budget is gone. A run costs a few cents.
+It runs the template's agent in memory, through the local Worker, sends the answer to `ask` when the template has one and then its three prompts, and saves `recordings/<template>.json`. `--then` adds messages after the prompts, `--prompts <n>` sends only the first few, `--reveal` opens the sealed folders before the last message, and `--shadow` records the supervisor's verdicts without refusing, which is the way to try a new spec. Read the recording on the site before you commit it: a recording is what visitors see when the budget is gone. A run costs a few cents, and the script ends by saying how many model calls it made, the supervisor's included.
 
 ## Screenshots
 

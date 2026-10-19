@@ -339,8 +339,12 @@ const decode = (s: string) =>
 // `[^<>]` rather than `[^>]`, so a run of `<` with no `>` costs one pass and not one per `<`.
 const oneLine = (s: string) => decode(s.replace(/<[^<>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 
-/** Elements left out with everything inside them, from the open tag to the first close tag. */
-const SKIPPED = new Set(['script', 'style', 'noscript', 'svg', 'template', 'title', 'head', 'nav', 'header', 'footer', 'form', 'iframe']);
+/**
+ * Elements left out with everything inside them, from the open tag to the first close tag. `<head>`
+ * is not among them, since its title and meta description are read on the way past; it holds no
+ * text of its own once scripts, styles and the title are gone.
+ */
+const SKIPPED = new Set(['script', 'style', 'noscript', 'svg', 'template', 'title', 'nav', 'header', 'footer', 'form', 'iframe']);
 const LINE_AFTER = new Set(['br', '/p', '/div', '/li', '/tr', '/section', '/article', '/ul', '/ol', '/blockquote']);
 const attr = (tag: string, name: string) => tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1];
 

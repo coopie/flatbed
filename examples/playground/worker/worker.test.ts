@@ -219,8 +219,8 @@ test('a page fetch returns text, and a redirect to a private address is refused'
 });
 
 test('page text keeps headings, list items and links, and leaves out navigation', () => {
-  const html = '<title> A  B </title><meta name="description" content="About us"><nav><a href="/x">Nav</a></nav>' +
-    '<main><h1>One</h1><p>Two <a href="/pricing">Pricing</a></p><ul><li>Three</li></ul><a href="/f.pdf">PDF</a></main><footer>Foot</footer>';
+  const html = '<html><head><title> A  B </title><meta name="description" content="About us"><style>p{}</style></head><body><nav><a href="/x">Nav</a></nav>' +
+    '<main><h1>One</h1><p>Two <a href="/pricing">Pricing</a></p><ul><li>Three</li></ul><a href="/f.pdf">PDF</a></main><footer>Foot</footer></body></html>';
   const page = pageText(html, 'https://example.com/');
   assert.equal(page.title, 'A B');
   assert.equal(page.description, 'About us');

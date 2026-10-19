@@ -29,6 +29,10 @@ if (id === undefined) throw new Error('Name a template, such as: node scripts/re
 const template = parseTemplate(await readTemplateFiles(id));
 if (template.ask !== null && values.ask === undefined) throw new Error(`${id} asks for "${template.ask.label}"; give it with --ask.`);
 
+// Every model call, the supervisor's included, goes through this provider, so it counts them.
+const base = anthropicProvider({ apiKey: 'held-by-the-worker', baseUrl: `${values.base}/api/complete` });
+let calls = 0;
+const provider: typeof base = { ...base, complete: (request) => (calls++, base.complete(request)) };
 const store = memoryStore();
 const docs = memoryDocStore();
 const unsealed = new Set<string>();
@@ -36,7 +40,7 @@ const agent = templateAgent({
   template,
   store,
   docs,
-  provider: anthropicProvider({ apiKey: 'held-by-the-worker', baseUrl: `${values.base}/api/complete` }),
+  provider,
   unsealed: () => unsealed,
   reviewMode: values.shadow ? 'shadow' : 'enforce',
   fetchPage: (url) => fetch(`${values.base}/api/fetch?url=${encodeURIComponent(url)}`),
@@ -62,4 +66,4 @@ for (const [i, message] of messages.entries()) {
 }
 const snap = await snapshot(template.id, AGENT_ID, store, docs, [...unsealed]);
 await writeFile(new URL(`../recordings/${template.id}.json`, import.meta.url), `${JSON.stringify(snap)}\n`);
-console.log(`Saved recordings/${template.id}.json: ${snap.sessions.length} sessions, ${snap.docs.length} documents.`);
+console.log(`Saved recordings/${template.id}.json: ${snap.sessions.length} sessions, ${snap.docs.length} documents, ${calls} model calls.`);
