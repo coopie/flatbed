@@ -6,7 +6,7 @@ A plugin is how anything beyond the loop joins an agent: documents, supervision,
 
 A plugin is a plain object with a `name` and any of five hooks. Every hook is async, as everything in the core is; TypeScript and Python also accept a hook or tool that returns a plain value.
 
-- **`context(ctx)`**, when a session opens. Returns sections and tools to add. Sections from all plugins are joined in plugin order. When it throws, the run fails before writing anything, with the error `The <plugin> plugin failed: <message>`.
+- **`context(ctx)`**, when a session opens. Returns sections and tools to add, and optionally `available`: tools the plugin can add later in the session, which stay out of the context until a tool adds them, as "Tools that join a session" below describes. Sections from all plugins are joined in plugin order. When it throws, the run fails before writing anything, with the error `The <plugin> plugin failed: <message>`.
 - **`beforeTool(call, ctx)`**, before a tool call runs. Returns nothing to let it run, or a result to use instead, such as a refusal or a note that the call is waiting for a person. The first plugin that returns a result wins, and the tool does not run.
 - **`afterTool(call, result, ctx)`**, after a tool call runs or is replaced. May return a changed result, such as one with secrets redacted. Results pass through plugins in order.
 - **`onEntry(entry, ctx)`**, after every entry is appended. For watching, such as streaming to a page or writing a timeline. Its return value is ignored, and so is an error it throws, so that a watcher can never leave a turn's results half written.
@@ -67,6 +67,14 @@ A tool's `ctx` also has `runTool(call)`, for a tool that calls other tools on th
 Calls made with `runTool` share the turn's limit of `maxConcurrentTools` with the model's own calls, so a turn never runs more calls at once than its agent allows. While a tool waits for a call it made with `runTool`, it gives up its own place under the limit and takes one back before it carries on, so a tool that calls others can never wait on a place it is holding itself.
 
 A call made with `runTool` shares its caller's `requestReset`. Once the stop is set, a nested call that has not started gets `The harness stopped before this tool ran.`, as a direct call does. A tool that ends while calls it made are still running takes no place back.
+
+## Tools that join a session
+
+A tool's `ctx` also has `addTools(names)`, for a tool that gives the agent more tools as it works, such as one that connects a group of tools on request. Each name must be one of the `available` tools a plugin's `context` hook returned; a name that is not, or a tool already in the session, is left out, and `addTools` returns the names it added.
+
+The tools join after the turn's results are appended. The loop appends a new `context` entry, with the same sections and the session's tools followed by the added ones, in the order asked, and the run's frozen context becomes that entry, so the next model call can use them. Since the provider caches the tools first, the call after the change pays once to read the session again.
+
+Added tools last until the session ends. The next session opens from the plugins' `context` hooks as always, without them. When a run resumes a session that an earlier process opened, the loop finds the code for every tool in the latest `context` entry among the `tools` and `available` the hooks return.
 
 ## Tools in other languages
 
