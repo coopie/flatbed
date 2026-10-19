@@ -36,7 +36,7 @@ A lightly held plan, started on 6 October 2026 and last rewritten on 18 October.
 **Done**
 
 - The docs and the spec, with the docs brought in line with Sam's updated starter docs on 18 October.
-- The core in TypeScript, Python and Rust, aligned on 18 October to one async host API ([spec/host.md](spec/host.md)). Each passes the same 49 conformance scenarios and has the fake, Anthropic and OpenAI-compatible providers and a rough CLI. Each runs a turn's tool calls together or one at a time, by the agent's `toolExecution`, and gives tools `ctx.runTool` to run other calls under the same limit, and `ctx.addTools` to add a plugin's `available` tools to the session until it resets, from 19 October. All three have passed the live check against Anthropic.
+- The core in TypeScript, Python and Rust, aligned on 18 October to one async host API ([spec/host.md](spec/host.md)). Each passes the same 50 conformance scenarios and has the fake, Anthropic and OpenAI-compatible providers and a rough CLI. Each runs a turn's tool calls together or one at a time, by the agent's `toolExecution`, and gives tools `ctx.runTool` to run other calls under the same limit, and `ctx.addTools` to add a plugin's `available` tools to the session until it resets, from 19 October. All three have passed the live check against Anthropic.
 - The docs plugin: documents pinned as context, and the timeline.
 - The supervisor: the spec format, one-call and agent runners, and the guard plugin.
 - The MCP plugin, with a Python MCP server as the example, and the dispatch plugin for sub-agents.

@@ -30,3 +30,17 @@ Work for at most 90 minutes, and write up what you have when you reach it. Sam i
 **What is left.** Nothing in the brief. Parker can now return `available` from its toolbelt plugin.
 
 **How it went.** The brief and the lead's spec section were clear enough that the design took minutes, and the three cores' similar shapes made porting quick. The one gap was the restart scenario: the suite had no way to make a new process, so I added the step. The overview still said 46 scenarios, which I updated. A suggestion: conformance.md could say which steps a scenario needs to show "a new process", so the next brief that asks for one does not need a spec change.
+
+## Review
+
+**What is good.** The change is small and reads the same in all three cores: one queue of added tools per run, one new `context` entry after the turn's results, and the resume lookup widened to `available`. It follows the lead's spec closely, and the spec additions the builder made (the `restart` step, the shared namespace, the two lines in loop.md) are the ones the feature needed. The three scenarios cover every point in the brief, and 47 packs the edge cases (missing name, present tool, repeat, a second call that adds nothing) into one readable run.
+
+**What I changed.** The write-up added a rule to plugins.md, that an available tool sharing a name with any other tool fails the run, but no scenario showed it, so the three cores could drift there unseen. I added `conformance/scenarios/50-available-tool-shares-a-name.json`, a copy of "two tools share a name" with the second `echo` offered as `available`. All three pass it without code changes. The overview now says 50 scenarios. `scripts/check.sh ts`, `python` and `rust` all exit 0, with 50 scenarios `ok` in each.
+
+**What I flagged.**
+
+- Outside a tool's context, Python's `add_tools` raises and Rust's returns nothing. The write-up names this, and it mirrors `run_tool` in each, so I left it. The spec says only a tool's `ctx` has `addTools`, so neither is wrong, but the suite cannot see the difference.
+- Codemode builds the list of tools a script may call when the session opens, so a script cannot call a tool that joined later. That fits the spec, since added tools join after the turn, but Parker's toolbelt may want added tools callable from scripts. A suggestion for its own piece, if it matters.
+- The spec does not say what happens when a resumed session names an added tool whose plugin no longer offers it. All three give `No tool named <name>.`, the same as for any missing tool, which seems right.
+
+**Where the docs did not give me enough.** Nothing blocked me. The ways-of-working page and the spec section were enough to judge the change. The one place I had to reason it out was whether a spec rule with no scenario counts as finished; the README's line about drift "where the suite could not see" settled it, but a sentence in conformance.md saying each rule in the spec should have a scenario would make that explicit.
