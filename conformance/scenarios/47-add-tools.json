@@ -1,0 +1,496 @@
+{
+  "name": "a tool adds tools to the session",
+  "description": "connect asks to add weather, a name nobody offers, echo, which the session has, and weather again. Only weather is added, in a new context entry after the turn's results, and the next request carries it. The model calls it, and a second connect adds nothing, so no context entry follows.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    },
+    {
+      "name": "connect",
+      "description": "Connect the weather tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "addTools": [
+          "weather",
+          "missing",
+          "echo",
+          "weather"
+        ]
+      }
+    }
+  ],
+  "available": [
+    {
+      "name": "weather",
+      "description": "Say what the weather is.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "text": "Sunny."
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "connect",
+          "input": {}
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "weather",
+          "input": {}
+        },
+        {
+          "type": "toolCall",
+          "id": "c3",
+          "name": "connect",
+          "input": {}
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 15,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Sunny, and nothing more to connect."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 3
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "What is the weather?"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "connect",
+              "description": "Connect the weather tools.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "What is the weather?"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "connect",
+                "input": {}
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "connect",
+            "content": [
+              {
+                "type": "text",
+                "text": "weather"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "connect",
+              "description": "Connect the weather tools.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "name": "weather",
+              "description": "Say what the weather is.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "weather",
+                "input": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "c3",
+                "name": "connect",
+                "input": {}
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 15,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "weather",
+            "content": [
+              {
+                "type": "text",
+                "text": "Sunny."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c3",
+            "name": "connect",
+            "content": [
+              {
+                "type": "text",
+                "text": "none"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Sunny, and nothing more to connect."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 3
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "requests": [
+      {
+        "tools": [
+          {
+            "name": "echo",
+            "description": "Echo the text you give it.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          {
+            "name": "connect",
+            "description": "Connect the weather tools.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "reset",
+            "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "name": "echo",
+            "description": "Echo the text you give it.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          {
+            "name": "connect",
+            "description": "Connect the weather tools.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "reset",
+            "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "weather",
+            "description": "Say what the weather is.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "name": "echo",
+            "description": "Echo the text you give it.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          {
+            "name": "connect",
+            "description": "Connect the weather tools.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "reset",
+            "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "weather",
+            "description": "Say what the weather is.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

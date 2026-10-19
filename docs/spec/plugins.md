@@ -70,7 +70,7 @@ A call made with `runTool` shares its caller's `requestReset`. Once the stop is 
 
 ## Tools that join a session
 
-A tool's `ctx` also has `addTools(names)`, for a tool that gives the agent more tools as it works, such as one that connects a group of tools on request. Each name must be one of the `available` tools a plugin's `context` hook returned; a name that is not, or a tool already in the session, is left out, and `addTools` returns the names it added.
+A tool's `ctx` also has `addTools(names)`, for a tool that gives the agent more tools as it works, such as one that connects a group of tools on request. Each name must be one of the `available` tools a plugin's `context` hook returned; a name that is not, or a tool already in the session or already added in the same turn, is left out, and `addTools` returns the names it added. An available tool shares a namespace with the session's tools, so when a session opens and one shares a name with any other tool, available or not, the run fails with `Two tools are named <name>.`, as below.
 
 The tools join after the turn's results are appended. The loop appends a new `context` entry, with the same sections and the session's tools followed by the added ones, in the order asked, and the run's frozen context becomes that entry, so the next model call can use them. Since the provider caches the tools first, the call after the change pays once to read the session again.
 

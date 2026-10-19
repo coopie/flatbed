@@ -1,0 +1,517 @@
+{
+  "name": "added tools end with the session",
+  "description": "connect adds weather, then the agent resets. The next session opens from the context hook as always, without weather, so a call to it finds no tool.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "connect",
+      "description": "Connect the weather tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "addTools": [
+          "weather"
+        ]
+      }
+    }
+  ],
+  "available": [
+    {
+      "name": "weather",
+      "description": "Say what the weather is.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "text": "Sunny."
+      }
+    }
+  ],
+  "script": [
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c1",
+          "name": "connect",
+          "input": {}
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c2",
+          "name": "reset",
+          "input": {
+            "reason": "done"
+          }
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 15,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "c3",
+          "name": "weather",
+          "input": {}
+        }
+      ],
+      "stop": "toolUse",
+      "usage": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "The weather tool has gone."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 20,
+        "output": 3
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "Connect the weather."
+      }
+    },
+    {
+      "run": {},
+      "expect": "reset"
+    },
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "What is the weather?"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "connect",
+              "description": "Connect the weather tools.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "Connect the weather."
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c1",
+                "name": "connect",
+                "input": {}
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c1",
+            "name": "connect",
+            "content": [
+              {
+                "type": "text",
+                "text": "weather"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "connect",
+              "description": "Connect the weather tools.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "name": "weather",
+              "description": "Say what the weather is.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c2",
+                "name": "reset",
+                "input": {
+                  "reason": "done"
+                }
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 15,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c2",
+            "name": "reset",
+            "content": [
+              {
+                "type": "text",
+                "text": "Session will reset after this turn."
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "reset",
+          "by": "agent",
+          "reason": "done"
+        }
+      ],
+      [
+        {
+          "header": {
+            "parent": {
+              "reason": "reset"
+            }
+          }
+        },
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "connect",
+              "description": "Connect the weather tools.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started after a reset: done"
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "What is the weather?"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "c3",
+                "name": "weather",
+                "input": {}
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 10,
+              "output": 5
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "c3",
+            "name": "weather",
+            "content": [
+              {
+                "type": "text",
+                "text": "No tool named weather."
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "The weather tool has gone."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 20,
+              "output": 3
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "requests": [
+      {
+        "tools": [
+          {
+            "name": "connect",
+            "description": "Connect the weather tools.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "reset",
+            "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "name": "connect",
+            "description": "Connect the weather tools.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "reset",
+            "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "weather",
+            "description": "Say what the weather is.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "name": "connect",
+            "description": "Connect the weather tools.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "reset",
+            "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "name": "connect",
+            "description": "Connect the weather tools.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "reset",
+            "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

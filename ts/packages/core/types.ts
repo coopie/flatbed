@@ -119,6 +119,11 @@ export type ToolContext = PluginContext & {
    * place under the limit while it waits.
    */
   runTool(call: ToolCall): Promise<ToolResult>;
+  /**
+   * Adds tools from the plugins' `available` ones to the session, after the turn's results. Leaves out
+   * a name that is not available or a tool already in the session, and returns the names it added.
+   */
+  addTools(names: string[]): string[];
 };
 
 export type ToolResult = { content: (TextBlock | ImageBlock)[]; isError: boolean };
@@ -131,7 +136,7 @@ type Maybe<T> = T | undefined | void | Promise<T | undefined | void>;
 
 export type Plugin = {
   name: string;
-  context?(ctx: PluginContext): Maybe<{ sections?: Section[]; tools?: Tool[] }>;
+  context?(ctx: PluginContext): Maybe<{ sections?: Section[]; tools?: Tool[]; available?: Tool[] }>;
   beforeTool?(call: ToolCall, ctx: ToolContext): Maybe<ToolResult>;
   afterTool?(call: ToolCall, result: ToolResult, ctx: ToolContext): Maybe<ToolResult>;
   onEntry?(entry: Entry, ctx: PluginContext): unknown;
