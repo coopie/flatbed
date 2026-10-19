@@ -5,9 +5,9 @@
  * The verdict schema is derived from the spec in a few lines of plain object building, so Python
  * and Rust can port `verdictSchema` line for line.
  */
-import { readFileSync } from 'node:fs';
 import { check } from './check.ts';
 import type { Usage } from '@flatbed/core';
+import specSchema from './spec.schema.json' with { type: 'json' };
 
 export type Severity = 'block' | 'warn';
 
@@ -38,10 +38,6 @@ export type ItemVerdict = { analysis: string; ok: boolean };
 export type Verdict = { spec: string; callId?: string; supervisor?: string; model: string; usage: Usage } & (
   | { status: 'given'; items: Record<string, ItemVerdict>; summary: string }
   | { status: 'unavailable'; reason: string }
-);
-
-const specSchema: object = JSON.parse(
-  readFileSync(new URL('./spec.schema.json', import.meta.url), 'utf8')
 );
 
 /** Reads a spec from outside, such as a JSON file, and throws with every problem when it is not one. */

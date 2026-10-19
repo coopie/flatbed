@@ -18,7 +18,8 @@ import { anthropicProvider } from './providers/anthropic.ts';
 import { fauxProvider } from './providers/faux.ts';
 import { openaiProvider } from './providers/openai.ts';
 import { pathOf, render } from './render.ts';
-import { fileStore, parseSession } from './store.ts';
+import { fileStore } from './file-store.ts';
+import { parseSession } from './store.ts';
 import type { Block, Message, Plugin, Provider } from './types.ts';
 
 const DATA = fileURLToPath(new URL('../../../data/', import.meta.url));

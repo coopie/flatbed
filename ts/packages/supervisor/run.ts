@@ -6,7 +6,7 @@
  */
 import type { AssistantMessage, Entry, Provider, Usage } from '@flatbed/core';
 import { check } from './check.ts';
-import { renderMaterial, systemPrompt, type ReviewedCall } from './prompt.ts';
+import { renderMaterial, systemPrompt, type Reference, type ReviewedCall } from './prompt.ts';
 import { checkHostAnswers, mergeAnswers, verdictSchema, type ItemVerdict, type Spec, type Verdict } from './spec.ts';
 
 export type SuperviseInput = {
@@ -19,6 +19,11 @@ export type SuperviseInput = {
   session?: string;
   /** The call under review. Leave it out to audit the session as a whole. */
   call?: ReviewedCall;
+  /**
+   * Material from the host for this check, such as a document as it would be after the call, or
+   * documents the work must agree with. The supervisor reads it after the session.
+   */
+  references?: Reference[];
   /** The host's answers, by item id, for every item the spec marks `answeredBy: "host"`, and no other. */
   answers?: Record<string, ItemVerdict>;
   /** Stops the check, such as when the run that asked for it is stopped. The verdict is then unavailable. */
@@ -70,14 +75,14 @@ function readAnswer(message: AssistantMessage, schema: object): Answer | { faile
 }
 
 export function singlePass(options: SinglePassOptions): Supervise {
-  return async ({ spec, entries, call, answers = {}, signal }) => {
+  return async ({ spec, entries, call, references, answers = {}, signal }) => {
     checkHostAnswers(spec, answers);
     const schema = verdictSchema(spec);
     const request = {
       model: options.model,
       sections: [{ name: 'supervisor', text: systemPrompt(spec, call !== undefined), cache: true }],
       tools: [],
-      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: renderMaterial(entries, call) }] }],
+      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: renderMaterial(entries, call, references) }] }],
       maxTokens: options.maxTokens ?? 8192,
       outputSchema: schema as Record<string, unknown>,
       ...(signal === undefined ? {} : { signal })

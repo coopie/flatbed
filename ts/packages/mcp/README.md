@@ -11,7 +11,8 @@ A server that fails never stops the loop. A failed call becomes an error result 
 Give the plugin a list of servers. Each is a command it starts and talks to over stdio, or a streamable HTTP URL.
 
 ```ts
-import { createAgent, fileStore, anthropicProvider } from '@flatbed/core';
+import { createAgent, anthropicProvider } from '@flatbed/core';
+import { fileStore } from '@flatbed/core/node';
 import { mcpPlugin } from '@flatbed/mcp';
 
 const mcp = mcpPlugin([

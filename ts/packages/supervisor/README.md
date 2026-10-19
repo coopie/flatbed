@@ -4,7 +4,7 @@ A supervisor is a second model that reads an agent's session and answers a check
 
 You give the library a spec, a session's entries and, when you are checking a call, the call. It gives you back a verdict: for each checklist item, an analysis and then `ok`, plus a summary. When the model fails to answer, the verdict is `unavailable` with the reason. A verdict nobody gave is never a pass, so decide in your host what an unavailable verdict means, such as holding the call for a person.
 
-The ideas come from Otherworldly's agent host, where a supervisor checks every email draft an agent writes, and from perso.
+The ideas come from Otherworldly's agent host, where a supervisor checks every email draft an agent writes, and from perso. The package imports nothing from Node, so it runs in a browser too.
 
 ## Write a spec
 
@@ -42,7 +42,7 @@ Decide with `blocked(spec, verdict)`, which is true when the verdict is unavaila
 
 `answers` holds one answer for each `answeredBy: "host"` item and no others. Anything else throws, since it is a bug in the host.
 
-The supervisor reads the session's path as XML: `<context>` with the agent's sections and tools, `<session>` with its events, turns, calls and results, then `<call>` with each input field in a `<field name="...">`. Everything inside is escaped as the core escapes it, so an email in a tool result cannot close `<session>` and forge a `<call>`. `singlePass` sends the verdict schema as `outputSchema`, so the provider must support structured output, as Anthropic's does. It asks again once when the answer is off the schema.
+The supervisor reads the session's path as XML: `<context>` with the agent's sections and tools, `<session>` with its events, turns, calls and results, then any `<reference>` the host added, then `<call>` with each input field in a `<field name="...">`. Everything inside is escaped as the core escapes it, so an email in a tool result cannot close `<session>` and forge a `<call>`. `singlePass` sends the verdict schema as `outputSchema`, so the provider must support structured output, as Anthropic's does. It asks again once when the answer is off the schema.
 
 ## One call, or an agent
 
@@ -76,6 +76,14 @@ const guard = supervisorGuard({
 });
 const agent = createAgent({ id: 'assistant', model, plugins: [docs, email, guard] }, { store, providers });
 ```
+
+`specs` maps tool names to specs, or is a function that picks the spec for a call, or none. Use a function when one tool needs different checks for different calls, such as a write to a document under `casebook/`:
+
+```ts
+specs: (call) => (writeTarget(call)?.startsWith('casebook/') ? casebookSpec : undefined)
+```
+
+`references` is an optional function that gives the supervisor material of the host's for a call, as `{ name, text }` pieces, such as a document as the call would leave it or documents the agent's work must agree with. The supervisor reads each as a `<reference name="...">`, escaped, after the session and before the call. `SuperviseInput` takes the same `references` when you call a supervisor yourself. [The docs README](../docs/README.md#reviewed-folders-and-the-supervisor) shows a reviewed folder put together this way.
 
 - `off` checks nothing.
 - `shadow` records each verdict and lets every call run. Start here with a new spec, and read what it would have refused.

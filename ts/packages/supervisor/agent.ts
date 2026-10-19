@@ -42,7 +42,7 @@ const ASK = 'Answer the checklist for the material in your context, then call re
 export function agentPass(options: AgentPassOptions): Supervise {
   const { store } = options;
 
-  return async ({ spec, entries, agent: checked, session, call, answers = {}, signal }) => {
+  return async ({ spec, entries, agent: checked, session, call, references, answers = {}, signal }) => {
     checkHostAnswers(spec, answers);
     const schema = verdictSchema(spec);
     const agentId = `${options.id ?? 'supervisor'}-${newEntryId().slice(0, 4)}`;
@@ -67,7 +67,7 @@ export function agentPass(options: AgentPassOptions): Supervise {
     const sections = [
       { name: 'supervisor', text: systemPrompt(spec, call !== undefined, true) },
       // The material is already XML, escaped inside, so it goes in as a section, which the core leaves as it is.
-      { name: 'material', text: renderMaterial(entries, call), cache: true }
+      { name: 'material', text: renderMaterial(entries, call, references), cache: true }
     ];
 
     const head = entries.at(-1);

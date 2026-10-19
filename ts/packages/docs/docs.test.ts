@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createAgent, fauxProvider, memoryStore, type ScriptStep, type ToolCall } from '@flatbed/core';
-import { docsPlugin, exampleSeeds, fileDocStore, memoryDocStore, type DocStore } from './index.ts';
+import { docsPlugin, memoryDocStore, type DocStore } from './index.ts';
+import { exampleSeeds, fileDocStore } from './node.ts';
 
 const TODAY = '2026-10-06';
 const call = (name: string, input: Record<string, unknown>, id = name): ToolCall => ({ type: 'toolCall', id, name, input });

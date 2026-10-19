@@ -13,9 +13,13 @@
  *
  * The tools answer in one line where they can, and a failure is a result that says what to do
  * differently. Nothing here throws to the loop.
+ *
+ * A host may declare folders with modes, as folders.ts describes. The plugin reads them when it
+ * builds a session's tools, so a change, such as unsealing a folder, reaches the agent from its
+ * next session. With no folders, nothing here changes.
  */
-import { readFile } from 'node:fs/promises';
 import { escapeAttr, escapeText, type Plugin, type Section, type Session, type Tool, type ToolResult } from '@flatbed/core';
+import { applyEdit, checkFolders, folderOf, foldersSection, type Folder } from './folders.ts';
 import { checkName, type Doc, type DocStore } from './store.ts';
 
 export type Seed = { name: string; summary: string; body: string; pinned?: boolean };
@@ -27,6 +31,11 @@ export type DocsOptions = {
   seeds?: Seed[];
   /** The session's day, `YYYY-MM-DD`. By default, the host's local date when the session opened. */
   today?: (session: Session) => string;
+  /**
+   * Folders with modes, or a function that gives them when a session opens, so that the host can
+   * change a mode, such as unsealing a folder, between sessions. None by default.
+   */
+  folders?: Folder[] | ((session: Session) => Folder[] | Promise<Folder[]>);
 };
 
 /** How many days before today the timeline shows as one line each. */
@@ -50,9 +59,6 @@ Your timeline has one document a day, named timeline/YYYY-MM-DD. You see today's
 export function renderDoc(doc: Pick<Doc, 'name' | 'summary' | 'body'>): string {
   return `<doc name="${escapeAttr(doc.name)}" summary="${escapeAttr(doc.summary)}">\n${escapeText(doc.body.trimEnd())}\n</doc>`;
 }
-
-/** Undoes `escapeText`, for a passage the agent copied from a document as it saw it. */
-const unescapeText = (text: string) => text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 
 /** The host's local calendar date of the moment the session opened. */
 function localDay(session: Session): string {
@@ -87,15 +93,16 @@ const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }], i
 const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true });
 const str = (value: unknown) => (typeof value === 'string' ? value : undefined);
 const notFound = (name: string) => fail(`There is no document named ${name}. Call list_docs to see the names you have.`);
+const sealed = (folder: Folder) => fail(`${folder.path}/ is sealed, so you cannot list, read or write in it until it is opened.`);
 
-/**
- * How many times `passage` occurs in `text`, without overlaps, stopping at two because the edit
- * only needs to know whether it is exactly one.
- */
-function occurrences(text: string, passage: string): number {
-  const first = text.indexOf(passage);
-  if (first === -1) return 0;
-  return text.indexOf(passage, first + passage.length) === -1 ? 1 : 2;
+/** Why the agent may not change the document `name`, as a result, or undefined when it may. */
+function refuseChange(name: string, folders: Folder[]): ToolResult | undefined {
+  const folder = folderOf(name, folders);
+  if (folder?.mode === 'sealed') return sealed(folder);
+  if (folder?.mode !== 'read') return undefined;
+  const writable = folders.filter((f) => f.mode === 'write' || f.mode === 'reviewed').map((f) => `${f.path}/`);
+  const elsewhere = writable.length > 0 ? ` You can write in ${writable.join(', ')}.` : '';
+  return fail(`${name} is in ${folder.path}/, which you can read but not change.${elsewhere}`);
 }
 
 export function docsPlugin(options: DocsOptions): Plugin {
@@ -126,14 +133,17 @@ export function docsPlugin(options: DocsOptions): Plugin {
     }
   };
 
-  const tools: Tool[] = [
+  /** The tools for one session, held to that session's folders. */
+  const toolsFor = (folders: Folder[]): Tool[] => [
     {
       name: 'list_docs',
       description: 'List your documents, one line each with its summary. Use it to find a document before you read or write it, and before you start a new one, so you add to an existing document rather than making a second.',
       inputSchema: { type: 'object', properties: { prefix: { type: 'string', description: 'Only names starting with this, such as people/' } } },
       run: (input) => guarded(async () => {
         const prefix = str(input.prefix) ?? '';
-        const docs = (await store.list()).filter((d) => d.name.startsWith(prefix));
+        const within = folderOf(prefix.replace(/\/$/, ''), folders);
+        if (within?.mode === 'sealed') return sealed(within);
+        const docs = (await store.list()).filter((d) => d.name.startsWith(prefix) && folderOf(d.name, folders)?.mode !== 'sealed');
         if (docs.length === 0) return ok(prefix ? `You have no documents under ${prefix}.` : 'You have no documents yet.');
         return ok(docs.map((d) => `${d.name}${d.pinned ? ' (pinned)' : ''}: ${d.summary}`).join('\n'));
       }),
@@ -144,6 +154,8 @@ export function docsPlugin(options: DocsOptions): Plugin {
       inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
       run: (input) => guarded(async () => {
         const name = str(input.name) ?? '';
+        const folder = folderOf(name, folders);
+        if (folder?.mode === 'sealed') return sealed(folder);
         const doc = await store.get(name);
         return doc ? ok(renderDoc(doc)) : notFound(name);
       }),
@@ -165,6 +177,8 @@ export function docsPlugin(options: DocsOptions): Plugin {
         const problem = checkName(name);
         if (problem !== undefined) return fail(problem);
         if (name.startsWith(TIMELINE)) return fail('Add to your timeline with add_to_timeline rather than writing it.');
+        const refused = refuseChange(name, folders);
+        if (refused !== undefined) return refused;
         const existing = await store.get(name);
         const summary = str(input.summary)?.trim() || existing?.summary;
         if (summary === undefined) return fail(`${name} is a new document, so give it a one-line summary saying what it is for.`);
@@ -182,21 +196,13 @@ export function docsPlugin(options: DocsOptions): Plugin {
       },
       run: (input, ctx) => guarded(() => serially(async () => {
         const name = str(input.name) ?? '';
-        let passage = str(input.passage) ?? '';
-        let replacement = str(input.replacement) ?? '';
+        const refused = refuseChange(name, folders);
+        if (refused !== undefined) return refused;
         const doc = await store.get(name);
         if (doc === undefined) return notFound(name);
-        if (passage === '') return fail('The passage is empty. Copy the text you want to replace from the document.');
-        // The agent sees bodies escaped, so a passage it copied may hold &amp; where the body has &.
-        if (occurrences(doc.body, passage) === 0 && occurrences(doc.body, unescapeText(passage)) > 0) {
-          passage = unescapeText(passage);
-          replacement = unescapeText(replacement);
-        }
-        const count = occurrences(doc.body, passage);
-        if (count === 0) return fail(`That passage is not in ${name}. Read the document and copy the passage exactly as it is.`);
-        if (count > 1) return fail(`That passage occurs more than once in ${name}. Include more of the text around it.`);
-        const body = doc.body.replace(passage, () => replacement);
-        const written = await store.put({ ...doc, body, writtenBy: ctx.agent.id });
+        const edited = applyEdit(name, doc.body, str(input.passage) ?? '', str(input.replacement) ?? '');
+        if ('problem' in edited) return fail(edited.problem);
+        const written = await store.put({ ...doc, body: edited.body, writtenBy: ctx.agent.id });
         return ok(`Edited ${name} (version ${written.version}).`);
       })),
     },
@@ -212,6 +218,8 @@ export function docsPlugin(options: DocsOptions): Plugin {
         const name = str(input.name) ?? '';
         const pinned = input.pinned === true;
         if (name.startsWith(TIMELINE)) return fail('Your timeline is always in your context, so it needs no pin.');
+        const refused = refuseChange(name, folders);
+        if (refused !== undefined) return refused;
         const doc = await store.get(name);
         if (doc === undefined) return notFound(name);
         if (doc.pinned === pinned) return ok(`${name} is already ${pinned ? 'pinned' : 'unpinned'}.`);
@@ -246,20 +254,17 @@ export function docsPlugin(options: DocsOptions): Plugin {
   return {
     name: 'docs',
     async context(ctx) {
+      const folders = typeof options.folders === 'function' ? await options.folders(ctx.session) : options.folders ?? [];
+      checkFolders(folders);
       await seed();
-      const pinned = (await store.list()).filter((d) => d.pinned && !d.name.startsWith(TIMELINE));
-      const stable: Section[] = [{ name: 'documents', text: GUIDE }, ...pinned.map((d) => ({ name: d.name, text: renderDoc(d) }))];
+      const pinned = (await store.list()).filter((d) => d.pinned && !d.name.startsWith(TIMELINE) && folderOf(d.name, folders)?.mode !== 'sealed');
+      const stable: Section[] = [
+        { name: 'documents', text: GUIDE },
+        ...(folders.length > 0 ? [{ name: 'folders', text: foldersSection(folders) }] : []),
+        ...pinned.map((d) => ({ name: d.name, text: renderDoc(d) })),
+      ];
       stable[stable.length - 1] = { ...stable.at(-1)!, cache: true };
-      return { sections: [...stable, await timelineSection(store, dayOf(ctx.session))], tools };
+      return { sections: [...stable, await timelineSection(store, dayOf(ctx.session))], tools: toolsFor(folders) };
     },
   };
-}
-
-/** The example soul and note-taking guidelines in `seeds/`, pinned, for a host to start from. */
-export async function exampleSeeds(): Promise<Seed[]> {
-  const read = (file: string) => readFile(new URL(`./seeds/${file}`, import.meta.url), 'utf8');
-  return [
-    { name: 'soul', summary: 'Who you are, who you work for and how you judge what matters', body: await read('soul.md') },
-    { name: 'guidelines/notes', summary: 'How to keep your documents and timeline', body: await read('notes.md') },
-  ];
 }

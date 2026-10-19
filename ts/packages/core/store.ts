@@ -1,9 +1,8 @@
 /**
- * Session stores and ids. The file store keeps each session as `<root>/<agent>/<session>.jsonl`,
- * one JSON object per line. The memory store keeps the same objects in a map, for tests.
+ * Session ids, the memory store, and reading a session file. The memory store keeps sessions in a
+ * map, for tests and for hosts that keep them elsewhere. The file store is in file-store.ts, apart,
+ * since it needs Node and this file must load in a browser.
  */
-import { appendFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { Entry, Header, Session, Store } from './types.ts';
 
 function randomHex(bytes: number): string {
@@ -26,32 +25,6 @@ export function newSessionId(now: Date, previous?: string): string {
   const next = Number.parseInt(previous.slice(cut + 1), 16) + 1;
   if (!(next <= 0xffff)) throw new Error(`Cannot make a session id after ${previous}.`);
   return `${previous.slice(0, cut)}-${next.toString(16).padStart(4, '0')}`;
-}
-
-export function fileStore(root: string): Store {
-  const dir = (agent: string) => join(root, agent);
-  const file = (agent: string, session: string) => join(root, agent, `${session}.jsonl`);
-  return {
-    async list(agent) {
-      try {
-        const names = await readdir(dir(agent));
-        return names.filter((n) => n.endsWith('.jsonl')).map((n) => n.slice(0, -'.jsonl'.length)).sort();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-        throw error;
-      }
-    },
-    async read(agent, session) {
-      return parseSession(await readFile(file(agent, session), 'utf8'));
-    },
-    async create(header) {
-      await mkdir(dir(header.agent), { recursive: true });
-      await writeFile(file(header.agent, header.id), `${JSON.stringify(header)}\n`, { flag: 'wx' });
-    },
-    async append(agent, session, entry) {
-      await appendFile(file(agent, session), `${JSON.stringify(entry)}\n`);
-    },
-  };
 }
 
 export function parseSession(text: string): Session {

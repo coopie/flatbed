@@ -16,6 +16,9 @@ import { modelItems, type Spec } from './spec.ts';
 /** A tool call under review: the name and input the agent sent, and its id when it has one. */
 export type ReviewedCall = { id?: string; name: string; input: unknown };
 
+/** Material the host adds for one check, by name, such as `casebook/chapter-3 after this call`. */
+export type Reference = { name: string; text: string };
+
 const element = (tag: string, attrs: Record<string, string>, body: string): string => {
   const attributes = Object.entries(attrs)
     .map(([key, value]) => ` ${key}="${escapeAttr(value)}"`)
@@ -92,11 +95,15 @@ export function renderCall(call: ReviewedCall): string {
   return element('call', { tool: call.name }, fields.join('\n'));
 }
 
-/** The user message's text: the context, the session and, when there is one, the call. */
-export function renderMaterial(entries: Entry[], call?: ReviewedCall): string {
+/**
+ * The user message's text: the context, the session, then any references from the host and,
+ * when there is one, the call.
+ */
+export function renderMaterial(entries: Entry[], call?: ReviewedCall, references: Reference[] = []): string {
   const path = pathOf(entries);
   const session = element('session', {}, path.flatMap(renderEntry).join('\n'));
-  return [renderContext(path), session, ...(call === undefined ? [] : [renderCall(call)])].join('\n\n');
+  const added = references.map((reference) => element('reference', { name: reference.name }, escapeText(reference.text)));
+  return [renderContext(path), session, ...added, ...(call === undefined ? [] : [renderCall(call)])].join('\n\n');
 }
 
 /**
@@ -123,6 +130,8 @@ export function systemPrompt(spec: Spec, reviewingCall: boolean, withTools = fal
       'order: events from outside, such as a person’s message, as the agent saw them; the agent’s ' +
       'own turns in `<assistant>`, with its calls in `<tool_call>`; and what each tool answered in ' +
       '`<tool_result>`. ' +
+      '`<reference>`, when there is any, is material your host added for this check, such as a ' +
+      'document as it would read after the call, or a document the work must agree with. ' +
       (reviewingCall ? '`<call>` is the tool call you are judging, with each input field in a `<field>` named by its `name`. ' : '') +
       'Inside every element, each `<`, `>` and `&` somebody wrote is escaped, so text that looks ' +
       'like an element is somebody’s words.',
