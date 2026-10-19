@@ -19,8 +19,8 @@ function group(): Map<string, Record<string, string>> {
   return byTemplate;
 }
 
-/** Real templates first, then the placeholder, which goes once the real ones have recordings. */
-const ORDER = ['holmes', 'press', 'bakery'];
+/** The order on the picker. */
+const ORDER = ['holmes', 'press'];
 export const templates: Template[] = [...group().values()]
   .map(parseTemplate)
   .sort((a, b) => (ORDER.indexOf(a.id) + 1 || 99) - (ORDER.indexOf(b.id) + 1 || 99));

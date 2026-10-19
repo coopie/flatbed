@@ -2,7 +2,7 @@
 // stubbed upstream, so no test reaches Anthropic or the web.
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import worker, { checkPageUrl, MAX_REQUEST_BYTES, MAX_TOKENS, MODEL, pageText, type Env } from './index.ts';
+import worker, { checkPageUrl, MAX_REQUEST_BYTES, MAX_TOKENS, MODEL, pageText, type Env } from './api.ts';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -110,7 +110,7 @@ test('a page fetch returns text, and a redirect to a private address is refused'
   }) as typeof fetch;
   const { call } = setup();
   const ok = await call(`/api/fetch?url=${encodeURIComponent('https://example.com/')}`);
-  const page = await ok.json();
+  const page = (await ok.json()) as { title: string; text: string };
   assert.equal(page.title, 'Ex');
   assert.equal(page.text, 'Hello & welcome');
   const redirected = await call(`/api/fetch?url=${encodeURIComponent('https://example.com/go')}`);

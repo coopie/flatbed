@@ -4,11 +4,17 @@
   import { route } from './lib/route.svelte.ts';
   import { templates } from './lib/templates.ts';
 
-  // Whether the day's budget is spent, asked once. Unknown counts as open; a refused call says why.
-  let readOnly = $state(false);
-  fetch('/api/status').then((r) => r.json()).then((s) => (readOnly = s.readOnly === true)).catch(() => {});
+  // Whether the day's budget is spent, asked once before any page draws. Unknown counts as open;
+  // a refused model call then says why.
+  const status = fetch('/api/status')
+    .then((r) => r.json() as Promise<{ readOnly?: boolean }>)
+    .then((s) => s.readOnly === true)
+    .catch(() => false);
 
-  const template = $derived(route.current.page === 'picker' ? undefined : templates.find((t) => t.id === route.current.template));
+  const template = $derived.by(() => {
+    const current = route.current;
+    return current.page === 'picker' ? undefined : templates.find((t) => t.id === current.template);
+  });
 
   function toggleTheme() {
     const root = document.documentElement;
@@ -38,6 +44,7 @@
   </div>
 </header>
 <main>
+  {#await status then readOnly}
   {#if route.current.page === 'picker'}
     <Picker {readOnly} />
   {:else if template}
@@ -47,6 +54,7 @@
   {:else}
     <div class="wrap"><h1 class="display">No such template</h1><p><a class="bracket" href="#/">all templates</a></p></div>
   {/if}
+  {/await}
 </main>
 <footer class="wrap label">
   Everything you make here stays in this browser. Model calls go through a small proxy to Claude Haiku 4.5. Built on flatbed.

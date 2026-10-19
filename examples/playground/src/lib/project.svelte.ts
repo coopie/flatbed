@@ -6,7 +6,7 @@
 import { anthropicProvider, type Agent, type Session, type Store } from '@flatbed/core';
 import type { Doc, DocStore } from '@flatbed/docs';
 import { strToU8, zipSync } from 'fflate';
-import { AGENT_ID, templateAgent } from './agent.ts';
+import { AGENT_ID, revealEvent, templateAgent } from './agent.ts';
 import { fromSnapshot, idbDocStore, idbStore, resetProject, snapshot, unsealedStore } from './stores.ts';
 import { loadRecording } from './templates.ts';
 import type { Template } from './template.ts';
@@ -101,18 +101,20 @@ export class Project {
     }
   }
 
-  /** Opens a sealed folder. The agent can read it at once and sees the change in its folder list from its next session. */
+  /** Opens a sealed folder. The agent gets its documents with the visitor's next message, and reads it as a read folder from its next session. */
   async reveal(path: string) {
-    if (this.example || this.unsealed.includes(path)) return;
+    if (this.example || this.agent === undefined || this.unsealed.includes(path)) return;
     this.unsealed = [...this.unsealed, path];
     await unsealedStore(this.template.id).set(this.unsealed);
+    this.agent.deliver(await revealEvent(this.template, this.docStore, path));
   }
 
-  /** A zip of the documents as Markdown, the sessions as JSON Lines, and the whole project as one JSON file. */
+  /** A zip of the documents as Markdown, except any still sealed, the sessions as JSON Lines, and the whole project as one JSON file. */
   async download(): Promise<Blob> {
     const snap = await snapshot(this.template.id, AGENT_ID, this.store, this.docStore, this.unsealed);
     const files: Record<string, Uint8Array> = {};
-    for (const doc of this.docs) files[`${this.template.id}/${doc.name}.md`] = strToU8(`<!-- ${doc.summary} -->\n\n${doc.body}\n`);
+    const hidden = (name: string) => this.template.folders.some((f) => f.mode === 'sealed' && !this.unsealed.includes(f.path) && name.startsWith(`${f.path}/`));
+    for (const doc of this.docs.filter((d) => !hidden(d.name))) files[`${this.template.id}/${doc.name}.md`] = strToU8(`<!-- ${doc.summary} -->\n\n${doc.body}\n`);
     for (const session of snap.sessions) {
       files[`${this.template.id}/sessions/${session.header.id}.jsonl`] = strToU8([session.header, ...session.entries].map((e) => JSON.stringify(e)).join('\n') + '\n');
     }

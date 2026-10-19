@@ -30,6 +30,7 @@ export function chatItems(sessions: Session[]): ChatItem[] {
     for (const entry of session.entries) {
       if (entry.type === 'event' && entry.kind === 'message') items.push({ kind: 'visitor', text: entry.text });
       else if (entry.type === 'event' && entry.kind === 'notice') items.push({ kind: 'notice', text: entry.text });
+      else if (entry.type === 'event' && entry.kind === 'reveal') items.push({ kind: 'notice', text: `You revealed ${entry.attrs?.folder ?? 'a sealed folder'}, and the agent was given its documents.` });
       else if (entry.type === 'message' && entry.message.role === 'assistant') {
         for (const block of entry.message.content) {
           if (block.type === 'text' && block.text.trim() !== '') items.push({ kind: 'agent', text: block.text.trim() });

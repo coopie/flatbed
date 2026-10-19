@@ -3,7 +3,7 @@
  * `wrangler dev` gives the Worker the key. It reads the value in code and never prints it.
  */
 import { writeFile } from 'node:fs/promises';
-import { readEnv } from '../../../ts/packages/core/env.ts';
+import { readEnv } from '@flatbed/core/node';
 
 const key = await readEnv('ANTHROPIC_API_KEY');
 if (!key) {

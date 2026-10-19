@@ -1,16 +1,14 @@
 /**
  * A template's agent, as the page and the recording script both build it: flatbed's core loop with
- * the template's role, the docs plugin seeded from the template, folder modes, a supervisor on each
- * reviewed folder, and the app's tools the template names. Every model call, the supervisor's
- * included, goes through one provider, which in the page is the Worker's `/api/complete`.
+ * the template's role, the docs plugin with the template's seeds and folders, the supervisor's
+ * guard on each reviewed folder, and the app's tools the template names. Every model call, the
+ * supervisor's included, goes through one provider, which in the page is the Worker's `/api/complete`.
  */
-import { createAgent, type Agent, type Entry, type Plugin, type Provider, type Store } from '@flatbed/core';
-import { docsPlugin, type DocStore } from '@flatbed/docs';
-import type { GuardMode } from '@flatbed/supervisor';
+import { createAgent, type Agent, type Entry, type Event, type Plugin, type Provider, type Store, type Tool } from '@flatbed/core';
+import { afterWrite, docsPlugin, renderDoc, writeTarget, type DocStore } from '@flatbed/docs';
+import { singlePass, supervisorGuard, type GuardMode } from '@flatbed/supervisor';
 import { fetchPageTool } from './fetch-page.ts';
-import { foldersPlugin } from './folders.ts';
-import { reviewPlugin } from './review.ts';
-import type { Template } from './template.ts';
+import { folderOf, type Template } from './template.ts';
 
 export const AGENT_ID = 'agent';
 export const MODEL = 'claude-haiku-4-5';
@@ -20,6 +18,7 @@ export type AgentDeps = {
   store: Store;
   docs: DocStore;
   provider: Provider;
+  /** The sealed folders the visitor has revealed, which the agent then sees as read folders. */
   unsealed: () => ReadonlySet<string>;
   /** Calls `/api/fetch`, for templates that use `fetch_page`. */
   fetchPage: (url: string) => Promise<Response>;
@@ -35,29 +34,64 @@ function rolePlugin(template: Template): Plugin {
   return { name: 'role', context: () => ({ sections: [{ name: 'role', text }] }) };
 }
 
+/**
+ * The guard on reviewed folders. The supervisor makes one call and sees only the agent's session,
+ * so it also gets the document as the write would leave it, and every document in the template's
+ * read and sealed folders: the facts a notice must match, the pages a press release rests on, or
+ * the sealed solution a casebook must not give away.
+ */
+function reviewGuard(deps: AgentDeps): Plugin {
+  const { template, docs } = deps;
+  const evidence = new Set(template.folders.filter((f) => f.mode === 'read' || f.mode === 'sealed').map((f) => f.path));
+  return supervisorGuard({
+    mode: deps.reviewMode ?? 'enforce',
+    supervise: singlePass({ complete: (request) => deps.provider.complete(request), model: MODEL, maxTokens: 4096 }),
+    specs: (call) => {
+      const target = writeTarget(call);
+      const folder = target === undefined ? undefined : folderOf(template.folders, target);
+      return folder?.mode === 'reviewed' ? template.specs[folder.path] : undefined;
+    },
+    references: async (call) => {
+      const after = await afterWrite(docs, call);
+      const material = (await docs.list()).filter((d) => evidence.has(folderOf(template.folders, d.name)?.path ?? ''));
+      return [
+        ...(after ? [{ name: `${after.name}, as this call would leave it`, text: renderDoc(after) }] : []),
+        ...material.map((d) => ({ name: d.name, text: renderDoc(d) })),
+      ];
+    },
+  });
+}
+
 export function templateAgent(deps: AgentDeps): Agent {
   const { template, docs } = deps;
-  const tools = [];
+  const tools: Tool[] = [];
   if (template.tools.includes('fetch_page')) tools.push(fetchPageTool({ store: docs, get: deps.fetchPage }));
+  const folders = () => template.folders.map((f) => (f.mode === 'sealed' && deps.unsealed().has(f.path) ? { ...f, mode: 'read' as const } : f));
   const plugins: Plugin[] = [
     rolePlugin(template),
-    docsPlugin({ store: docs, seeds: template.seeds }),
-    foldersPlugin({ folders: template.folders, unsealed: deps.unsealed }),
-    reviewPlugin({
-      folders: template.folders,
-      specs: template.specs,
-      store: docs,
-      complete: (request) => deps.provider.complete(request),
-      model: MODEL,
-      mode: deps.reviewMode ?? 'enforce',
-    }),
+    docsPlugin({ store: docs, seeds: template.seeds, folders }),
+    reviewGuard(deps),
     { name: 'app-tools', context: () => ({ tools }) },
     { name: 'watch', onEntry: (entry) => deps.onEntry?.(entry) },
   ];
   return createAgent(
-    // Limits well under Haiku's window, since every call re-sends the session and the visitor's
-    // budget is small. The agent writes its notes and resets when the soft limit's notice comes.
+    // Limits well under Haiku's window, since every call re-sends the session and the day's budget
+    // is small. The agent writes its notes and resets when the soft limit's notice comes.
     { id: AGENT_ID, model: `anthropic/${MODEL}`, plugins, maxTokens: 4096, softLimit: 60_000, hardLimit: 100_000 },
     { store: deps.store, providers: { anthropic: deps.provider } },
   );
+}
+
+/**
+ * The event that tells the agent a sealed folder was revealed, with its documents in full. The docs
+ * plugin builds a session's tools when the session opens, so `read_doc` on the folder works only
+ * from the next session; the event lets the agent use the documents in this one.
+ */
+export async function revealEvent(template: Template, docs: DocStore, path: string): Promise<Event> {
+  const inside = (await docs.list()).filter((d) => folderOf(template.folders, d.name)?.path === path);
+  return {
+    kind: 'reveal',
+    attrs: { from: 'host', folder: `${path}/` },
+    text: `The visitor revealed ${path}/, so it is no longer sealed: you may read, use and talk about its documents from now on. They follow in full, and from your next session read_doc opens them too.\n\n${inside.map(renderDoc).join('\n\n')}`,
+  };
 }
