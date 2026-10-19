@@ -5,9 +5,9 @@
  * - `POST /api/complete/v1/messages` passes one model call to Anthropic. The page's provider is
  *   core's Anthropic adapter with this path as its base URL, so the body is already in the
  *   Messages API's shape. The guards on spending live here: the model is always Haiku 4.5, the
- *   body is cut down to the fields the agent uses, sizes and `max_tokens` are capped, each IP
- *   address has a rate limit, and a daily spend counter in KV turns the playground read-only once
- *   the day's budget is gone.
+ *   body is cut down to the fields and content blocks the agent uses, sizes and `max_tokens` are
+ *   capped, each IP address has a rate limit, and a daily spend counter in a Durable Object
+ *   (budget.ts) turns the playground read-only once the day's budget is gone.
  * - `GET /api/fetch?url=` fetches one public web page as text, for the `fetch_page` tool.
  * - `GET /api/status` tells the page whether the day's budget is spent, so it can open read-only.
  *

@@ -2,7 +2,7 @@
 
 `fetch_page` is the press office's one way to see the world. It reads one public web page through the playground's `/api/fetch`, saves the page's text as a document in `sources/`, and gives the same text back to the agent. The app provides it; this template names it in `template.json`'s `tools`. This page is the contract for whoever builds it.
 
-Two things shape it. The supervisor checks every draft against the pages it can see in the session, so the tool returns the saved text in full rather than a summary. And every page the agent reads is re-sent on each later model call in that session, so a page's saved text stops at about 8,000 tokens.
+Two things shape it. The supervisor checks every draft against the pages it can see in the session, so the tool returns the saved text in full rather than a summary. And every page the agent reads is re-sent on each later model call in that session, so a page's saved text stops at about 3,000 tokens, which keeps six pages, the session and a supervisor call within the playground's request cap.
 
 ## Input
 
@@ -39,7 +39,7 @@ One document per page, in the document store, through the host rather than the a
   Quillfern makes scheduling software for dental clinics...
   ```
 
-  Keep headings as Markdown headings, paragraphs and list items as they are, and link text without the address. Leave out scripts, styles, navigation, headers, footers, cookie banners and forms where the HTML marks them (`<nav>`, `<header>`, `<footer>`, `<form>`, `<script>`, `<style>`, `aria-hidden`); prefer `<main>` or `<article>` when the page has one. When the text runs past 32,000 characters, about 8,000 tokens, cut it at the last paragraph break before that and end the body with `[The rest of the page was not saved.]`.
+  Keep headings as Markdown headings, paragraphs and list items as they are, and link text without the address. Leave out scripts, styles, navigation, headers, footers, cookie banners and forms where the HTML marks them (`<nav>`, `<header>`, `<footer>`, `<form>`, `<script>`, `<style>`, `aria-hidden`); prefer `<main>` or `<article>` when the page has one. When the text runs past 12,000 characters, about 3,000 tokens, cut it at the last paragraph break before that and end the body with `[The rest of the page was not saved.]`.
 
 Fetching an address that already has a document writes a new version of it, which the document store keeps alongside the old one.
 

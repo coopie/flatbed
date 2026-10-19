@@ -145,3 +145,13 @@ Entries marked *for review* were made while Sam was away, most of them overnight
 **Because:** a comparison of the three cores on 18 October found that they had drifted where the suite could not see: Rust ran tools one at a time and could not interrupt a model call, hooks were sync in Rust and the store sync in Python, and names differed. Sam wants them alike, and as concurrent as each language allows.
 
 **Rules out:** an implementation choosing its own concurrency or stop behaviour. The suite now checks both.
+
+## A supervisor whose words are shown never reads a sealed folder
+
+19 October 2026.
+
+**Chose:** the playground's supervisor gets the documents in the folders the agent can see, and a sealed folder only once the visitor has revealed it. The Holmes casebook's spoiler check judges whether a chapter claims more than the evidence found so far.
+
+**Because:** a supervisor's analysis is shown to the agent in a refusal and to the visitor beside the call, so a supervisor that read the solution could give it away while explaining why it refused a chapter. Telling it not to is a promise a small model can break under load, and the agent, which cannot see the solution either, can only reach it by guessing, which the accusation and spoiler checks already catch.
+
+**Rules out:** giving a supervisor material that the people reading its analysis must not see. A host that needs that kind of check should keep the analysis to itself and show only the verdict.

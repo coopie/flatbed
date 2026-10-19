@@ -1,5 +1,5 @@
 # The playground's Worker: the static site from dist/ plus /api/complete and /api/fetch.
-# README.md says how to create the KV namespace and deploy. Nothing here is a secret; the
+# README.md says how to deploy. Nothing here is a secret; the
 # Anthropic key is set with `wrangler secret put ANTHROPIC_API_KEY`, and locally comes from .dev.vars.
 name = "flatbed-playground"
 main = "worker/index.ts"

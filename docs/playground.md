@@ -12,7 +12,7 @@ People who have heard about agents and want to see one work. Each template shows
 
 **A small stateless server does two jobs**, as a Cloudflare Worker that also serves the static site:
 
-- `/api/complete` passes a model call to Anthropic with Sam's key, and holds the guards on spending: the model is always Claude Haiku 4.5, requests and responses are capped in size, each IP address has a rate limit (Cloudflare's rate-limit binding), and a daily spend counter (one Workers KV key) switches the playground to read-only once the day's budget is gone. The Anthropic key also sits in its own console workspace with a spending limit, as a backstop.
+- `/api/complete` passes a model call to Anthropic with Sam's key, and holds the guards on spending: the model is always Claude Haiku 4.5, requests and responses are capped in size, each IP address has a rate limit (Cloudflare's rate-limit binding), and a daily spend counter (one Durable Object, which checks the budget and adds to it in one step) switches the playground to read-only once the day's budget is gone. The Anthropic key also sits in its own console workspace with a spending limit of $100 or less, as a backstop.
 - `/api/fetch` fetches one public web page for the press office template, as text: http and https only, public addresses only, a size cap, and a short cache.
 
 Since the browser assembles the prompt, someone could use the proxy as free Haiku within those limits. The daily cap bounds that, which is acceptable for a short demo.
@@ -26,7 +26,7 @@ A template gives its agent folders, each with a mode. The modes are a general ad
 - **read**: the agent can list and read; nothing writes here except the template or the host, such as fetched pages
 - **write**: the agent can read and write freely
 - **reviewed**: the agent can read; a write runs past a supervisor spec first, and lands only if the spec passes
-- **sealed**: hidden from the agent's listing and reading until the host unseals it; a supervisor may still read it
+- **sealed**: hidden from the agent's listing and reading until the host unseals it. The playground keeps it from the supervisor too, since a supervisor's analysis is shown to the agent and the visitor
 
 ## A template
 
