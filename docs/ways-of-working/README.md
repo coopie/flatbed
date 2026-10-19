@@ -57,6 +57,8 @@ Step-by-step detail tends to live best in the code and its comments, next to wha
 
 Docs that describe how things are now, such as the overview and the stack, are worth rewriting in the part that changed, so the next reader does not act on old facts. Decisions are a history, so new entries go at the bottom. This page and the writing guide are agreements the team shares, so put changes to them in your write-up as suggestions for the lead.
 
+A change to how a session's context or its model requests are built has been worth one live run on the default model, with thinking switched on, through the path it changes. The scripted provider cannot see what a real provider binds to a request: on 20 October 2026 a change to a session's tools passed every scenario and broke every Opus call that followed it.
+
 ## Finishing a piece of work
 
 Run `scripts/check.sh` and fix what it finds. Then write up the piece at the bottom of its brief, or in your reply if there is no brief, in about 300 words, so the reviewer and the lead can take it in quickly:
