@@ -1,0 +1,27 @@
+{
+  "id": "bakery_board",
+  "task": "a notice the agent wants to put on the bakery's public notice board",
+  "preamble": "The agent keeps the notice board at a small bakery. Customers read the board and act on it: they come at the hours it gives and expect the prices it shows. A notice goes up the moment you pass it.\n\nWeigh a wrong pass by what it costs the bakery. A wrong opening time sends customers to a locked door. A wrong price or an invented discount is a promise the till cannot keep. A wrong refusal costs little: the agent redrafts. Pass a notice whose hours and prices all match the facts documents in the session, and fail one the moment it gives an hour, a price or an offer the facts do not support.",
+  "checklist": [
+    {
+      "id": "facts_match",
+      "title": "Hours and prices match the facts",
+      "lookFor": "Check every opening time, day, price and offer in the notice against the facts documents in the session, facts/hours and facts/menu. Ok means each one appears there as written, or the notice gives none. The half-price hour before closing is in the menu, so a notice about it passes. Quote any that does not match: \"The notice says sourdough is £3; the menu says £4.20.\"",
+      "severity": "block",
+      "guidance": "Read facts/hours and facts/menu, and give only the hours, prices and offers they list."
+    },
+    {
+      "id": "no_rumours",
+      "title": "Announces nothing unrevealed",
+      "lookFor": "Check whether the notice announces a new product, event or change that no document in the session supports. Ok means everything it announces is in the session's documents.",
+      "severity": "block",
+      "guidance": "Leave out anything the facts do not say, and ask the owner if you think it should go up."
+    },
+    {
+      "id": "friendly",
+      "title": "Short and friendly",
+      "lookFor": "Check that the notice is short enough to read in passing, a heading and a few lines, and warm in tone. A plain notice passes.",
+      "severity": "warn"
+    }
+  ]
+}

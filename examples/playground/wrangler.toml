@@ -1,0 +1,27 @@
+# The playground's Worker: the static site from dist/ plus /api/complete and /api/fetch.
+# README.md says how to create the KV namespace and deploy. Nothing here is a secret; the
+# Anthropic key is set with `wrangler secret put ANTHROPIC_API_KEY`, and locally comes from .dev.vars.
+name = "flatbed-playground"
+main = "worker/index.ts"
+compatibility_date = "2026-10-01"
+
+[assets]
+directory = "dist"
+binding = "ASSETS"
+# The API paths always reach the Worker; everything else is a static file.
+run_worker_first = ["/api/*"]
+
+[vars]
+# The day's budget in dollars. At about $0.01 to $0.03 a turn, $10 is several hundred turns.
+DAILY_BUDGET_USD = "10"
+
+[[kv_namespaces]]
+binding = "BUDGET"
+# Replace with the id `wrangler kv namespace create BUDGET` prints, before the first deploy.
+id = "00000000000000000000000000000000"
+
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+# Per IP address. A visitor's turn is a few model calls, plus one for each reviewed write.
+simple = { limit = 30, period = 60 }

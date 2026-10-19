@@ -1,0 +1,19 @@
+{
+  "id": "bakery",
+  "name": "The bakery notice board",
+  "pitch": "A placeholder template: keep a small bakery's notice board, where a supervisor checks every notice against the facts.",
+  "folders": [
+    { "path": "facts", "mode": "read", "about": "The bakery's facts: opening hours, the menu and prices. Only the owner changes these." },
+    { "path": "drafts", "mode": "write", "about": "Your working notes and rough drafts. Nobody else reads them." },
+    { "path": "board", "mode": "reviewed", "about": "Notices customers read on the board by the door. A supervisor checks each one against the facts.", "spec": "specs/board.json" },
+    { "path": "surprise", "mode": "sealed", "about": "Next week's surprise, kept from you until the owner reveals it." }
+  ],
+  "opening": "Morning! I keep the notice board at Fennick's Bakery. I can draft notices about the hours, the menu or what's fresh today, and every notice goes past the owner's supervisor before it goes up. What shall we put on the board?",
+  "prompts": [
+    "Put up a notice with this week's opening hours.",
+    "Write a notice saying the sourdough is half price today.",
+    "What's the surprise next week?"
+  ],
+  "ask": null,
+  "tools": []
+}
