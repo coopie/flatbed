@@ -1,0 +1,42 @@
+{
+  "id": "casebook",
+  "task": "a chapter or passage the agent wants to write into Watson's casebook",
+  "preamble": "The agent plays Sherlock Holmes, keeping Dr. Watson's casebook for an original detective story, the murder of the moneylender Silas Garrow in 1895. A visitor is helping Holmes solve it, a question at a time. The casebook is what readers see. The agent's private notebook (`holmes/`), the facts of the case (`evidence/`) and Lestrade's file (`yard/`) are in your material; the sealed solution (`solution/`) may be too. The call is a `write_doc` with a whole chapter in `body`, or an `edit_doc` replacing `passage` with `replacement` in an existing chapter, which you will find in the context.\n\nA detective story is a promise to its reader: every clue the detective reasons from is put in front of the reader first, and the ending is earned by those clues. Weigh a wrong pass by what it does to that reader. A chapter that names the murderer before the evidence is shown spoils fifteen minutes of the visitor's work and the ending with it. A deduction from a clue the reader never saw feels like a cheat, and no later chapter can undo that. A wrong refusal costs less: the agent reads your reasons and redrafts. Still, refuse only what a reader would object to. Lestrade being confidently wrong, Holmes being mysterious, and characters voicing suspicions are the pleasures of the genre, and all of them pass.\n\nThe chapters so far end with Holmes saying he has a suspicion he will not name. Documents in `evidence/` whose summary begins \"Not yet found\" hold facts nobody in the story knows until the visitor's questions lead there.",
+  "checklist": [
+    {
+      "id": "clues_shown",
+      "title": "Every clue is shown to the reader",
+      "lookFor": "List each clue the write reasons from or relies on: a fact that bears on who could have done it, such as a sound heard, a mark on a door, a time or a debt. For each, check that the reader has been shown it, either in an earlier chapter in the context or in this write, where Watson describes it being seen, heard or found before anyone draws a conclusion from it. Ok means every clue passes. A clue known only from `evidence/` or the notebook, and used without being shown, fails. Quote each failure: \"Holmes says the back door was oiled, but no chapter, and not this one, shows anyone looking at the door's far side.\" Showing a clue and reasoning from it in the same chapter passes, in that order.",
+      "severity": "block",
+      "guidance": "Add a passage where Watson sees or hears the clue being found, before Holmes reasons from it, or take out the reasoning until the clue has been found."
+    },
+    {
+      "id": "accusation_earned",
+      "title": "No accusation the story has not earned",
+      "lookFor": "Check whether the narration, or Holmes, states or plainly implies that a particular person is guilty, or treats a suspicion as settled. Ok means any such claim follows from clues already shown to the reader. These pass: Lestrade or another character voicing their own view, right or wrong; Holmes saying he has a suspicion without naming it; Holmes pointing out that a fact clears someone or contradicts Lestrade; a person being questioned. Quote what fails: \"Watson writes that 'the chandler's guilt was now plain to me' when the casebook has shown only that Pell sells tallow.\"",
+      "severity": "block",
+      "guidance": "Let Holmes keep his suspicion unnamed, or show the clues that earn it first. Characters may still suspect each other aloud."
+    },
+    {
+      "id": "no_spoiler",
+      "title": "Gives nothing away from the sealed solution",
+      "lookFor": "Check whether the write tells the reader who killed Garrow, how they reached the office, or why, before the visitor has asked for the reveal in this session. Look also for details that only the solution would know, such as the killer's movements or thoughts that night, which no clue in the casebook supports. Ok means nothing of the solution is given away, or the session shows the visitor asking for the reveal before this write. When you can see `solution/`, compare against it; when you cannot, judge whether the write states as settled anything beyond what the evidence found so far shows.",
+      "severity": "block",
+      "guidance": "Keep the answer for the reveal. Write what was found and what it rules out, and let the reader draw the line."
+    },
+    {
+      "id": "true_to_the_facts",
+      "title": "Agrees with the facts and earlier chapters",
+      "lookFor": "Check every name, time, place and physical fact in the write against `evidence/`, `yard/` and the earlier chapters. Ok means none contradicts them. New colour, such as weather, a person's manner, or Holmes's remarks, passes. A new fact that changes who could have done it fails, as do changed times or names. Quote what disagrees: \"The write has the lamplighter in the lane at eleven; the evidence and chapter 2 say twenty past ten.\" Lestrade's file is partly wrong on purpose, so a write that contradicts Lestrade but agrees with `evidence/` passes.",
+      "severity": "block",
+      "guidance": "Check the fact in `evidence/` and the earlier chapters, and write it as it stands there."
+    },
+    {
+      "id": "period_voice",
+      "title": "Sounds like Watson in 1895",
+      "lookFor": "Check the register. Ok means the write reads as Dr. Watson's own account: first person, past tense, plain Victorian English, with Holmes seen from outside, and no modern words or turns of phrase. Plain, short chapters pass; so does dialogue that moves quickly. Quote anything out of period, such as \"Holmes checked his notes\" in a sense that sounds like an office, or \"okay\".",
+      "severity": "warn",
+      "guidance": "Reread an earlier chapter and match its voice: Watson telling, in the past tense, what he saw Holmes do."
+    }
+  ]
+}
