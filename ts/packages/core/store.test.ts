@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createAgent } from './loop.ts';
 import { fauxProvider } from './providers/faux.ts';
-import { fileStore, newSessionId } from './store.ts';
+import { fileStore } from './file-store.ts';
+import { newSessionId } from './store.ts';
 
 test('session ids sort after the previous one, even within the same second', () => {
   const now = new Date('2026-10-06T21:04:11.000Z');

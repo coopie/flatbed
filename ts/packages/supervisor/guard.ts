@@ -11,14 +11,18 @@
  * failed, gives an unavailable verdict, which the mode and `whenUnavailable` then decide.
  */
 import { escapeAttr, escapeText, type Plugin, type ToolCall, type ToolContext, type ToolResult } from '@flatbed/core';
+import type { Reference } from './prompt.ts';
 import { firstLine, type Supervise } from './run.ts';
 import { blocked, failures, type ItemVerdict, type Spec, type Verdict } from './spec.ts';
 
 export type GuardMode = 'off' | 'shadow' | 'enforce';
 
 export type GuardOptions = {
-  /** The spec for each supervised tool, by tool name. Calls to other tools are not checked. */
-  specs: Record<string, Spec>;
+  /**
+   * The spec for each supervised tool, by tool name, or a function that picks the spec for a call,
+   * such as a write to a document under `casebook/`. Calls with no spec are not checked.
+   */
+  specs: Record<string, Spec> | ((call: ToolCall) => Spec | undefined);
   mode: GuardMode;
   /** The supervisor, from `singlePass` or `agentPass`. */
   supervise: Supervise;
@@ -29,6 +33,8 @@ export type GuardOptions = {
   whenUnavailable?: 'refuse' | 'allow';
   /** The host's answers to a spec's `answeredBy: "host"` items, for one call. */
   answers?: (call: ToolCall, spec: Spec) => Record<string, ItemVerdict> | Promise<Record<string, ItemVerdict>>;
+  /** Material for the supervisor to read with one call, such as the document as the call would leave it. */
+  references?: (call: ToolCall, spec: Spec) => Reference[] | Promise<Reference[]>;
 };
 
 /** What the guard appends for each verdict, as the `data` of a `custom` entry with `plugin: "supervisor"`. */
@@ -38,7 +44,7 @@ export function supervisorGuard(options: GuardOptions): Plugin {
   return {
     name: 'supervisor',
     async beforeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult | undefined> {
-      const spec = options.specs[call.name];
+      const spec = typeof options.specs === 'function' ? options.specs(call) : Object.hasOwn(options.specs, call.name) ? options.specs[call.name] : undefined;
       if (options.mode === 'off' || spec === undefined) return undefined;
       const verdict = await judge(spec, call, ctx);
       const refused =
@@ -54,12 +60,14 @@ export function supervisorGuard(options: GuardOptions): Plugin {
   async function judge(spec: Spec, call: ToolCall, ctx: ToolContext): Promise<Verdict> {
     try {
       const answers = (await options.answers?.(call, spec)) ?? {};
+      const references = (await options.references?.(call, spec)) ?? [];
       return await options.supervise({
         spec,
         entries: [...ctx.session.entries],
         agent: ctx.agent.id,
         session: ctx.session.header.id,
         call,
+        references,
         answers,
         signal: ctx.signal
       });
