@@ -155,3 +155,13 @@ Entries marked *for review* were made while Sam was away, most of them overnight
 **Because:** a supervisor's analysis is shown to the agent in a refusal and to the visitor beside the call, so a supervisor that read the solution could give it away while explaining why it refused a chapter. Telling it not to is a promise a small model can break under load, and the agent, which cannot see the solution either, can only reach it by guessing, which the accusation and spoiler checks already catch.
 
 **Rules out:** giving a supervisor material that the people reading its analysis must not see. A host that needs that kind of check should keep the analysis to itself and show only the verdict.
+
+## The playground is the press office alone
+
+19 October 2026.
+
+**Chose:** the playground shows one thing: a visitor pastes their company's website, and the agent reads its pages, organises them into notes and writes a first checked post, shown as three steps, without being asked for more. The Holmes template and the template picker are gone.
+
+**Because:** Sam's reason: a made-up case asks people to care about invented people before they see anything useful. Their own company is something a visitor knows and can judge at once, and reading, organising and writing from sources is the knowledge work people want an agent for.
+
+**Rules out:** a picker of templates on the playground, and fiction as the first thing a visitor sees. The template format, the folder modes and the sealed folder stay, in the app's loader and `@flatbed/docs`, for other hosts.

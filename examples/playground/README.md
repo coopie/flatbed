@@ -1,20 +1,21 @@
 # The playground
 
-A public page where anyone can try a flatbed agent doing knowledge work, with no sign-in and nothing stored on a server. [docs/playground.md](../../docs/playground.md) is the design. The agent runs in the visitor's browser, and one Cloudflare Worker serves the site and passes model calls to Anthropic with Sam's key.
+A public page where anyone can paste their company's website and watch a flatbed agent run its press office: it reads the pages, organises them into notes and writes a first checked post. There is no sign-in and nothing is stored on a server. [docs/playground.md](../../docs/playground.md) is the design. The agent runs in the visitor's browser, and one Cloudflare Worker serves the site and passes model calls to Anthropic with Sam's key.
 
 It is also an example of building on flatbed, so it is kept small enough to read in one sitting.
 
 ## How it fits together
 
-- **The page** is a plain Vite app with Svelte components, without SvelteKit: the site is static files plus one Worker, so a router and a server would add nothing. Routes are hash routes, in [src/lib/route.svelte.ts](src/lib/route.svelte.ts).
-- **The agent** is built in [src/lib/agent.ts](src/lib/agent.ts), by the page and the recording script alike: flatbed's core loop on Claude Haiku 4.5, with the template's role as its first section, `@flatbed/docs` with the template's seeds and folders, `@flatbed/supervisor`'s guard on each reviewed folder, and `fetch_page` when the template names it. The guard's one-call supervisor sees only the agent's session, so it is also given the document as the write would leave it and every document in the folders the agent can see, which includes notes and chapters written before a reset. A document already shown in full in the session is not sent twice.
-- **Sealed folders stay sealed from the supervisor too.** Its analysis is shown to the agent and the visitor, so a supervisor that read the Holmes solution could give it away while explaining a refusal, and an instruction not to is a promise a model can break. Without it, the casebook's spoiler check judges whether a chapter claims more than the evidence found so far, which is also all the agent can know.
+- **The page** is a plain Vite app with Svelte components, without SvelteKit: the site is static files plus one Worker, so a router and a server would add nothing. Routes are hash routes, in [src/lib/route.svelte.ts](src/lib/route.svelte.ts): `#/` the visitor's project, `#/example` the recorded one, and `/how`, `/doc/<name>` and `/session/<id>` under either.
+- **The three steps** are the main view, in [src/pages/Steps.svelte](src/pages/Steps.svelte). [src/lib/view.ts](src/lib/view.ts) reads how far the agent has got from its tool calls: a `fetch_page` call starts reading, a write to `notes/` organising, and a write to `outbox/` writing. The fact sheet's lines are shown with links to their pages, and each draft beside the supervisor's latest ruling on it. The conversation and the one-click asks sit below.
+- **The agent** is built in [src/lib/agent.ts](src/lib/agent.ts), by the page and the recording script alike: flatbed's core loop on Claude Haiku 4.5, with the template's role as its first section, `@flatbed/docs` with the template's seeds and folders, `@flatbed/supervisor`'s guard on each reviewed folder, and `fetch_page` when the template names it. The guard's one-call supervisor sees only the agent's session, so it is also given the document as the write would leave it and every document in the folders the agent can see, which includes notes and drafts written before a reset. A document already shown in full in the session is not sent twice.
+- **Sealed folders stay sealed from the supervisor too.** The press office has none, but the loader and the agent keep the mode: a supervisor's analysis is shown to the agent and the visitor, so a supervisor that read a sealed folder could give it away while explaining a refusal.
 - **Replies render as Markdown**, through [src/lib/markdown.ts](src/lib/markdown.ts), which escapes the whole reply before it adds its own tags, so no HTML from the model reaches the page.
-- **Storage** is IndexedDB, in [src/lib/stores.ts](src/lib/stores.ts): a session store and a document store keyed by template, so each browser has one project per template. A snapshot is the same data as JSON, used for the download and the recorded examples.
+- **Storage** is IndexedDB, in [src/lib/stores.ts](src/lib/stores.ts): a session store and a document store keyed by template, so each browser has one project. A snapshot is the same data as JSON, used for the download and the recorded examples.
 - **Revealing** a sealed folder makes it a read folder for the agent's next session, and delivers its documents as a `reveal` event with the visitor's next message, so the agent can use them at once.
 - **The Worker**, [worker/api.ts](worker/api.ts), has three endpoints. `POST /api/complete/v1/messages` passes a model call on: the page's provider is core's Anthropic adapter with `/api/complete` as its base URL. `GET /api/fetch?url=` reads one public page as Markdown and links, for `fetch_page`. `GET /api/status` says whether the day's budget is spent. Everything else is a file from `dist/`.
-- **The templates** are in `templates/`, in the format of [docs/kickoffs/_template-format.md](../../docs/kickoffs/_template-format.md). Each `look.css` is scoped to its card and project, inside the frame that [docs/design.md](../../docs/design.md) sets.
-- **Recorded examples** are in `recordings/<template>.json`. The picker links to one when it exists, and when the day's budget is spent they are what a visitor can still browse.
+- **The template** is `templates/press/`: `template.json`, `role.md`, the outbox spec in `specs/`, `look.css` and [fetch_page.md](templates/press/fetch_page.md), the tool's contract. [src/lib/template.ts](src/lib/template.ts) is the loader and says what each file holds; [docs/playground.md](../../docs/playground.md) has the format in prose. `look.css` is scoped to the project, inside the frame that [docs/design.md](../../docs/design.md) sets.
+- **The recorded example** is `recordings/press.json`, a run on plausible.io. The page links to it, and when the day's budget is spent it is what a visitor can still browse.
 
 ## The spending guards
 
@@ -44,16 +45,15 @@ This builds the site into `dist/`, writes `.dev.vars` with `ANTHROPIC_API_KEY` f
 With `pnpm dev` running in another terminal:
 
 ```sh
-node scripts/record.ts holmes
-node scripts/record.ts holmes --then "Have Watson write up the attic visit as the next chapter."
+node scripts/record.ts press --ask https://plausible.io --prompts 1
 node scripts/record.ts press --ask https://example.com --shadow
 ```
 
-It runs the template's agent in memory, through the local Worker, sends the answer to `ask` when the template has one and then its three prompts, and saves `recordings/<template>.json`. `--then` adds messages after the prompts, `--prompts <n>` sends only the first few, `--reveal` opens the sealed folders before the last message, and `--shadow` records the supervisor's verdicts without refusing, which is the way to try a new spec. Read the recording on the site before you commit it: a recording is what visitors see when the budget is gone. A run costs a few cents, and the script ends by saying how many model calls it made, the supervisor's included.
+It runs the agent in memory, through the local Worker, sends the website and then the one-click asks, and saves `recordings/press.json`. The shipped example was made with the first line, which gives the three steps and a reply to a journalist that the supervisor refused once, in 12 model calls. `--then` adds messages after the prompts, `--prompts <n>` sends only the first few, `--reveal` opens the sealed folders before the last message, and `--shadow` records the supervisor's verdicts without refusing, which is the way to try a new spec. Read the recording on the site before you commit it: a recording is what visitors see when the budget is gone. A run costs a few cents, and the script ends by saying how many model calls it made, the supervisor's included.
 
 ## Screenshots
 
-With `pnpm dev` running, `node scripts/screenshots.ts` saves the picker and a recorded project, light and dark, at desktop and phone width, into `screenshots/`.
+With `pnpm dev` running, `node scripts/screenshots.ts` saves the start page, the recorded example and its how-this-works page, light and dark, at desktop and phone width, into `screenshots/`.
 
 ## Deploy
 

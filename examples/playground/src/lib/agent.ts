@@ -50,14 +50,13 @@ function sessionText(entries: readonly Entry[]): string {
 /**
  * The guard on reviewed folders. The supervisor makes one call and sees only the agent's session,
  * so it also gets the document as the write would leave it, and every document in the folders the
- * agent can see: the facts a chapter must match, the pages a press release rests on, and the notes
- * and chapters written before a reset, which the session no longer shows.
+ * agent can see: the pages a draft rests on, and the notes and drafts written before a reset,
+ * which the session no longer shows.
  *
- * A sealed folder is left out until the visitor reveals it. The supervisor's analysis is shown to
- * the agent and the visitor, so a supervisor that could read the solution could give it away in
- * explaining a refusal, and no instruction makes that safe. Without it the casebook's spoiler check
- * judges what the evidence found so far supports, which the agent, who cannot see the solution
- * either, cannot get past by guessing.
+ * A sealed folder is left out until the visitor reveals it. The press office has none, but the
+ * template format allows one. The supervisor's analysis is shown to the agent and the visitor, so
+ * a supervisor that could read a sealed folder could give it away in explaining a refusal, and no
+ * instruction makes that safe.
  *
  * A document whose text is already in the session, such as a page `fetch_page` just returned, is
  * not sent twice, which keeps a full press session's supervisor call under the Worker's cap.
