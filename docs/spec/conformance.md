@@ -47,6 +47,8 @@ A scenario is one JSON file:
 - `expect.maxRunning`, when given, is the greatest number of tool calls that were running at once during the scenario. It shows that calls overlap when they should and never when they should not.
 - `expect.requests` and `expect.maxRunning` are checked after `expect.sessions`. When `expect.requests` is given, the provider must have received exactly that many requests.
 
+Every rule in the spec that an implementation could get wrong has a scenario, since the cores drift where the suite cannot see. A change to the spec brings its scenario with it.
+
 ## The runner
 
 Each implementation has a runner that loads every scenario, runs it against an in-memory or temporary file store with an agent named `test`, and prints one line per scenario, `ok <name>` or `FAIL <name>: <first difference>`, then exits non-zero on any failure. A scenario that has not finished after 10 seconds fails, so that a run that never ends, such as one waiting on a hung model call, cannot hang the suite. `scripts/check.sh` runs all three. The TypeScript runner is `node ts/packages/core/conformance.ts`.
