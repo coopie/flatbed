@@ -14,7 +14,8 @@ Each dispatch runs one session of the sub-agent. Its `softLimit` and `hardLimit`
 ## Set it up
 
 ```ts
-import { createAgent, fileStore, anthropicProvider } from '@flatbed/core';
+import { createAgent, anthropicProvider } from '@flatbed/core';
+import { fileStore } from '@flatbed/core/node';
 import { dispatchPlugin } from '@flatbed/dispatch';
 
 const store = fileStore('data/sessions');
