@@ -4,10 +4,9 @@
  * host can put it on another database, such as Postgres, with one table keyed by name and version.
  *
  * A store expects one writer at a time. The plugin queues its own writes, so this only matters to
- * a host that writes to an agent's documents while the agent runs.
+ * a host that writes to an agent's documents while the agent runs. The file store is in
+ * file-store.ts, apart, since it needs Node and this file must load in a browser.
  */
-import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 
 export type Doc = {
   /** Path-like, such as `soul`, `people/tomas-reyes` or `timeline/2026-10-06`. */
@@ -52,9 +51,9 @@ export function checkName(name: string): string | undefined {
 }
 
 // Compared by code unit, not `localeCompare`, so the order is the same on every machine.
-const byName = (a: Doc, b: Doc) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+export const byName = (a: Doc, b: Doc) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
-function next(previous: Doc | undefined, write: DocWrite): Doc {
+export function next(previous: Doc | undefined, write: DocWrite): Doc {
   const problem = checkName(write.name);
   if (problem !== undefined) throw new Error(problem);
   return { ...write, version: (previous?.version ?? 0) + 1, writtenAt: new Date().toISOString() };
@@ -77,50 +76,6 @@ export function memoryDocStore(): DocStore {
     },
     async history(name) {
       return [...(docs.get(name) ?? [])];
-    },
-  };
-}
-
-/**
- * One JSONL file per document under `root`, one version per line, such as
- * `<root>/people/tomas-reyes.jsonl`. Give each agent its own root.
- */
-export function fileDocStore(root: string): DocStore {
-  const fileOf = (name: string) => join(root, `${name}.jsonl`);
-
-  async function history(name: string): Promise<Doc[]> {
-    if (checkName(name) !== undefined) return [];
-    try {
-      const text = await readFile(fileOf(name), 'utf8');
-      return text.trim().split('\n').map((line) => JSON.parse(line) as Doc);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-  }
-
-  return {
-    history,
-    async get(name) {
-      return (await history(name)).at(-1);
-    },
-    async list() {
-      let files: string[];
-      try {
-        files = await readdir(root, { recursive: true });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-        throw error;
-      }
-      const names = files.filter((f) => f.endsWith('.jsonl')).map((f) => f.slice(0, -'.jsonl'.length).replaceAll('\\', '/'));
-      const docs = await Promise.all(names.map(async (name) => (await history(name)).at(-1)));
-      return docs.filter((doc): doc is Doc => doc !== undefined).sort(byName);
-    },
-    async put(write) {
-      const doc = next((await history(write.name)).at(-1), write);
-      await mkdir(dirname(fileOf(write.name)), { recursive: true });
-      await appendFile(fileOf(write.name), `${JSON.stringify(doc)}\n`);
-      return doc;
     },
   };
 }
