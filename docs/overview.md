@@ -56,6 +56,10 @@ A lightly held plan, started on 6 October 2026 and last rewritten on 18 October.
 - A `signal` on `ctx.runTool`, so a slow nested call cannot hold a script past its deadline, if that starts to matter.
 - A `callId` on the tool context, so the app need not match a proposal to its call by input.
 
+**Built on flatbed elsewhere**
+
+- [Parker](https://github.com/coopie/parker), a personal agent Sam talks to on Telegram, from 19 October 2026. It depends on flatbed's core, docs plugin and supervisor, and grows a toolbelt of tool groups that may come back here once a second agent needs it.
+
 **Later, if it earns its place**
 
 - Messages to and from the assistant over WhatsApp or iMessage.
