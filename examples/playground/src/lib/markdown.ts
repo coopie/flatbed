@@ -64,3 +64,12 @@ export function markdown(text: string): string {
     })
     .join('\n');
 }
+
+/**
+ * Turns document names such as `sources/acme-home` in markdown()'s output into links to the
+ * document, so a fact in the fact sheet links to its page. A name never holds a character that
+ * markdown() escapes, and one inside a web address is left alone.
+ */
+export function linkDocs(html: string, link: (name: string) => string): string {
+  return html.replace(/(?<![\w/.:-])((?:sources|notes|outbox)\/[a-z0-9][a-z0-9/-]*[a-z0-9])/g, (name) => `<a href="${link(name)}">${name}</a>`);
+}

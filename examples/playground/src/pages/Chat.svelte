@@ -4,16 +4,16 @@
   import { chatItems } from '../lib/view.ts';
   import Ruling from './Ruling.svelte';
 
-  let { project, base }: { project: Project; base: string } = $props();
+  // The conversation, after the first message: every reply, each tool call as a short line, the
+  // supervisor's rulings, and the one-click asks and a box for the visitor's own.
+  let { project }: { project: Project } = $props();
   let draft = $state('');
   const items = $derived(chatItems(project.sessions));
-  const asking = $derived(project.template.ask !== null && project.sessions.length === 0);
   const canSend = $derived(!project.readOnly && !project.running);
 
   async function send(text: string) {
-    const message = asking && project.template.ask ? `${project.template.ask.label}: ${text}` : text;
     draft = '';
-    await project.send(message);
+    await project.send(text);
   }
   const verb: Record<string, string> = {
     list_docs: 'listed documents', read_doc: 'read', write_doc: 'wrote', edit_doc: 'edited', pin_doc: 'pinned',
@@ -38,7 +38,7 @@
           </details>
         </li>
       {:else if item.kind === 'ruling'}
-        <li class="ruling"><Ruling ruling={item.ruling} {base} /></li>
+        <li class="ruling"><Ruling ruling={item.ruling} example={project.example} /></li>
       {:else if item.kind === 'notice'}
         <li class="tool"><span class="label">harness</span> {item.text}</li>
       {:else if item.kind === 'reset'}
@@ -52,24 +52,18 @@
 
   {#if !project.readOnly}
     <form class="compose" onsubmit={(e) => { e.preventDefault(); send(draft); }}>
-      {#if asking && project.template.ask}
-        <label class="label" for="ask">{project.template.ask.label}</label>
-        <input id="ask" bind:value={draft} placeholder={project.template.ask.placeholder} disabled={!canSend} />
-      {:else}
-        <label class="label" for="draft">Your message</label>
-        <textarea id="draft" bind:value={draft} disabled={!canSend}
-          onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(draft); } }}></textarea>
-      {/if}
+      <p class="label">Ask for more</p>
+      <ul class="plain prompts">
+        {#each project.template.prompts as prompt}
+          <li><button type="button" class="prompt" disabled={!canSend} onclick={() => send(prompt)}>{prompt}</button></li>
+        {/each}
+      </ul>
+      <label class="label" for="draft">Or write your own</label>
+      <textarea id="draft" bind:value={draft} disabled={!canSend}
+        onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(draft); } }}></textarea>
       <p class="row">
         <button class="btn" disabled={!canSend || draft.trim() === ''}>send</button>
       </p>
-      {#if !asking}
-        <ul class="plain prompts">
-          {#each project.template.prompts as prompt}
-            <li><button type="button" class="prompt" disabled={!canSend} onclick={() => send(prompt)}>{prompt}</button></li>
-          {/each}
-        </ul>
-      {/if}
     </form>
   {/if}
 </div>
@@ -96,10 +90,10 @@
   .working { animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.4; } }
   .compose { display: grid; gap: 8px; }
-  .compose :is(input, textarea) { background: var(--t-bg); border-color: var(--t-line); font-family: var(--t-body); }
+  .compose textarea { background: var(--t-bg); border-color: var(--t-line); font-family: var(--t-body); }
   .compose .btn { background: var(--t-accent); border-color: var(--t-accent); color: var(--t-bg); }
   .compose .btn:hover:not(:disabled) { background: transparent; color: var(--t-accent); }
-  .prompts { display: grid; gap: 6px; margin-top: 4px; }
+  .prompts { display: grid; gap: 6px; margin-bottom: 8px; }
   .prompt { font: 0.85rem var(--mono); text-align: left; background: none; color: inherit; border: 1px solid var(--t-line); padding: 6px 10px; width: 100%; cursor: var(--hand); }
   .prompt:hover:not(:disabled) { border-color: var(--t-accent); }
   .error { border: 1px solid var(--t-accent); color: var(--t-accent); }

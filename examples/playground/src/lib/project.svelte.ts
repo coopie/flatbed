@@ -54,7 +54,7 @@ export class Project {
 
   /** A recorded example, from recordings/<id>.json, in memory and read-only. */
   static async example(template: Template): Promise<Project> {
-    const snap = await loadRecording(template.id);
+    const snap = await loadRecording();
     const { store, docs } = await fromSnapshot(snap);
     const project = new Project(template, store, docs, true, true);
     project.unsealed = snap.unsealed;
@@ -99,6 +99,12 @@ export class Project {
       this.running = false;
       await this.refresh();
     }
+  }
+
+  /** The first message: the answer to the template's ask, such as the company's website. */
+  start(answer: string) {
+    const ask = this.template.ask;
+    return this.send(ask ? `${ask.label}: ${answer.trim()}` : answer);
   }
 
   /** Opens a sealed folder. The agent gets its documents with the visitor's next message, and reads it as a read folder from its next session. */

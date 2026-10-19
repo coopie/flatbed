@@ -1,8 +1,7 @@
 <script lang="ts">
-  import Picker from './pages/Picker.svelte';
   import ProjectPage from './pages/ProjectPage.svelte';
   import { route } from './lib/route.svelte.ts';
-  import { templates } from './lib/templates.ts';
+  import { template } from './lib/templates.ts';
 
   // Whether the day's budget is spent, asked once before any page draws. Unknown counts as open;
   // a refused model call then says why.
@@ -10,11 +9,6 @@
     .then((r) => r.json() as Promise<{ readOnly?: boolean }>)
     .then((s) => s.readOnly === true)
     .catch(() => false);
-
-  const template = $derived.by(() => {
-    const current = route.current;
-    return current.page === 'picker' ? undefined : templates.find((t) => t.id === current.template);
-  });
 
   function toggleTheme() {
     const root = document.documentElement;
@@ -27,12 +21,10 @@
 </script>
 
 <svelte:head>
-  {#each templates as t (t.id)}
-    {#if t.fonts.length > 0}
-      <link rel="stylesheet" href={`https://fonts.googleapis.com/css2?${t.fonts.map((f) => `family=${f.replaceAll(' ', '+')}:ital,wght@0,400;0,600;1,400`).join('&')}&display=swap`} />
-    {/if}
-  {/each}
-  {@html `<style>${templates.map((t) => t.look).join('\n')}</style>`}
+  {#if template.fonts.length > 0}
+    <link rel="stylesheet" href={`https://fonts.googleapis.com/css2?${template.fonts.map((f) => `family=${f.replaceAll(' ', '+')}:ital,wght@0,400;0,600;1,400`).join('&')}&display=swap`} />
+  {/if}
+  {@html `<style>${template.look}</style>`}
 </svelte:head>
 
 <div class="rainbow"></div>
@@ -45,15 +37,9 @@
 </header>
 <main>
   {#await status then readOnly}
-  {#if route.current.page === 'picker'}
-    <Picker {readOnly} />
-  {:else if template}
-    {#key `${template.id}/${route.current.example}`}
+    {#key route.current.example}
       <ProjectPage {template} route={route.current} {readOnly} />
     {/key}
-  {:else}
-    <div class="wrap"><h1 class="display">No such template</h1><p><a class="bracket" href="#/">all templates</a></p></div>
-  {/if}
   {/await}
 </main>
 <footer class="wrap label">

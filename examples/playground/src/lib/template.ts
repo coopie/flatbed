@@ -1,5 +1,6 @@
 /**
- * A template as docs/kickoffs/_template-format.md describes it, parsed from its files. The page
+ * A template, parsed from its files: `template.json`, `role.md`, a spec for each reviewed folder,
+ * `look.css`, and seed documents under `seed/`. templates/press is the one the playground ships. The page
  * gets the files from Vite and the recording script from the disk, so parsing takes a plain map
  * from each file's path inside the template folder to its text.
  */

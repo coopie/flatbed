@@ -25,7 +25,7 @@ const { positionals, values } = parseArgs({
   options: { ask: { type: 'string' }, reveal: { type: 'boolean' }, shadow: { type: 'boolean' }, prompts: { type: 'string' }, then: { type: 'string', multiple: true }, base: { type: 'string', default: 'http://127.0.0.1:8787' } },
 });
 const id = positionals[0];
-if (id === undefined) throw new Error('Name a template, such as: node scripts/record.ts bakery');
+if (id === undefined) throw new Error('Name a template, such as: node scripts/record.ts press');
 const template = parseTemplate(await readTemplateFiles(id));
 if (template.ask !== null && values.ask === undefined) throw new Error(`${id} asks for "${template.ask.label}"; give it with --ask.`);
 

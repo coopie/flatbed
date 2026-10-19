@@ -1,7 +1,7 @@
 // The chat's Markdown renderer: what a reply looks like, and that nothing in a reply becomes markup.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { markdown } from './markdown.ts';
+import { linkDocs, markdown } from './markdown.ts';
 
 test('a reply renders paragraphs, lists, emphasis, code and links', () => {
   const html = markdown('**Lestrade** is *wrong* about `the door`.\n\n- the attic\n- the stair\n\n1. one\n2. two\n\nSee [the site](https://example.com/a_b_c).');
@@ -18,4 +18,10 @@ test('raw HTML and unsafe links stay as text', () => {
   assert.doesNotMatch(html, /<img|<script|href="javascript/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(html, /href="[^"]*"onmouseover/);
+});
+
+test('document names link to the document, but not inside a web address', () => {
+  const html = linkDocs(markdown('- Founded in 2019 (sources/acme-about)\n- See [the site](https://acme.example/sources/x)'), (n) => `#/doc/${n}`);
+  assert.match(html, /<a href="#\/doc\/sources\/acme-about">sources\/acme-about<\/a>/);
+  assert.doesNotMatch(html, /#\/doc\/sources\/x/);
 });

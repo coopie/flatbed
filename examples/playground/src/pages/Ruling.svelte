@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { href } from '../lib/route.svelte.ts';
   import type { Ruling } from '../lib/view.ts';
-  let { ruling, base }: { ruling: Ruling; base: string } = $props();
+  let { ruling, example }: { ruling: Ruling; example: boolean } = $props();
   const { record, call } = $derived(ruling);
   const verdict = $derived(record.verdict);
   const target = $derived(typeof call?.input.name === 'string' ? call.input.name : 'a document');
@@ -11,7 +12,7 @@
 </script>
 
 <div class="ruling" class:refused={record.refused}>
-  <p><span class="label">supervisor</span> <span class="strong">{outcome}</span> the write to <a href={`${base}/doc/${target}`}>{target}</a></p>
+  <p><span class="label">supervisor</span> <span class="strong">{outcome}</span> the write to <a href={href(example, `/doc/${target}`)}>{target}</a></p>
   {#if verdict.status === 'given'}
     <p>{verdict.summary}</p>
     <details>

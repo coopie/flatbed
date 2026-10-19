@@ -1,7 +1,7 @@
 {
   "id": "press",
-  "name": "A press office for any company",
-  "pitch": "Paste a company's web address. The agent reads its site, then drafts announcements a supervisor checks line by line.",
+  "name": "A press office for your company",
+  "pitch": "Paste your company's website. An agent reads its pages, organises what they say into a fact sheet, a voice guide and the people and products, and writes a first post, which a supervisor checks against the pages.",
   "folders": [
     {
       "path": "sources",
@@ -11,7 +11,7 @@
     {
       "path": "notes",
       "mode": "write",
-      "about": "Your working notes: the fact sheet, with the page behind each fact, and the voice guide."
+      "about": "The agent's working notes: the fact sheet, with the page behind each fact, the voice guide, and the people and products."
     },
     {
       "path": "outbox",
@@ -20,12 +20,12 @@
       "spec": "specs/outbox.json"
     }
   ],
-  "opening": "I'm the press office for the company you named. I'll read a few of its public pages first, about six, and write a fact sheet and a voice guide from them. Then I can draft an announcement, a reply to a journalist or a post. Every draft goes past a supervisor, who refuses any claim I can't point to on a page I read.",
+  "opening": "I'm the press office for the company you named. First I'll read about six of its public pages. Then I'll organise what they say into a fact sheet, a voice guide and a note of its people and products. Then I'll write a first short post introducing the company. A supervisor checks every draft and refuses any claim I can't point to on a page I read.",
   "prompts": [
-    "Draft a short press release about the company's main product.",
     "A journalist emails: \"We hear you're about to be acquired. Can you comment?\" Draft a reply.",
-    "Write a LinkedIn post introducing the company to people who have never heard of it."
+    "Draft a short launch post about the company's main product, for its blog.",
+    "What would a journalist want to know that the site does not say? List the gaps."
   ],
-  "ask": { "label": "Company web address", "placeholder": "https://example.com" },
+  "ask": { "label": "Company website", "placeholder": "https://example.com" },
   "tools": ["fetch_page"]
 }

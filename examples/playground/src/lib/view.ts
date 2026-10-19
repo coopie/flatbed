@@ -56,3 +56,47 @@ export function rulings(sessions: Session[]): Ruling[] {
 
 /** The visitor's text, without the attribute wrapper the event renders with. */
 export const visitorEvent = (text: string) => ({ kind: 'message', attrs: { from: 'visitor' }, text });
+
+/** Where one of the three steps stands: not reached, under way, or behind the agent. */
+export type StepState = 'waiting' | 'now' | 'done';
+export type Steps = { reading: StepState; organising: StepState; writing: StepState };
+
+/**
+ * How far the agent has got through reading, organising and writing, from its tool calls: a
+ * `fetch_page` call starts reading, a write to `notes/` organising, and a write to `outbox/` writing.
+ * The step reached last is under way while the agent runs.
+ */
+export function steps(sessions: Session[], running: boolean): Steps {
+  let reached = 0;
+  for (const session of sessions) {
+    for (const entry of session.entries) {
+      if (entry.type !== 'message' || entry.message.role !== 'assistant') continue;
+      for (const block of entry.message.content) {
+        if (block.type !== 'toolCall') continue;
+        const name = typeof block.input.name === 'string' ? block.input.name : '';
+        const writes = block.name === 'write_doc' || block.name === 'edit_doc';
+        if (block.name === 'fetch_page') reached = Math.max(reached, 1);
+        else if (writes && name.startsWith('notes/')) reached = Math.max(reached, 2);
+        else if (writes && name.startsWith('outbox/')) reached = 3;
+      }
+    }
+  }
+  const state = (n: number): StepState => (reached < n ? 'waiting' : reached > n || !running ? 'done' : 'now');
+  return { reading: state(1), organising: state(2), writing: state(3) };
+}
+
+/** The fact sheet's lines, each with the `sources/` page it names, if any, for showing a fact beside its page. */
+export function facts(body: string): { text: string; source?: string }[] {
+  return body.split('\n').flatMap((line) => {
+    const fact = line.match(/^\s*[-*]\s+(.*)$/)?.[1];
+    if (fact === undefined) return [];
+    const source = fact.match(/\(?(sources\/[a-z0-9-]+)\)?\s*$/)?.[1];
+    const text = source ? fact.slice(0, fact.lastIndexOf(source)).replace(/[\s(]+$/, '') : fact;
+    return [source ? { text, source } : { text }];
+  });
+}
+
+/** The latest ruling on writes to a document. */
+export function rulingFor(all: Ruling[], name: string): Ruling | undefined {
+  return all.findLast((r) => r.call?.input.name === name);
+}
