@@ -1,0 +1,49 @@
+{
+  "id": "press_outbox",
+  "task": "a draft the press office agent wants to put in its outbox for publication",
+  "preamble": "The agent is acting as the press office for a real company, in a public demo. It has read a few of the company's public pages, which are saved as documents named `sources/...`; you see their text in the session, as results of `fetch_page` or of `read_doc` on a `sources/` name. It now wants to write a draft, such as an announcement, a reply to a journalist or a social post, into `outbox/`. For a `write_doc` call, its `body` field is the whole draft.\n\nA press office cares about this more than anyone, because what it puts out is on the record. Journalists quote it word for word, and a claim cannot be taken back once it is printed. An invented customer count turns into a correction, an invented award into an embarrassment, and an invented quote from a named person into words they never said, published under their name. Here the stakes are sharper: the company is real and has approved nothing, so every unsupported claim puts words in its mouth.\n\nSo you are the press office's fact-checker. A right pass gives the visitor a draft where every line can be checked against a page. A wrong pass shows a made-up fact about a real company as if the agent had found it. A wrong refusal costs one redraft. Pass a draft that keeps to what the pages say, however plain it is, and fail it the moment it says something no page in the session supports. The agent's own notes, such as `notes/fact-sheet`, are not evidence: it wrote them itself, so check claims against the page text.\n\nFor an `edit_doc` call, you see only the `passage` it replaces and its `replacement`. Judge the new passage, and treat the rest of the draft as already checked.",
+  "checklist": [
+    {
+      "id": "marked_unofficial",
+      "title": "Marked as an unofficial demo draft",
+      "lookFor": "Check that the draft carries a line saying it is an unofficial draft, written by an AI agent in a demo, and not from or approved by the company. Ok means such a line is present, in any position and close to these words: \"Unofficial draft written by an AI agent in the flatbed playground demo. Not from or approved by Quillfern.\" Fail a draft with no such line, or one that says the company approved it. For an `edit_doc` call, pass unless the replacement removes the line.",
+      "severity": "block",
+      "guidance": "End the draft with the line from your role: _Unofficial draft written by an AI agent in the flatbed playground demo. Not from or approved by <company name>._"
+    },
+    {
+      "id": "numbers_and_names_on_a_page",
+      "title": "Every number and name is on a page",
+      "lookFor": "List every number, customer, partner, investor, award, price, date and place in the draft, and find each one in the text of a `sources/` page in the session. Ok means every one appears there with the same meaning. A number that is close but not the same fails: the page says \"over 400 clinics\" and the draft says \"500 clinics\". So does a figure made to sound confident, such as \"trusted by 10,000 teams\" when no page gives a count. Placeholders in square brackets, such as \"[number of customers, to be confirmed]\", pass. Quote each one that fails and say that no page in the session states it.",
+      "severity": "block",
+      "guidance": "Use only numbers and names a page in sources/ gives, copied exactly. Read the page with read_doc if it is not in this session, or write a placeholder in square brackets."
+    },
+    {
+      "id": "claims_on_a_page",
+      "title": "Every claim is on a page",
+      "lookFor": "Check every other statement of fact about the company: what it does, who it serves, how its product works, what it has done, what it is first or best at. Ok means each one is said or plainly implied by a `sources/` page in the session. Rewording a page's claim in plainer words passes. Fail a claim that goes further than the page, such as \"the leading platform\" when the page says \"a platform\", or \"used across Europe\" when the page names one country. Opinions that are clearly the draft's framing, such as \"we're glad to share\", are not claims. Quote each claim that fails and name the page that comes closest, if any.",
+      "severity": "block",
+      "guidance": "Cut the claim, or reword it to say only what the page says. Read the page behind it with read_doc if it is not in this session."
+    },
+    {
+      "id": "quotes_are_real_or_placeholders",
+      "title": "Quotes are from the pages or placeholders",
+      "lookFor": "Find every quotation attributed to a person or to the company. Ok means each one is either words that appear on a `sources/` page, attributed to the person that page names with the role it gives, or a placeholder in square brackets, such as \"[Quote from Ada Quill, CEO, to be supplied]\" or \"[Quote from a company spokesperson]\". Fail new words put in a named person's mouth, even if they sound like something the person would say, and fail a quote or placeholder naming someone no page names. A draft with no quotes passes. Quote the attribution that fails.",
+      "severity": "block",
+      "guidance": "Replace the quote with a placeholder, such as [Quote from <name, role from the site>, to be supplied], or with words a page gives that person."
+    },
+    {
+      "id": "no_promises",
+      "title": "Promises nothing about the future",
+      "lookFor": "Check for anything the draft says the company will do: release dates, features to come, prices, hiring, expansion, a response to a rumour. Ok means the draft promises nothing, or repeats a plan that a `sources/` page states, attributed to the company, such as \"The company says the app will reach Android in the spring\". A polite \"we'll be in touch\" to a journalist passes. Fail a commitment no page makes, and fail a confirmation or denial of a rumour that no page addresses. Quote the promise that fails.",
+      "severity": "block",
+      "guidance": "Cut the promise, or say only what a page says the company has announced. On a rumour the pages do not cover, neither confirm nor deny it."
+    },
+    {
+      "id": "tone_matches_voice_guide",
+      "title": "Sounds like the company",
+      "lookFor": "Compare the draft's register with `notes/voice-guide`, from the context or the session, and with how the `sources/` pages are written. Ok means a reader of the company's site would find it believable as the company's own writing: the same formality, the same way of referring to itself, no words the guide says it avoids. A plain, short draft passes. When there is no voice guide in the session, judge against the pages alone. Name the mismatch, such as \"The guide says the company writes short, informal sentences; the draft is formal and uses 'leverage' three times\".",
+      "severity": "warn",
+      "guidance": "Reread notes/voice-guide and match its register: formality, sentence length, and how the company refers to itself."
+    }
+  ]
+}

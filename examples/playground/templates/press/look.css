@@ -1,0 +1,30 @@
+/* Google Fonts: Newsreader (display), Public Sans (body) */
+
+/* A clean newsroom: white paper, black ink, one wire-service red. */
+:root {
+  --t-bg: #fbfbf9;
+  --t-fg: #141414;
+  --t-accent: #c8102e;
+  --t-muted: #5f5f5c;
+  --t-line: #d9d9d4;
+  --t-display: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --t-body: 'Public Sans', 'Helvetica Neue', Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --t-bg: #121212;
+    --t-fg: #ececea;
+    --t-accent: #ff5a6e;
+    --t-muted: #a3a39f;
+    --t-line: #33332f;
+  }
+}
+
+[data-theme="dark"] {
+  --t-bg: #121212;
+  --t-fg: #ececea;
+  --t-accent: #ff5a6e;
+  --t-muted: #a3a39f;
+  --t-line: #33332f;
+}
