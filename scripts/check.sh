@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The gate before a merge: each implementation's checks, then the conformance suite against it.
 # Run `scripts/check.sh` for everything, or name sections, such as `scripts/check.sh ts`
-# or `scripts/check.sh assistant` for the example app.
+# or `scripts/check.sh assistant` for the example app and `scripts/check.sh playground` for the playground.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export NODE_NO_WARNINGS=1
@@ -24,6 +24,15 @@ check_assistant() {
   (cd examples/assistant && pnpm run --silent test)
 }
 
+check_playground() {
+  echo "== playground"
+  # Its dependencies come with the ts workspace's install. Nothing here calls a model or the web.
+  (cd ts && pnpm install --frozen-lockfile --silent)
+  (cd examples/playground && pnpm run --silent check)
+  (cd examples/playground && pnpm run --silent test)
+  (cd examples/playground && pnpm exec vite build --logLevel error)
+}
+
 check_python() {
   echo "== python"
   (cd python && uv run --quiet ruff format --check . && uv run --quiet ruff check .)
@@ -40,11 +49,12 @@ check_rust() {
 }
 
 sections=("$@")
-if [ ${#sections[@]} -eq 0 ]; then sections=(ts assistant python rust); fi
+if [ ${#sections[@]} -eq 0 ]; then sections=(ts assistant playground python rust); fi
 for section in "${sections[@]}"; do
   case "$section" in
     ts) check_ts ;;
     assistant) check_assistant ;;
+    playground) check_playground ;;
     python) check_python ;;
     rust) check_rust ;;
     *) echo "Unknown section: $section" >&2; exit 2 ;;
