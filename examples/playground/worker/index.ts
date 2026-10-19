@@ -37,7 +37,8 @@ const ALLOWED_FIELDS = ['max_tokens', 'system', 'messages', 'tools', 'cache_cont
 const PRICE = { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 };
 
 export const MAX_PAGE_BYTES = 2 * 1024 * 1024;
-export const MAX_PAGE_CHARS = 20_000;
+export const MAX_PAGE_CHARS = 32_000;
+const FETCH_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 3;
 const PAGE_CACHE_SECONDS = 600;
 
@@ -213,32 +214,79 @@ export function checkPageUrl(raw: string): string | undefined {
   return undefined;
 }
 
-/** A page's title and readable text: scripts, styles and tags removed, entities decoded, space collapsed. */
-export function pageText(html: string): { title: string; text: string } {
-  const decode = (s: string) =>
-    s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
-      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
-  const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '').replace(/\s+/g, ' ').trim();
+export type Page = { url: string; title: string; description: string; text: string; links: { text: string; href: string }[] };
+
+const decode = (s: string) =>
+  s.replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(Number.parseInt(n, 16)))
+    .replace(/&amp;/g, '&');
+const oneLine = (s: string) => decode(s.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+
+/**
+ * A page as plain Markdown, as the press template's fetch_page.md asks: the title, the meta
+ * description, the text of `<main>` or `<article>` when there is one, with headings and list items
+ * kept and scripts, navigation, headers, footers and forms left out, and the links on the page.
+ * A regex pass rather than a parser, which is enough for the readable text of most pages.
+ */
+export function pageText(html: string, base: string): Page {
+  const title = oneLine(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '');
+  const description = oneLine(
+    html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["']/i)?.[1] ??
+      html.match(/<meta[^>]+content=["']([^"']*)["'][^>]*name=["']description["']/i)?.[1] ?? '',
+  );
+  let body = html
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style|noscript|svg|template|title|head|nav|header|footer|form|iframe)\b[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<(\w+)[^>]*aria-hidden=["']true["'][^>]*>[\s\S]*?<\/\1>/gi, ' ');
+  const main = body.match(/<main\b[\s\S]*?<\/main>/i)?.[0] ?? body.match(/<article\b[\s\S]*?<\/article>/i)?.[0];
+  if (main !== undefined) body = main;
+
+  const links: Page['links'] = [];
+  const seen = new Set<string>();
+  for (const [, href, inner] of body.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    let resolved: URL;
+    try {
+      resolved = new URL(decode(href!), base);
+    } catch {
+      continue;
+    }
+    resolved.hash = '';
+    const text = oneLine(inner!);
+    if (!/^https?:$/.test(resolved.protocol) || resolved.toString() === base || seen.has(resolved.toString()) || text === '') continue;
+    if (/\.(pdf|png|jpe?g|gif|webp|svg|zip|mp4|mp3)$/i.test(resolved.pathname)) continue;
+    seen.add(resolved.toString());
+    links.push({ text, href: resolved.toString() });
+  }
+
   const text = decode(
-    html
-      .replace(/<(script|style|noscript|svg|template|title)[\s\S]*?<\/\1>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article)[^>]*>/gi, '\n')
+    body
+      .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, inner) => `\n\n${'#'.repeat(Number(level))} ${oneLine(inner)}\n\n`)
+      .replace(/<li[^>]*>/gi, '\n- ')
+      .replace(/<(br|\/p|\/div|\/li|\/tr|\/section|\/article|\/ul|\/ol|\/blockquote)[^>]*>/gi, '\n')
+      .replace(/<p\b[^>]*>/gi, '\n\n')
       .replace(/<[^>]+>/g, ' '),
   )
     .replace(/[ \t\f\v]+/g, ' ')
-    .replace(/\s*\n\s*/g, '\n')
+    .replace(/ *\n */g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  return { title, text: text.slice(0, MAX_PAGE_CHARS) };
+  return { url: base, title, description, text, links };
+}
+
+/** Cuts text at the last paragraph break before the limit, and says that it did. */
+export function capText(text: string): string {
+  if (text.length <= MAX_PAGE_CHARS) return text;
+  const cut = text.lastIndexOf('\n\n', MAX_PAGE_CHARS);
+  return `${text.slice(0, cut > 0 ? cut : MAX_PAGE_CHARS).trimEnd()}\n\n[The rest of the page was not saved.]`;
 }
 
 async function fetchPage(request: Request, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
   if (request.method !== 'GET') return refuse(405, 'method_not_allowed', 'Use GET.');
+  if (await budgetSpent(env)) return refuse(403, 'read_only', "Today's budget for the playground is spent.");
   const target = new URL(request.url).searchParams.get('url') ?? '';
   const problem = checkPageUrl(target);
-  if (problem !== undefined) return refuse(400, 'invalid_url', problem);
+  if (problem !== undefined) return refuse(400, problem.startsWith('Only public') ? 'not_public' : 'invalid_url', problem);
   if (await rateLimited(request, env, 'fetch')) return refuse(429, 'rate_limited', 'Too many requests. Wait a minute and try again.');
 
   const cache = typeof caches === 'undefined' ? undefined : (caches as unknown as { default: Cache }).default;
@@ -246,29 +294,37 @@ async function fetchPage(request: Request, env: Env, ctx: { waitUntil(promise: P
   const cached = await cache?.match(cacheKey);
   if (cached) return cached;
 
+  const upstreamError = (status: number) => json({ type: 'error', error: { type: 'upstream', status, message: `The page answered with HTTP ${status}.` } }, 502);
   let url = target;
   let response: Response | undefined;
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+  for (let hop = 0; ; hop++) {
     try {
-      response = await fetch(url, { redirect: 'manual', headers: { 'user-agent': 'flatbed-playground/0.1 (+https://github.com/coopie/flatbed)', accept: 'text/html,text/plain' } });
-    } catch {
-      return refuse(502, 'fetch_failed', `Could not reach ${url}.`);
+      response = await fetch(url, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        headers: { 'user-agent': 'flatbed-playground/0.1 (+https://github.com/coopie/flatbed)', accept: 'text/html,text/plain' },
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'TimeoutError') return refuse(504, 'timeout', `${url} took too long to answer.`);
+      return upstreamError(0);
     }
     const location = response.headers.get('location');
     if (response.status < 300 || response.status >= 400 || location === null) break;
+    if (hop === MAX_REDIRECTS) return refuse(502, 'too_many_redirects', 'The page redirected too many times.');
     url = new URL(location, url).toString();
     const redirectProblem = checkPageUrl(url);
-    if (redirectProblem !== undefined) return refuse(400, 'invalid_url', `The page redirected somewhere the playground does not fetch: ${redirectProblem}`);
-    if (hop === MAX_REDIRECTS) return refuse(502, 'fetch_failed', 'The page redirected too many times.');
+    if (redirectProblem !== undefined) return refuse(400, 'not_public', `The page redirected somewhere the playground does not fetch: ${redirectProblem}`);
   }
-  if (response === undefined || !response.ok) return refuse(502, 'fetch_failed', `The page answered with HTTP ${response?.status}.`);
+  if (!response.ok) return upstreamError(response.status);
   const type = response.headers.get('content-type') ?? '';
-  if (!/text\/html|text\/plain|application\/xhtml/.test(type)) return refuse(415, 'not_text', 'That address is not a web page.');
+  if (!/text\/html|text\/plain|application\/xhtml/.test(type)) {
+    return json({ type: 'error', error: { type: 'not_text', contentType: type.split(';')[0], message: 'That address is not a web page.' } }, 415);
+  }
   const bytes = await readCapped(response.body, MAX_PAGE_BYTES);
   if (bytes === undefined) return refuse(413, 'too_large', 'The page is too large for the playground.');
   const raw = new TextDecoder().decode(bytes);
-  const page = type.includes('text/plain') ? { title: '', text: raw.slice(0, MAX_PAGE_CHARS) } : pageText(raw);
-  const result = json({ url, ...page });
+  const page = type.includes('text/plain') ? { url, title: '', description: '', text: raw, links: [] } : pageText(raw, url);
+  const result = json({ ...page, text: capText(page.text) });
   result.headers.set('cache-control', `public, max-age=${PAGE_CACHE_SECONDS}`);
   if (cache) ctx.waitUntil(cache.put(cacheKey, result.clone()));
   return result;

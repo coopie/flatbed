@@ -110,13 +110,19 @@ test('a page fetch returns text, and a redirect to a private address is refused'
   }) as typeof fetch;
   const { call } = setup();
   const ok = await call(`/api/fetch?url=${encodeURIComponent('https://example.com/')}`);
-  assert.deepEqual(await ok.json(), { url: 'https://example.com/', title: 'Ex', text: 'Hello & welcome' });
+  const page = await ok.json();
+  assert.equal(page.title, 'Ex');
+  assert.equal(page.text, 'Hello & welcome');
   const redirected = await call(`/api/fetch?url=${encodeURIComponent('https://example.com/go')}`);
   assert.equal(redirected.status, 400);
 });
 
-test('page text drops scripts and styles and keeps the words', () => {
-  const { title, text } = pageText('<html><head><title> A  B </title><style>p{}</style></head><body><h1>One</h1><p>Two</p></body></html>');
-  assert.equal(title, 'A B');
-  assert.equal(text, 'One\nTwo');
+test('page text keeps headings, list items and links, and leaves out navigation', () => {
+  const html = '<title> A  B </title><meta name="description" content="About us"><nav><a href="/x">Nav</a></nav>' +
+    '<main><h1>One</h1><p>Two <a href="/pricing">Pricing</a></p><ul><li>Three</li></ul><a href="/f.pdf">PDF</a></main><footer>Foot</footer>';
+  const page = pageText(html, 'https://example.com/');
+  assert.equal(page.title, 'A B');
+  assert.equal(page.description, 'About us');
+  assert.equal(page.text, '# One\n\nTwo Pricing\n\n- Three\n\nPDF');
+  assert.deepEqual(page.links, [{ text: 'Pricing', href: 'https://example.com/pricing' }]);
 });
