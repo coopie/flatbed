@@ -1,0 +1,31 @@
+{
+  "id": "press",
+  "name": "A press office for any company",
+  "pitch": "Paste a company's web address. The agent reads its site, then drafts announcements a supervisor checks line by line.",
+  "folders": [
+    {
+      "path": "sources",
+      "mode": "read",
+      "about": "The company's public pages, one document each, saved by fetch_page. The only evidence a draft can rest on."
+    },
+    {
+      "path": "notes",
+      "mode": "write",
+      "about": "Your working notes: the fact sheet, with the page behind each fact, and the voice guide."
+    },
+    {
+      "path": "outbox",
+      "mode": "reviewed",
+      "about": "Drafts for publication. A supervisor checks each one against the pages in sources/ before it lands.",
+      "spec": "specs/outbox.json"
+    }
+  ],
+  "opening": "I'm the press office for the company you named. I'll read a few of its public pages first, about six, and write a fact sheet and a voice guide from them. Then I can draft an announcement, a reply to a journalist or a post. Every draft goes past a supervisor, who refuses any claim I can't point to on a page I read.",
+  "prompts": [
+    "Draft a short press release about the company's main product.",
+    "A journalist emails: \"We hear you're about to be acquired. Can you comment?\" Draft a reply.",
+    "Write a LinkedIn post introducing the company to people who have never heard of it."
+  ],
+  "ask": { "label": "Company web address", "placeholder": "https://example.com" },
+  "tools": ["fetch_page"]
+}
