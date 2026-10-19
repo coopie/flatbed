@@ -70,6 +70,8 @@ def make_tool(spec: dict[str, Any], running: Running) -> Tool:
             running.now += 1
             running.most = max(running.most, running.now)
             return "\n".join("".join(b.get("text", "") for b in r["content"]) for r in results)
+        if "addTools" in behaviour:
+            return ", ".join(ctx.add_tools(behaviour["addTools"])) or "none"
         if "text" in behaviour:
             return behaviour["text"]
         if "error" in behaviour:
@@ -88,6 +90,7 @@ def make_tool(spec: dict[str, Any], running: Running) -> Tool:
 def make_plugin(scenario: dict[str, Any], running: Running) -> Plugin:
     """The test plugin: the scenario's sections and tools, and any hooks its `plugin` field gives."""
     tools = [make_tool(spec, running) for spec in scenario["tools"]]
+    available = [make_tool(spec, running) for spec in scenario.get("available", [])]
     hooks = scenario.get("plugin") or {}
     before, after = hooks.get("beforeTool", {}), hooks.get("afterTool", {})
 
@@ -105,7 +108,7 @@ def make_plugin(scenario: dict[str, Any], running: Running) -> Plugin:
             # `append` fails here, and the hook carries on.
             with contextlib.suppress(Exception):
                 await ctx.append({"type": "custom", "plugin": "test", "data": opening["append"]})
-        return ContextAddition(sections=scenario["sections"], tools=tools)
+        return ContextAddition(sections=scenario["sections"], tools=tools, available=available)
 
     async def on_entry(entry: dict[str, Any], ctx: Any) -> None:
         if entry["type"] == "message" and entry["message"]["role"] == "tool":
@@ -233,6 +236,9 @@ async def check_scenario(scenario: dict[str, Any], root: Path, release: asyncio.
             }
             entry.update(step["crash"])
             await store.append("test", newest, entry)
+        elif "restart" in step:
+            # A new agent on the same store, as a new process would make, with nothing kept in memory.
+            agent = Agent(config, store=store, providers={"faux": faux})
         elif "header" in step:
             # Only the header of a new session, as a process that stopped before its context entry left.
             ids = await store.list("test")

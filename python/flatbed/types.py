@@ -149,10 +149,12 @@ class Tool:
 
 @dataclass
 class ContextAddition:
-    """What a plugin's `context` hook returns."""
+    """What a plugin's `context` hook returns. `available` tools stay out of the session until a tool
+    adds them with `add_tools`."""
 
     sections: list[Section] = field(default_factory=list)
     tools: list[Tool] = field(default_factory=list)
+    available: list[Tool] = field(default_factory=list)
 
 
 @dataclass
@@ -211,10 +213,17 @@ class ToolContext(PluginContext):
     # turn's limit, and returns its result without appending a `tool` message. The calling tool gives
     # up its place under the limit while it waits.
     run_tool: Callable[[ToolCall], Awaitable[ToolResult]] = lambda call: _no_runner(call)
+    # Adds tools from the plugins' `available` ones to the session, after the turn's results. Leaves
+    # out a name that is not available or a tool already in the session, and returns the names it added.
+    add_tools: Callable[[list[str]], list[str]] = lambda names: _no_adder(names)
 
 
 async def _no_runner(call: ToolCall) -> ToolResult:
     raise RuntimeError("This context cannot run tools; only a tool's context from the loop can.")
+
+
+def _no_adder(names: list[str]) -> list[str]:
+    raise RuntimeError("This context cannot add tools; only a tool's context from the loop can.")
 
 
 class StopSignal:
