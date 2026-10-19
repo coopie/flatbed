@@ -21,3 +21,47 @@ The template folder is complete in `examples/playground/templates/press/`, valid
 Work for at most 60 minutes; stop and write up what you have when you reach it. Work in the worktree you were given, on its branch, and commit as you go; do not merge into `main`. Never use em dashes in anything you write.
 
 ## Write-up
+
+### What changed
+
+The press office template is in `examples/playground/templates/press/`: `template.json`, `role.md`, `specs/outbox.json`, `fetch_page.md` and `look.css`. There are no seed documents, because the fact sheet and voice guide come from the company's pages, and a skeleton could be mistaken for facts.
+
+- **The outbox spec** has six items, facts first: the demo line, numbers and names, other claims, quotes, promises, and tone (`warn`). The preamble casts the supervisor as the press office's fact-checker and says the agent's own notes are not evidence.
+- **`role.md`** sets the order: read about six pages, picking each from the links the last one returned; write and pin `notes/fact-sheet` and `notes/voice-guide`; then draft. Before drafting, the agent re-reads the pages behind its claims, because a one-call supervisor sees only the session.
+- **`fetch_page.md`** sets the input, the naming scheme (`sources/quillfern-example-about-us`), the summary, a body headed by `Source:` and `Fetched:` lines and cut at 32,000 characters, a result that carries the saved text in full plus up to 30 links, and a table of failure results.
+
+### Choices someone could make differently
+
+- Quotes: I read "quotes only from people named on the site" strictly. A quote must be words a page gives that person, or else a placeholder that names them. Drafting new words for a real CEO, even for approval, felt too risky for a public demo.
+- The demo line is checked by the model, not the host, so the app needs no code for this template.
+- `fetch_page` returns the full text, not a summary, so the supervisor can check against it. This makes sessions bigger.
+- I changed the first prompt from "as if it had just launched" to a plain press release. The old wording asked the agent to claim something no page says.
+
+### How I know it works
+
+The spec passes `parseSpec`, and `template.json` has the format's keys and modes (scratch script, not committed). `scripts/check.sh ts` printed "all checks passed".
+
+On paper, with invented sources for Tidewell. `sources/tidewell-example-home` says: "Refillable cleaning tablets for small cafes, shipped in paper. Used by over 300 cafes in Bristol and Bath." `sources/tidewell-example-about` says: "Founded in 2021 by Maya Okonjo (CEO) and Ravi Teller (head of product). 'We started Tidewell because our own cafe threw away forty plastic bottles a week,' says Maya."
+
+Should pass:
+
+> Tidewell makes refillable cleaning tablets for small cafes, shipped in paper rather than plastic, and over 300 cafes in Bristol and Bath use them. "We started Tidewell because our own cafe threw away forty plastic bottles a week," says Maya Okonjo, CEO. [Quote from Ravi Teller, head of product, to be supplied]
+> _Unofficial draft written by an AI agent in the flatbed playground demo. Not from or approved by Tidewell._
+
+Every number, place and name is on a page. The quote is word for word, and the placeholder names a person the site names.
+
+Should be refused:
+
+> Tidewell, trusted by 10,000 teams across the UK, today unveils its tablets. "Our tablets are the future of cleaning," says Maya Okonjo. London cafes get them next spring.
+
+The spec refuses it on five items. Under `numbers_and_names_on_a_page`, "10,000 teams" and "the UK" are on no page (its example names that exact case). Under `claims_on_a_page`, "across the UK" goes further than Bristol and Bath. Under `quotes_are_real_or_placeholders`, the quote is new words given to a named person. Under `no_promises`, no page makes the London promise. Under `marked_unofficial`, the line is missing.
+
+### What is left
+
+- No live run yet: the app is not built. Run it in `shadow` mode first to check that true claims from pages outside the session are not refused too often.
+- Edits: with `edit_doc`, the supervisor sees only the changed passage. The spec judges that passage alone. The guard could show the whole document after the edit.
+- If refusals for unseen pages are common, `agentPass` with a read-only `read_doc` would let the supervisor look pages up itself.
+
+### How it went
+
+The format brief and the supervisor README made this fast. The spec's `lookFor` advice, to say which cases pass, did the most to shape it. Two things were not in any doc, and I had to work them out from `ts/packages/docs`. First, that a one-call supervisor sees only the current session, so sources fetched in an earlier session are invisible to it. Second, which fields `write_doc` and `edit_doc` take. `docs/playground.md` could say that a reviewed folder's spec judges a single call, not the finished document.

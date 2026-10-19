@@ -22,7 +22,7 @@
   ],
   "opening": "I'm the press office for the company you named. I'll read a few of its public pages first, about six, and write a fact sheet and a voice guide from them. Then I can draft an announcement, a reply to a journalist or a post. Every draft goes past a supervisor, who refuses any claim I can't point to on a page I read.",
   "prompts": [
-    "Draft a short announcement of the company's main product, as if it had just launched.",
+    "Draft a short press release about the company's main product.",
     "A journalist emails: \"We hear you're about to be acquired. Can you comment?\" Draft a reply.",
     "Write a LinkedIn post introducing the company to people who have never heard of it."
   ],
