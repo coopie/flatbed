@@ -157,6 +157,7 @@ impl Plugin for Codemode {
             .filter_map(|name| seen.get(name).cloned())
             .collect();
         Ok(Contribution {
+            sections: Vec::new(),
             tools: vec![Box::new(RunScript {
                 // Checked here as well as in the worker, so that a worker that misbehaves still
                 // reaches only these.
@@ -164,7 +165,6 @@ impl Plugin for Codemode {
                 callable,
                 options: self.options.clone(),
             })],
-            ..Contribution::default()
         })
     }
 }

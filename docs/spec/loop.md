@@ -13,7 +13,7 @@ A host calls `run`, optionally with a stop that says who stopped the run, as [ho
 1. **Opens a session if none is open.** The agent's open session is its newest session, unless that session ends in a `reset`. To open one, collect sections and tools from every plugin's `context` hook in plugin order, add the core `reset` tool, write the header and a `context` entry, and append a `notice` event saying why the session started: `Session started.` for an agent's first, or `Session started after a reset: <reason>` after one, or `Session started after a reset.` when the reset gave no reason.
 2. **Repairs the session.** Take the last assistant message on the path. For each of its tool calls that has no `tool` message after it on the path, append one, in call order, with `isError: true` and the text `The harness stopped before this tool ran.` A crash, even one partway through a turn's results, then never leaves the model looking at a call with no answer.
 3. **Delivers waiting events.** The host may queue events while the agent runs. Append everything queued, in order. A host may queue an event with an earlier entry as its parent, to rewind, as [sessions.md](sessions.md) describes.
-4. **Freezes the context.** Take the last `context` entry on the path, and the tools it names, once for the whole run, until a tool adds tools, as [plugins.md](plugins.md) describes.
+4. **Freezes the context.** Take the last `context` entry on the path, and the tools it names, once for the whole run.
 5. **Loops while the session needs a run**, as below. Each turn:
    1. When the stop signal is set, append a `notice` event, `Stopped by <who>.`, and end the run.
    2. Render the path and call the provider with the context, the messages, the agent's model and, when the agent sets it, its `effort`.
@@ -21,8 +21,6 @@ A host calls `run`, optionally with a stop that says who stopped the run, as [ho
    4. Run each tool call, as [plugins.md](plugins.md) describes, and append a `tool` message for each, in the order the calls appear, once the last call has finished. How the calls run depends on the agent's `toolExecution`:
       - `concurrent`, the default: calls start in call order, with at most `maxConcurrentTools` running at once, and the next starts as soon as one finishes
       - `serial`: each call starts only after the one before it has finished
-
-      When a call added tools with `addTools`, append the new `context` entry after the results, before anything below.
 
       When the stop is set during the calls, no further call starts, as [host.md](host.md) describes: append every result, then the `Stopped by <who>.` notice, and end the run with `stopped`. When the assistant message's `stop` is `maxTokens`, run none of its calls, since one may be incomplete: give each a `tool` message with `isError: true` and the text `The response was cut off before this call was complete.`, and do not call plugins.
    5. When a tool requested a reset, append a `reset` entry with `by: "agent"` and the reason of the first call to request one, in call order, and end the run with `reset`. A reset wins over a stop set during the same turn, since the model has already been told the session will reset: the run appends the turn's results and the `reset` entry, with no stop notice, and ends with `reset`.

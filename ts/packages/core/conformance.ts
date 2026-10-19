@@ -17,15 +17,14 @@ const AGENT = 'test';
 /** What a tool does, after waiting `sleep` milliseconds and appending a custom entry with `append`'s data, when given. */
 type Behaviour = { sleep?: number; append?: unknown } & (
   | { echo: string } | { text: string } | { error: string } | { reset: string } | { deliver: Event } | { waitForStop: string }
-  | { runTools: { name: string; input: Record<string, unknown> }[] } | { addTools: string[] }
+  | { runTools: { name: string; input: Record<string, unknown> }[] }
 );
 type Step =
   | { deliver: Event }
   | { run: { stop?: string; stopAfter?: number }; expect?: string | { error: string } }
   | { crash: EntryBody }
   | { rewind: number }
-  | { header: Record<string, never> }
-  | { restart: Record<string, never> };
+  | { header: Record<string, never> };
 
 /** What the test plugin does beyond giving sections and tools, as docs/spec/conformance.md describes. */
 type HookResult = ToolResult | { throw: string };
@@ -42,7 +41,6 @@ type Scenario = {
   agent: Omit<AgentConfig, 'id' | 'plugins'>;
   sections?: Section[];
   tools?: (ToolDefinition & { behaviour: Behaviour })[];
-  available?: (ToolDefinition & { behaviour: Behaviour })[];
   plugin?: PluginHooks;
   script: (ScriptStep | { abort: string } | { hang: true })[];
   steps: Step[];
@@ -86,7 +84,6 @@ async function behave(behaviour: Behaviour, input: Record<string, unknown>, ctx:
     running.most = Math.max(running.most, ++running.now);
     return results.map((r) => r.content.map((b) => (b.type === 'text' ? b.text : '')).join('')).join('\n');
   }
-  if ('addTools' in behaviour) return ctx.addTools(behaviour.addTools).join(', ') || 'none';
   if ('text' in behaviour) return behaviour.text;
   if ('error' in behaviour) throw new Error(behaviour.error);
   if ('reset' in behaviour) {
@@ -111,11 +108,7 @@ function testPlugin(scenario: Scenario, running: Running): Plugin {
       if (hooks.context !== undefined && 'throw' in hooks.context) throw new Error(hooks.context.throw);
       // `append` fails here, and the hook carries on.
       if (hooks.context !== undefined) await ctx.append({ type: 'custom', plugin: 'test', data: hooks.context.append }).catch(() => {});
-      return {
-        sections: scenario.sections ?? [],
-        tools: (scenario.tools ?? []).map((tool) => toolFor(tool, running)),
-        available: (scenario.available ?? []).map((tool) => toolFor(tool, running)),
-      };
+      return { sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map((tool) => toolFor(tool, running)) };
     },
     beforeTool: (call) => hookResult(hooks.beforeTool?.[call.name]),
     afterTool: (call) => hookResult(hooks.afterTool?.[call.name]),
@@ -146,8 +139,7 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
   const faux = fauxProvider(script);
   const running: Running = { now: 0, most: 0 };
   const plugin = testPlugin(scenario, running);
-  const newAgent = () => createAgent({ id: AGENT, ...scenario.agent, plugins: [plugin] }, { store, providers: { faux } });
-  let agent = newAgent();
+  const agent = createAgent({ id: AGENT, ...scenario.agent, plugins: [plugin] }, { store, providers: { faux } });
   const current = async () => store.read(AGENT, (await store.list(AGENT)).at(-1)!);
   const rewoundTo = new Set<string>();
   let rewind: string | undefined;
@@ -178,9 +170,6 @@ async function runScenario(scenario: Scenario): Promise<string | undefined> {
       const session = await current();
       const entry = { id: newEntryId(), parentId: session.entries.at(-1)?.id ?? null, at: new Date().toISOString(), ...step.crash } as Entry;
       await store.append(AGENT, session.header.id, entry);
-    } else if ('restart' in step) {
-      // A new agent on the same store, as a new process would make, with nothing kept in memory.
-      agent = newAgent();
     } else if ('header' in step) {
       // Only the header of a new session, as a process that stopped before its context entry would leave.
       const previous = (await store.list(AGENT)).at(-1);

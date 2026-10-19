@@ -6,7 +6,7 @@
 import { render, pathOf } from './render.ts';
 import { newEntryId, newSessionId } from './store.ts';
 import type {
-  AgentConfig, AssistantMessage, ContextEntry, Entry, EntryBody, Event, Plugin, PluginContext, Provider, RunOutcome,
+  AgentConfig, AssistantMessage, Entry, EntryBody, Event, Plugin, PluginContext, Provider, RunOutcome,
   Session, Store, Tool, ToolCall, ToolContext, ToolResult,
 } from './types.ts';
 
@@ -41,7 +41,6 @@ const errorResult = (text: string): ToolResult => ({ content: [{ type: 'text', t
 const isHarnessNotice = (e: Entry) => e.type === 'event' && e.kind === 'notice' && e.attrs?.from === 'harness';
 const isSoftLimitNotice = (e: Entry) => isHarnessNotice(e) && e.type === 'event' && e.text === SOFT_LIMIT_NOTICE;
 const isStopNotice = (e: Entry) => isHarnessNotice(e) && e.type === 'event' && /^Stopped by .*\.$/s.test(e.text);
-const definitionOf = ({ name, description, inputSchema }: Tool) => ({ name, description, inputSchema });
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 /** A throwing hook is the plugin's bug: the call gets an error result, and no later hook runs for it. */
 const pluginFailed = (plugin: Plugin, error: unknown) => errorResult(`The ${plugin.name} plugin failed: ${messageOf(error)}`);
@@ -56,8 +55,8 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
   // Calls running together may append at once. Each append reads the head and writes after it, so
   // they take turns: `writing` settles when the last append queued so far has written its entry.
   let writing: Promise<unknown> = Promise.resolve();
-  // The code for the open session's tools, and the tools it may add, kept between runs of this process.
-  let cachedTools: { session: string } & Tools | undefined;
+  // The code for the open session's tools, kept between runs of this process.
+  let cachedTools: { session: string; tools: Map<string, Tool> } | undefined;
 
   // Fail here, before anything is stored, for a configuration no run could succeed with.
   const providerName = config.model.slice(0, Math.max(config.model.indexOf('/'), 0));
@@ -110,16 +109,11 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
 
   /**
    * Calls every plugin's `context` hook, and adds the core `reset` tool after their tools. Nothing
-   * can be appended yet, since a session's first entry is its `context` entry. No two tools, whether
-   * in the session or available to add, may share a name.
+   * can be appended yet, since a session's first entry is its `context` entry.
    */
   async function collectContext(session: Session) {
     const sections = [];
     const tools = new Map<string, Tool>();
-    const available = new Map<string, Tool>();
-    const unique = (name: string) => {
-      if (tools.has(name) || available.has(name)) throw new Error(`Two tools are named ${name}.`);
-    };
     const ctx = contextFor(session, 'The session is opening, so nothing can be appended yet.');
     for (const plugin of plugins) {
       let added;
@@ -130,34 +124,29 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       }
       sections.push(...(added?.sections ?? []));
       for (const tool of added?.tools ?? []) {
-        unique(tool.name);
+        if (tools.has(tool.name)) throw new Error(`Two tools are named ${tool.name}.`);
         tools.set(tool.name, tool);
       }
-      for (const tool of added?.available ?? []) {
-        unique(tool.name);
-        available.set(tool.name, tool);
-      }
     }
-    unique(resetTool.name);
+    if (tools.has(resetTool.name)) throw new Error(`Two tools are named ${resetTool.name}.`);
     tools.set(resetTool.name, resetTool);
-    return { sections, tools, available };
+    return { sections, tools };
   }
 
   /**
    * Step 1: the agent's newest session, unless it ends in a reset; otherwise a new one. A newest
    * session that holds only its header, because a process stopped after writing it, is opened in place.
    */
-  async function openSession(): Promise<{ session: Session } & Tools> {
+  async function openSession(): Promise<{ session: Session; tools: Map<string, Tool> }> {
     const ids = await store.list(config.id);
     const newestId = ids.at(-1);
     const newest = newestId === undefined ? undefined : await store.read(config.id, newestId);
     if (newest !== undefined && newest.entries.length > 0 && newest.entries.at(-1)?.type !== 'reset') {
-      if (cachedTools?.session === newest.header.id) return { ...cachedTools, session: newest };
-      // Opened by an earlier process: ask the plugins again for their tools' code, including tools
-      // a tool may have added.
-      const { tools, available } = await collectContext(newest);
-      cachedTools = { session: newest.header.id, tools, available };
-      return { session: newest, tools, available };
+      if (cachedTools?.session === newest.header.id) return { session: newest, tools: cachedTools.tools };
+      // Opened by an earlier process: ask the plugins again for their tools' code.
+      const { tools } = await collectContext(newest);
+      cachedTools = { session: newest.header.id, tools };
+      return { session: newest, tools };
     }
     const headerOnly = newest !== undefined && newest.entries.length === 0;
     // The session before the one being opened, whose reset says why this one starts.
@@ -171,14 +160,15 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
         : { parent: { session: newestId, reason: 'reset' as const } }),
     };
     const session: Session = { header, entries: [] };
-    const { sections, tools, available } = await collectContext(session);
+    const { sections, tools } = await collectContext(session);
     if (!headerOnly) await store.create(header);
-    await append(session, { type: 'context', sections, tools: [...tools.values()].map(definitionOf) });
+    const definitions = [...tools.values()].map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+    await append(session, { type: 'context', sections, tools: definitions });
     const reason = last?.type === 'reset' ? last.reason : undefined;
     const why = last?.type !== 'reset' ? 'Session started.' : reason ? `Session started after a reset: ${reason}` : 'Session started after a reset.';
     await append(session, notice(why));
-    cachedTools = { session: header.id, tools, available };
-    return { session, tools, available };
+    cachedTools = { session: header.id, tools };
+    return { session, tools };
   }
 
   /** Step 2: gives every unanswered call of the last assistant message an error result. */
@@ -248,23 +238,16 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
 
   async function run(): Promise<RunOutcome> {
     // 1. Open a session if none is open. Read the store every run, since the host may have appended.
-    const { session, tools, available } = await openSession();
+    const { session, tools } = await openSession();
     // 2. Repair calls left without a result. 3. Deliver waiting events.
     await repair(session);
     await deliverQueued(session);
     const softLimit = config.softLimit ?? DEFAULT_SOFT_LIMIT;
     const hardLimit = config.hardLimit ?? DEFAULT_HARD_LIMIT;
-    // 4. Freeze the context. It decides which tools exist and their schemas; the plugins only supply
-    // the code. A tool that adds tools changes it after the turn's results.
-    let { context } = render(pathOf(session.entries));
-    const freeze = (context: ContextEntry) => new Map(context.tools.flatMap((t) => {
-      const tool = tools.get(t.name) ?? available.get(t.name);
-      return tool === undefined ? [] : [[t.name, { tool, schema: t.inputSchema }] as const];
-    }));
-    let frozen = freeze(context);
+    // 4. Freeze the context. It decides which tools exist and their schemas; the plugins only supply the code.
+    const { context } = render(pathOf(session.entries));
+    const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, { tool: tools.get(t.name)!, schema: t.inputSchema }] as const] : [])));
     const limit = limiter(toolExecution === 'serial' ? 1 : maxConcurrent);
-    // The tools that join the session after this turn's results, in the order they were asked for.
-    const adding: Tool[] = [];
 
     /** Runs a call under the turn's limit. Once the stop is set, a call that has not started never starts. */
     async function runLimited(call: ToolCall, requestReset: ToolContext['requestReset']): Promise<ToolResult> {
@@ -295,12 +278,6 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       const ctx: ToolContext = {
         ...contextFor(session),
         requestReset,
-        addTools(names) {
-          const added = names.filter((name, i) => available.has(name) && names.indexOf(name) === i
-            && !context.tools.some((t) => t.name === name) && !adding.some((t) => t.name === name));
-          adding.push(...added.map((name) => available.get(name)!));
-          return added;
-        },
         async runTool(call) {
           if (waiting++ === 0) {
             await back;
@@ -367,12 +344,6 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       for (const [i, call] of calls.entries()) {
         await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
       }
-      // Tools a call added join now, in a new context entry, which the rest of the run uses.
-      if (adding.length > 0) {
-        const tools = [...context.tools, ...adding.splice(0).map(definitionOf)];
-        context = await append(session, { type: 'context', sections: context.sections, tools }) as ContextEntry;
-        frozen = freeze(context);
-      }
 
       // v. A reset wins over a stop, since the model has already been told the session will reset.
       const reset = resets.find((r) => r !== undefined);
@@ -417,9 +388,6 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     },
   };
 }
-
-/** The code for a session's tools, by name, and for the tools a tool may add to it. */
-type Tools = { tools: Map<string, Tool>; available: Map<string, Tool> };
 
 /** Runs a hook whose errors are ignored, such as a watcher's. */
 async function ignoreErrors(hook: () => unknown): Promise<void> {

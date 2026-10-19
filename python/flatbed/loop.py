@@ -186,9 +186,8 @@ class Agent:
         # Calls running together may append at once. Each append reads the head and writes after it,
         # so they take turns.
         self._appending = asyncio.Lock()
-        # The code for the open session's tools, and for the tools it may add, so a run does not call
-        # the context hooks again.
-        self._tools: tuple[str, dict[str, Tool], dict[str, Tool]] | None = None
+        # The tools' code for the open session, so a run does not call the context hooks again.
+        self._tools: tuple[str, dict[str, Tool]] | None = None
 
     def deliver(self, event: Event, *, parent_id: str | None = None) -> None:
         """Queue an event for the next delivery point. Give `parent_id` to rewind to that entry."""
@@ -209,27 +208,13 @@ class Agent:
 
     async def _run(self, stop: StopSignal) -> RunOutcome:
         # 1. Open a session if none is open. Read the store every run: the host may have appended.
-        session, tools, available = await self._open_session()
+        session, tools = await self._open_session()
         # 2. Repair calls left without a result. 3. Deliver waiting events.
         await self._repair(session)
         await self._deliver_queued(session)
 
-        # 4. Freeze the context: the last context entry on the path, for the whole run, until a tool
-        # adds tools after a turn's results.
+        # 4. Freeze the context: the last context entry on the path, for the whole run.
         frozen = render(path_of(session.entries))
-        code = tools | available
-        # The tools that join the session after this turn's results, in the order they were asked for.
-        adding: list[Tool] = []
-
-        def add_tools(names: list[str]) -> list[str]:
-            present = {definition["name"] for definition in frozen.tools} | {tool.name for tool in adding}
-            added = []
-            for name in names:
-                if name in available and name not in present:
-                    present.add(name)
-                    added.append(name)
-                    adding.append(available[name])
-            return added
 
         # 5. Loop while the session needs a run.
         while self._needs_run(session):
@@ -273,18 +258,10 @@ class Agent:
             if message["stop"] == "maxTokens":
                 results = [error_result(CUT_OFF_TEXT) for _ in calls]
             else:
-                results = await self._run_calls(calls, frozen.tools, code, session, resets, add_tools)
+                results = await self._run_calls(calls, frozen.tools, tools, session, resets)
             for call, result in zip(calls, results, strict=True):
                 tool_message = {"role": "tool", "callId": call["id"], "name": call["name"], **result}
                 await self._append(session, {"type": "message", "message": tool_message})
-            # Tools a call added join now, in a new context entry, which the rest of the run uses.
-            if adding:
-                definitions = frozen.tools + [tool.definition() for tool in adding]
-                adding.clear()
-                await self._append(
-                    session, {"type": "context", "sections": frozen.sections, "tools": definitions}
-                )
-                frozen = render(path_of(session.entries))
 
             # v. A reset wins over a stop, since the model has already been told the session will reset.
             if resets:
@@ -307,7 +284,7 @@ class Agent:
 
     # Opening, repairing and ending sessions.
 
-    async def _open_session(self) -> tuple[Session, dict[str, Tool], dict[str, Tool]]:
+    async def _open_session(self) -> tuple[Session, dict[str, Tool]]:
         """The agent's newest session, unless it ends in a reset; otherwise a new one. A newest
         session that holds only its header, because a process stopped after writing it, is opened
         in place."""
@@ -316,12 +293,11 @@ class Agent:
         last = newest.entries[-1] if newest and newest.entries else None
         if newest is not None and last is not None and last["type"] != "reset":
             if self._tools is not None and self._tools[0] == newest.header["id"]:
-                return newest, self._tools[1], self._tools[2]
-            # Opened by an earlier process: ask the plugins again for their tools' code, including
-            # tools a tool may have added.
-            _, tools, available = await self._collect_context(newest)
-            self._tools = (newest.header["id"], tools, available)
-            return newest, tools, available
+                return newest, self._tools[1]
+            # Opened by an earlier process: ask the plugins again for their tools' code.
+            _, tools = await self._collect_context(newest)
+            self._tools = (newest.header["id"], tools)
+            return newest, tools
 
         header_only = newest is not None and not newest.entries
         if newest is not None and header_only:
@@ -331,7 +307,7 @@ class Agent:
             last = previous[-1] if previous else None
         else:
             session = Session(header=self._new_header(ids), entries=[])
-        sections, tools, available = await self._collect_context(session)
+        sections, tools = await self._collect_context(session)
         if not header_only:
             await self.store.create(session.header)
         definitions = [tool.definition() for tool in tools.values()]
@@ -343,8 +319,8 @@ class Agent:
         else:
             why = "Session started after a reset."
         await self._append(session, notice(why))
-        self._tools = (session.header["id"], tools, available)
-        return session, tools, available
+        self._tools = (session.header["id"], tools)
+        return session, tools
 
     def _new_header(self, ids: list[str]) -> Any:
         """A header for a new session: its parent is the previous session, or the agent's parent."""
@@ -362,13 +338,11 @@ class Agent:
             header["parent"] = dict(self.config.parent)
         return header
 
-    async def _collect_context(self, session: Session) -> tuple[list[Any], dict[str, Tool], dict[str, Tool]]:
+    async def _collect_context(self, session: Session) -> tuple[list[Any], dict[str, Tool]]:
         """Calls every plugin's `context` hook, and adds the core `reset` tool after their tools.
-        Nothing can be appended yet, since a session's first entry is its `context` entry. No two
-        tools, whether in the session or available to add, may share a name."""
+        Nothing can be appended yet, since a session's first entry is its `context` entry."""
         sections: list[Any] = []
         tools: dict[str, Tool] = {}
-        available: dict[str, Tool] = {}
         ctx = self._context(session, refusal="The session is opening, so nothing can be appended yet.")
         for plugin in self.config.plugins:
             try:
@@ -376,13 +350,12 @@ class Agent:
             except Exception as error:
                 raise RuntimeError(f"The {plugin.name} plugin failed: {message_of(error)}") from error
             sections.extend(added.sections)
-            for into, given in ((tools, added.tools), (available, added.available)):
-                for tool in given:
-                    if tool.name in tools or tool.name in available or tool.name == RESET_TOOL.name:
-                        raise ValueError(f"Two tools are named {tool.name}.")
-                    into[tool.name] = tool
+            for tool in added.tools:
+                if tool.name in tools or tool.name == RESET_TOOL.name:
+                    raise ValueError(f"Two tools are named {tool.name}.")
+                tools[tool.name] = tool
         tools[RESET_TOOL.name] = RESET_TOOL
-        return sections, tools, available
+        return sections, tools
 
     async def _repair(self, session: Session) -> None:
         """Gives every unanswered call of the last assistant message an error result."""
@@ -505,7 +478,6 @@ class Agent:
         code: dict[str, Tool],
         session: Session,
         resets: dict[int, str | None],
-        add_tools: Callable[[list[str]], list[str]],
     ) -> list[ToolResult]:
         """Runs a turn's calls by the agent's `tool_execution`, and returns their results in call order.
         Records in `resets` the first reset each call requests, by call index.
@@ -528,7 +500,6 @@ class Agent:
                 **vars(self._context(session)),
                 request_reset=request_reset,
                 run_tool=lambda nested: place.give_up_while(run_limited(nested, request_reset)),
-                add_tools=add_tools,
             )
             try:
                 return await self._run_tool(call, definitions, code, ctx)

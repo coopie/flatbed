@@ -102,22 +102,7 @@ struct Queued {
 }
 
 type Queue = Arc<Mutex<Vec<Queued>>>;
-type Tools = Arc<Code>;
-
-/// The code for a session's tools, and for the tools a tool may add to it. The session's `context`
-/// entry says which tools exist; the plugins supply their code.
-struct Code {
-    tools: Vec<Box<dyn Tool>>,
-    available: Vec<Box<dyn Tool>>,
-}
-
-impl Code {
-    fn find(&self, name: &str) -> Option<&dyn Tool> {
-        let mut all = self.tools.iter().chain(&self.available);
-        all.find(|tool| tool.definition().name == name)
-            .map(AsRef::as_ref)
-    }
-}
+type Tools = Arc<Vec<Box<dyn Tool>>>;
 
 pub struct Agent {
     config: Arc<AgentConfig>,
@@ -126,7 +111,8 @@ pub struct Agent {
     /// The model name without its provider, as providers take it.
     model: String,
     queue: Queue,
-    /// The tools' code for the open session, by session id, kept between runs.
+    /// The tools' code for the open session, by session id, kept between runs. The session's
+    /// `context` entry says which tools exist; the plugins supply their code.
     tools: Mutex<Option<(String, Tools)>>,
     /// The in-process guard against running one agent twice at once.
     running: AtomicBool,
@@ -197,9 +183,8 @@ impl Agent {
         let (run, tools) = self.open(&stop).await?;
         run.repair().await?;
         run.deliver_waiting().await?;
-        // 4. Freeze the context: the last context entry on the path, for the whole run, until a
-        // tool adds tools after a turn's results.
-        let mut context = run.render().await.0;
+        // 4. Freeze the context: the last context entry on the path, for the whole run.
+        let context = run.render().await.0;
         // 5. Loop while the session needs a run.
         while run.needs_run().await {
             // i. Stop when the stop is set.
@@ -251,15 +236,6 @@ impl Agent {
             for (call, result) in calls.iter().zip(results) {
                 run.append_message(tool_message(call, result)).await?;
             }
-            // Tools a call added join now, in a new context entry, which the rest of the run uses.
-            let added = std::mem::take(&mut *run.adding.lock().expect("adding lock"));
-            if !added.is_empty() {
-                let sections = context.sections.clone();
-                let tools = context.tools.iter().cloned().chain(added).collect();
-                run.append(EntryBody::Context { sections, tools }, None)
-                    .await?;
-                context = run.render().await.0;
-            }
             // v. A reset wins over a stop, since the model has already been told the session will
             // reset.
             if let Some(reason) = run.take_reset() {
@@ -306,16 +282,9 @@ impl Agent {
             let id = session.header.id.clone();
             let run = self.start_run(session.clone(), stop);
             let cached = self.tools.lock().expect("tools lock").clone();
-            // Opened by an earlier process: ask the plugins again for their tools' code, including
-            // tools a tool may have added.
             let tools = match cached.filter(|(cached_for, _)| *cached_for == id) {
                 Some((_, tools)) => tools,
-                None => {
-                    let Contribution {
-                        tools, available, ..
-                    } = collect_context(&run).await?;
-                    Arc::new(Code { tools, available })
-                }
+                None => Arc::new(collect_context(&run).await?.tools),
             };
             *self.tools.lock().expect("tools lock") = Some((id, tools.clone()));
             return Ok((run, tools));
@@ -335,11 +304,7 @@ impl Agent {
         let run = self.start_run(session.clone(), stop);
         // The plugins answer before anything is written, so that a clash of tool names leaves the
         // store untouched.
-        let Contribution {
-            sections,
-            tools,
-            available,
-        } = collect_context(&run).await?;
+        let Contribution { sections, tools } = collect_context(&run).await?;
         if !header_only {
             store.create(&session.header).await?;
         }
@@ -358,7 +323,7 @@ impl Agent {
             Some(Some(reason)) => format!("Session started after a reset: {reason}"),
         })
         .await?;
-        let tools = Arc::new(Code { tools, available });
+        let tools = Arc::new(tools);
         *self.tools.lock().expect("tools lock") = Some((session.header.id, tools.clone()));
         Ok((run, tools))
     }
@@ -396,7 +361,6 @@ impl Agent {
             stop: stop.clone(),
             session: tokio::sync::Mutex::new(session),
             reset: Mutex::new(None),
-            adding: Mutex::new(Vec::new()),
         })
     }
 
@@ -479,25 +443,6 @@ impl Turn {
         place.finish();
         result
     }
-
-    /// Queues available tools to join the session after the turn's results, leaving out a name
-    /// that is not available, already in the session or already queued, and returns those queued.
-    pub(crate) fn add_tools(&self, names: &[String]) -> Vec<String> {
-        let mut adding = self.run.adding.lock().expect("adding lock");
-        let mut added = Vec::new();
-        for name in names {
-            let mut present = self.definitions.iter().chain(adding.iter());
-            if present.any(|d| &d.name == name) {
-                continue;
-            }
-            let mut available = self.tools.available.iter().map(|tool| tool.definition());
-            if let Some(definition) = available.find(|d| &d.name == name) {
-                adding.push(definition);
-                added.push(name.clone());
-            }
-        }
-        added
-    }
 }
 
 /// A running call's place under the turn's limit. While the calls it made with `Ctx::run_tool`
@@ -560,7 +505,7 @@ impl Drop for Running<'_> {
 
 /// Calls every plugin's `context` hook, in plugin order, joins what they add, and adds the core
 /// `reset` tool last. Fails when a hook fails, naming its plugin, or when two tools would share a
-/// name, whether in the session or available to add.
+/// name.
 async fn collect_context(run: &Arc<Run>) -> Result<Contribution> {
     let mut joined = Contribution::default();
     let ctx = Ctx::opening(run.clone());
@@ -571,11 +516,10 @@ async fn collect_context(run: &Arc<Run>) -> Result<Contribution> {
             .map_err(|error| Error(format!("The {} plugin failed: {}", plugin.name(), error.0)))?;
         joined.sections.extend(contribution.sections);
         joined.tools.extend(contribution.tools);
-        joined.available.extend(contribution.available);
     }
     joined.tools.push(Box::new(ResetTool));
     let mut names = HashSet::new();
-    for tool in joined.tools.iter().chain(&joined.available) {
+    for tool in &joined.tools {
         let name = tool.definition().name;
         if !names.insert(name.clone()) {
             return Err(Error(format!("Two tools are named {name}.")));
@@ -589,13 +533,15 @@ async fn collect_context(run: &Arc<Run>) -> Result<Contribution> {
 /// its plugin: the call gets an error result naming the plugin, and no later hook runs for it.
 async fn run_call(
     run: &Arc<Run>,
-    tools: &Code,
+    tools: &[Box<dyn Tool>],
     definitions: &[ToolDefinition],
     call: &ToolCall,
     ctx: &Ctx,
 ) -> ToolResult {
     let definition = definitions.iter().find(|tool| tool.name == call.name);
-    let code = tools.find(&call.name);
+    let code = tools
+        .iter()
+        .find(|tool| tool.definition().name == call.name);
     let (Some(definition), Some(code)) = (definition, code) else {
         return ToolResult::error(format!("No tool named {}.", call.name));
     };
@@ -644,8 +590,6 @@ pub(crate) struct Run {
     pub(crate) session: tokio::sync::Mutex<Session>,
     /// The reset the earliest call in call order asked for this turn: its index and its reason.
     reset: Mutex<Option<(usize, Option<String>)>>,
-    /// The tools calls added this turn, in the order asked, to join after the turn's results.
-    adding: Mutex<Vec<ToolDefinition>>,
 }
 
 impl Run {

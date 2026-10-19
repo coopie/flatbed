@@ -165,3 +165,13 @@ Entries marked *for review* were made while Sam was away, most of them overnight
 **Because:** Sam's reason: a made-up case asks people to care about invented people before they see anything useful. Their own company is something a visitor knows and can judge at once, and reading, organising and writing from sources is the knowledge work people want an agent for.
 
 **Rules out:** a picker of templates on the playground, and fiction as the first thing a visitor sees. The template format, the folder modes and the sealed folder stay, in the app's loader and `@flatbed/docs`, for other hosts.
+
+## A session's tools are fixed when it opens
+
+20 October 2026. Replaces tools that join a session, added on 19 October with no entry of its own.
+
+**Chose:** a session's tools list is fixed when it opens, and anything new reaches the model as appended messages. `available` tools and `ctx.addTools` (`add_tools` in Python and Rust), which let a tool add tools part way through a session, are gone from the spec, the three cores and the suite.
+
+**Because:** Parker, the first agent to use them, broke on Opus 5.5 on 20 October. Anthropic signs a thinking model's thinking blocks against everything before them, the tools list included, so the first call after tools were added, and every call after, failed with HTTP 400, "thinking block is bound to a different conversation". The scripted provider in the suite could not see it, and no live run with thinking went through the new path before the merge.
+
+**Rules out:** changing the tools list in a running session. Finding tools progressively is parked until Sam revisits it. The options so far: Anthropic's `defer_loading` with inline `tool_addition` blocks under the `inline-tools-2026-09-15` beta; a generic `find_tools` and `call_tool` pair, which works with any provider; documents in the style of skills, for knowledge rather than tools; or tools that arrive at the next session.
