@@ -1,0 +1,316 @@
+{
+  "name": "opening calls",
+  "description": "The test plugin's context hook returns two opening calls. They run as the harness's own assistant message, after the start notice, through beforeTool like any call, and the model sees them and their results before the message that was waiting.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    },
+    {
+      "name": "send",
+      "description": "Send a message.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "behaviour": {
+        "error": "The tool ran."
+      }
+    }
+  ],
+  "calls": [
+    {
+      "name": "echo",
+      "input": {
+        "text": "hello"
+      }
+    },
+    {
+      "name": "send",
+      "input": {}
+    }
+  ],
+  "plugin": {
+    "beforeTool": {
+      "send": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Refused: this needs a person's approval."
+          }
+        ],
+        "isError": true
+      }
+    }
+  },
+  "script": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "They say hello."
+        }
+      ],
+      "stop": "end",
+      "usage": {
+        "input": 30,
+        "output": 4
+      }
+    }
+  ],
+  "steps": [
+    {
+      "deliver": {
+        "kind": "message",
+        "attrs": {
+          "from": "Sam"
+        },
+        "text": "What do your notes say?"
+      }
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "send",
+              "description": "Send a message.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "opening-1",
+                "name": "echo",
+                "input": {
+                  "text": "hello"
+                }
+              },
+              {
+                "type": "toolCall",
+                "id": "opening-2",
+                "name": "send",
+                "input": {}
+              }
+            ],
+            "model": "harness",
+            "usage": {
+              "input": 0,
+              "output": 0
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "opening-1",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "hello"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "opening-2",
+            "name": "send",
+            "content": [
+              {
+                "type": "text",
+                "text": "Refused: this needs a person's approval."
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "type": "event",
+          "kind": "message",
+          "attrs": {
+            "from": "Sam"
+          },
+          "text": "What do your notes say?"
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "They say hello."
+              }
+            ],
+            "model": "faux/test",
+            "usage": {
+              "input": 30,
+              "output": 4
+            },
+            "stop": "end"
+          }
+        }
+      ]
+    ],
+    "requests": [
+      [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<notice from=\"harness\">Session started.</notice>"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "opening-1",
+              "name": "echo",
+              "input": {
+                "text": "hello"
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "opening-2",
+              "name": "send",
+              "input": {}
+            }
+          ],
+          "model": "harness",
+          "usage": {
+            "input": 0,
+            "output": 0
+          },
+          "stop": "toolUse"
+        },
+        {
+          "role": "tool",
+          "callId": "opening-1",
+          "name": "echo",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ],
+          "isError": false
+        },
+        {
+          "role": "tool",
+          "callId": "opening-2",
+          "name": "send",
+          "content": [
+            {
+              "type": "text",
+              "text": "Refused: this needs a person's approval."
+            }
+          ],
+          "isError": true
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<message from=\"Sam\">What do your notes say?</message>"
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}

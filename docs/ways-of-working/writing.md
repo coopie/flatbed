@@ -37,6 +37,14 @@ Guidance and instructions that come with a reason have been followed far more se
 
 Writing about people works the same way. "The client tends to prefer short emails, of three or four lines" gives the reader a tendency to work with, and room for the exception. "Always" and "never" are worth keeping for what really is absolute, such as a legal constraint. Where the environment can enforce a rule, through permissions, a sandbox or an automated check, it tends to hold up better than the sentence alone, and the doc can explain why the rule exists.
 
+A short phrase can carry a lot when its meaning stays clear. "Complexity has to be earned", with a sentence on what it means for this codebase, such as keeping things simple and reaching for simple abstractions first, gives a reader a whole way of judging trade-offs in a few words. A phrase compressed until its meaning is gone, such as "momentum is a feature", leaves the reader guessing what was meant.
+
+## Lean on what the reader already knows
+
+Models know a great deal of shared culture, and a reference to it can stand in for pages of rules. "Write in the style of the GOV.UK style guide" brings a whole body of practice in one line. The same works for well-known writers, programmers, codebases and ideas, such as "the Unix philosophy" or "error handling in the style of the Go standard library". A reference like this is quick to write, cheap in tokens, and often clearer than the rules it replaces.
+
+It works best with references the model knows well and that point one way. A quick check is to ask an agent what the reference means for this project, and write down whatever it misses.
+
 ## Where detail helps
 
 Starting with the concepts, what the thing is, what it is for and what matters most, helps a reader handle cases nobody foresaw. Detail is most useful where the concepts alone would leave them guessing: a trade-off you chose on purpose, a case where a reader went wrong before, or a contract such as a path, a command or a format. When you find yourself writing many step-by-step instructions, the steps may belong in a script or the code, with the doc explaining why.
@@ -45,7 +53,7 @@ Examples help where the concepts do not show what good looks like, such as a ton
 
 ## Tone
 
-Write-ups that named what went well, as well as what went wrong, have led to better next briefs. Reviews that opened with what was good have had their fixes taken up more readily. Models pick up the tone of what they read, and docs written as lists of warnings have tended to produce cautious, hedged work. On the whole, work has gone better when it feels like it is moving forward.
+Work tends to go better when it feels like it is moving forward. Models pick up the tone of what they read, so a write-up that names what went well, and a review that starts with what is good, sets a better tone for the next piece of work than a list of warnings does.
 
 ## Structure
 
@@ -55,11 +63,11 @@ A fact that lives in one doc, the one it is most about, with links from everywhe
 
 A doc that mentions only files, commands and docs that exist is one a reader can trust. When you mention one, it is worth checking it is real, because a reader who follows a dead pointer starts doubting the rest of the page.
 
-Models read established syntax more reliably than markers you invent. We use Markdown for docs, and XML tags named for what they hold, such as `<email>` or `<reminder>`, for prompts and rendered context.
+Models read established syntax more reliably than markers you invent. We write docs and prompts in Markdown, with headings for a prompt's sections, so the people who review a prompt read it as easily as the model does. When code renders raw material for a model, such as an email, a document or an event's payload, it wraps each piece in an XML tag named for what it holds, such as `<email>` or `<reminder>`: the tag shows where the material starts and ends, so text inside it is read as material, not as instructions.
 
 ## Sentences
 
-The [GOV.UK style guide](https://www.gov.uk/guidance/style-guide/a-to-z) is a good model: short sentences with one idea each, plain words, the active voice, and headings that say what is under them. Models share a few habits that make text harder to act on, which are worth looking for when you reread: words that describe nothing, such as robust and seamless; set-up-and-reveal sentences, such as "it's not X, it's Y"; slogans in place of reasons; throat-clearing and closing morals; one sentence carrying three ideas; and bold and bullets where reasoning belongs.
+The [GOV.UK style guide](https://www.gov.uk/guidance/style-guide/a-to-z) is a good model: short sentences with one idea each, plain words, the active voice, and headings that say what is under them. A few habits common in model-written text are listed at the end of this page.
 
 ## Changing a doc
 
@@ -86,3 +94,13 @@ When a message includes an order number, check that the order exists
 before you act on it. When something fails, tell the customer what
 happened and what they can do next.
 ```
+
+## Patterns worth leaving out
+
+Some patterns are now so common in model-written text that readers notice them, and a reader who notices starts reading less charitably. Agents also pick them up from the docs they read and repeat them. Three are worth catching when you reread:
+
+- **Em dashes.** Many readers now take one as a sign that a model wrote the text. A comma, a full stop or a new line does the same job.
+- **Set-up-and-reveal sentences,** such as "it's not X, it's Y". They spend a sentence on a straw man before getting to the point.
+- **Words that describe nothing,** such as robust, seamless and powerful. They take up room without telling the reader anything to act on.
+
+

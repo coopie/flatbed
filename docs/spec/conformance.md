@@ -29,7 +29,7 @@ A scenario is one JSON file:
 ```
 
 - `agent` may also set `maxTokens`, `effort`, `toolExecution`, `maxConcurrentTools`, and `parent`, the parent for the agent's first session, as [host.md](host.md) describes.
-- `sections` and `tools` come from a test plugin, named `test`, through its `context` hook. The runner adds the core `reset` tool after them, as the loop does.
+- `sections` and `tools` come from a test plugin, named `test`, through its `context` hook. The runner adds the core `reset` tool after them, as the loop does. `calls`, optional, is a list of `{"name": ..., "input": {...}}` that the same hook returns as opening calls.
 - `plugin`, optional, gives the same test plugin more to do. Each part is optional:
   - `"context": {"append": <data>}`: in the `context` hook, try to `append` a `custom` entry with this `data`, and carry on when that fails; or `"context": {"throw": "<message>"}`: make the `context` hook throw
   - `"beforeTool": {"<tool name>": <result>}`: return that result, as `{"content": [...], "isError": ...}`, for every call to that tool, so the tool does not run

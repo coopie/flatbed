@@ -49,6 +49,13 @@ class ToolCall(TypedDict):
 type Block = TextBlock | ImageBlock | ThinkingBlock | ToolCall
 
 
+class OpeningCall(TypedDict):
+    """A call a plugin asks the loop to make when a session opens, before the model is asked anything."""
+
+    name: str
+    input: dict[str, Any]
+
+
 class Usage(TypedDict):
     input: int
     output: int
@@ -149,10 +156,12 @@ class Tool:
 
 @dataclass
 class ContextAddition:
-    """What a plugin's `context` hook returns."""
+    """What a plugin's `context` hook returns: sections and tools for the session, and calls the
+    loop makes as its first exchange."""
 
     sections: list[Section] = field(default_factory=list)
     tools: list[Tool] = field(default_factory=list)
+    calls: list[OpeningCall] = field(default_factory=list)
 
 
 @dataclass

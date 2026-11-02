@@ -1,17 +1,18 @@
-//! The loop, as docs/spec/loop.md describes: open a session if none is open, repair it, deliver
-//! waiting events, then ask the model and run its tools until nothing new needs an answer.
+//! The loop, as docs/spec/loop.md describes: open a session if none is open, repair it, make the
+//! opening calls, deliver waiting events, then ask the model and run its tools until nothing new
+//! needs an answer.
 //! `Agent::run` is the whole harness; `Run` holds one run's view of the open session, and every
 //! other function here is one step of it.
 
 use crate::error::{Error, Result};
 use crate::ids::{new_entry_id, new_session_id, now_iso};
-use crate::plugin::{Contribution, Ctx, Plugin, Tool, ToolResult};
+use crate::plugin::{Contribution, Ctx, OpeningCall, Plugin, Tool, ToolResult};
 use crate::providers::{Provider, Request};
 use crate::render::{path_of, render, Context};
 use crate::stop::StopSignal;
 use crate::store::Store;
 use crate::types::{
-    AssistantMessage, Entry, EntryBody, Event, Header, Message, ParentLink, Session, Stop,
+    AssistantMessage, Block, Entry, EntryBody, Event, Header, Message, ParentLink, Session, Stop,
     ToolCall, ToolDefinition, ToolMessage, Usage,
 };
 use async_trait::async_trait;
@@ -27,6 +28,8 @@ const SOFT_LIMIT_NOTICE: &str =
 const REPAIR_TEXT: &str = "The harness stopped before this tool ran.";
 const CUT_OFF_TEXT: &str = "The response was cut off before this call was complete.";
 const RESET_RESULT: &str = "Session will reset after this turn.";
+/// The `model` of the opening message, which the loop writes itself with no model call behind it.
+pub const HARNESS_MODEL: &str = "harness";
 const RESET_DESCRIPTION: &str = "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.";
 
 /// An agent as the host configures it, as docs/spec/host.md describes. The core stores nothing
@@ -178,14 +181,43 @@ impl Agent {
         let _running = Running(&self.running);
         let stop = stop.cloned().unwrap_or_default();
 
-        // 1. Open a session if none is open. 2. Repair calls left without a result. 3. Deliver
-        // waiting events.
-        let (run, tools) = self.open(&stop).await?;
+        // 1. Open a session if none is open. 2. Repair calls left without a result.
+        let (run, tools, opening) = self.open(&stop).await?;
         run.repair().await?;
-        run.deliver_waiting().await?;
-        // 4. Freeze the context: the last context entry on the path, for the whole run.
+        // 3. Freeze the context: the last context entry on the path, for the whole run.
         let context = run.render().await.0;
-        // 5. Loop while the session needs a run.
+        // 4. Make the opening calls, as the harness's own message. A reset they request is
+        // ignored, since the model asked for nothing.
+        if !opening.is_empty() {
+            let content = opening
+                .into_iter()
+                .enumerate()
+                .map(|(i, call)| {
+                    Block::ToolCall(ToolCall {
+                        id: format!("opening-{}", i + 1),
+                        name: call.name,
+                        input: call.input,
+                    })
+                })
+                .collect();
+            let message = AssistantMessage {
+                content,
+                model: HARNESS_MODEL.into(),
+                usage: Usage::default(),
+                stop: Stop::ToolUse,
+            };
+            run.append_message(Message::Assistant(message.clone()))
+                .await?;
+            self.run_calls(&run, &tools, &context.tools, &message)
+                .await?;
+            run.take_reset();
+            if stop.is_set() {
+                return run.stopped().await;
+            }
+        }
+        // 5. Deliver waiting events.
+        run.deliver_waiting().await?;
+        // 6. Loop while the session needs a run.
         while run.needs_run().await {
             // i. Stop when the stop is set.
             if stop.is_set() {
@@ -223,25 +255,14 @@ impl Agent {
                 .await?;
 
             // iv. Run the calls, then append their results in call order.
-            let calls: Vec<&ToolCall> = message.tool_calls().collect();
-            let results = if message.stop == Stop::MaxTokens {
-                // A response cut off by the token limit may hold a call with half its input.
-                calls
-                    .iter()
-                    .map(|_| ToolResult::error(CUT_OFF_TEXT))
-                    .collect()
-            } else {
-                self.run_tools(&run, &tools, &context.tools, &calls).await
-            };
-            for (call, result) in calls.iter().zip(results) {
-                run.append_message(tool_message(call, result)).await?;
-            }
+            self.run_calls(&run, &tools, &context.tools, &message)
+                .await?;
             // v. A reset wins over a stop, since the model has already been told the session will
             // reset.
             if let Some(reason) = run.take_reset() {
                 return run.end("agent", reason).await;
             }
-            if !calls.is_empty() && stop.is_set() {
+            if message.tool_calls().next().is_some() && stop.is_set() {
                 return run.stopped().await;
             }
             // vi. Check the budget.
@@ -255,15 +276,15 @@ impl Agent {
             // vii. Deliver waiting events.
             run.deliver_waiting().await?;
         }
-        // 6. End.
+        // 7. End.
         Ok(Outcome::Idle)
     }
 
     /// Reads the agent's newest session and opens a new one when there is none, or when the
     /// newest ended in a reset. A newest session that holds only its header, because a process
     /// stopped after writing it, is opened in place. Loads the tools' code when this process has
-    /// not yet.
-    async fn open(&self, stop: &StopSignal) -> Result<(Arc<Run>, Tools)> {
+    /// not yet. The opening calls come back only for a session this run opened.
+    async fn open(&self, stop: &StopSignal) -> Result<(Arc<Run>, Tools, Vec<OpeningCall>)> {
         let (agent, store) = (&self.config.id, &self.store);
         let ids = store.list(agent).await?;
         let newest = match ids.last() {
@@ -287,7 +308,7 @@ impl Agent {
                 None => Arc::new(collect_context(&run).await?.tools),
             };
             *self.tools.lock().expect("tools lock") = Some((id, tools.clone()));
-            return Ok((run, tools));
+            return Ok((run, tools, Vec::new()));
         }
 
         let header_only = newest.as_ref().is_some_and(|s| s.entries.is_empty());
@@ -304,7 +325,11 @@ impl Agent {
         let run = self.start_run(session.clone(), stop);
         // The plugins answer before anything is written, so that a clash of tool names leaves the
         // store untouched.
-        let Contribution { sections, tools } = collect_context(&run).await?;
+        let Contribution {
+            sections,
+            tools,
+            calls,
+        } = collect_context(&run).await?;
         if !header_only {
             store.create(&session.header).await?;
         }
@@ -325,7 +350,7 @@ impl Agent {
         .await?;
         let tools = Arc::new(tools);
         *self.tools.lock().expect("tools lock") = Some((session.header.id, tools.clone()));
-        Ok((run, tools))
+        Ok((run, tools, calls))
     }
 
     /// A session not yet in the store: its parent is the previous session, or the agent's parent.
@@ -372,6 +397,30 @@ impl Agent {
             usage: Usage::default(),
             stop: Stop::Error,
         }
+    }
+
+    /// Runs a message's calls, then appends their results in call order. A response cut off by
+    /// the token limit may hold a call with half its input, so none of its calls run.
+    async fn run_calls(
+        &self,
+        run: &Arc<Run>,
+        tools: &Tools,
+        definitions: &[ToolDefinition],
+        message: &AssistantMessage,
+    ) -> Result<()> {
+        let calls: Vec<&ToolCall> = message.tool_calls().collect();
+        let results = if message.stop == Stop::MaxTokens {
+            calls
+                .iter()
+                .map(|_| ToolResult::error(CUT_OFF_TEXT))
+                .collect()
+        } else {
+            self.run_tools(run, tools, definitions, &calls).await
+        };
+        for (call, result) in calls.iter().zip(results) {
+            run.append_message(tool_message(call, result)).await?;
+        }
+        Ok(())
     }
 
     /// Runs a turn's calls and returns their results in call order. The calls start in order:
@@ -516,6 +565,7 @@ async fn collect_context(run: &Arc<Run>) -> Result<Contribution> {
             .map_err(|error| Error(format!("The {} plugin failed: {}", plugin.name(), error.0)))?;
         joined.sections.extend(contribution.sections);
         joined.tools.extend(contribution.tools);
+        joined.calls.extend(contribution.calls);
     }
     joined.tools.push(Box::new(ResetTool));
     let mut names = HashSet::new();
@@ -705,14 +755,26 @@ impl Run {
     /// A session needs a run when the last entry on its path, leaving out context and custom
     /// entries, is a tool result or an event from outside the harness. The harness's own
     /// notices need no answer, except the soft-limit notice, which asks the agent to act, even
-    /// when stop notices have followed it.
+    /// when stop notices have followed it. The opening message and its results are looked past
+    /// too, since the model asked for nothing.
     async fn needs_run(&self) -> bool {
         let session = self.session.lock().await;
         let path = path_of(&session.entries);
+        let opening: HashSet<&str> = path
+            .iter()
+            .filter_map(|e| assistant(e).filter(|m| m.model == HARNESS_MODEL))
+            .flat_map(|m| m.tool_calls().map(|call| call.id.as_str()))
+            .collect();
         let mut after_stop = false;
         for entry in path.iter().rev() {
             match &entry.body {
                 EntryBody::Context { .. } | EntryBody::Custom { .. } => continue,
+                EntryBody::Message {
+                    message: Message::Assistant(message),
+                } if message.model == HARNESS_MODEL => continue,
+                EntryBody::Message {
+                    message: Message::Tool(result),
+                } if opening.contains(result.call_id.as_str()) => continue,
                 EntryBody::Event(event) if from_harness(event) => {
                     if event.text == SOFT_LIMIT_NOTICE {
                         return true;

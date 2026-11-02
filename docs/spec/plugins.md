@@ -6,7 +6,7 @@ A plugin is how anything beyond the loop joins an agent: documents, supervision,
 
 A plugin is a plain object with a `name` and any of five hooks. Every hook is async, as everything in the core is; TypeScript and Python also accept a hook or tool that returns a plain value.
 
-- **`context(ctx)`**, when a session opens. Returns sections and tools to add. Sections from all plugins are joined in plugin order. When it throws, the run fails before writing anything, with the error `The <plugin> plugin failed: <message>`.
+- **`context(ctx)`**, when a session opens. Returns sections, tools and opening calls to add. Sections from all plugins are joined in plugin order, and so are calls. Each call is `{name, input}`, and the loop makes it as the session's first exchange, as [loop.md](loop.md) describes under "Opening calls". When it throws, the run fails before writing anything, with the error `The <plugin> plugin failed: <message>`.
 - **`beforeTool(call, ctx)`**, before a tool call runs. Returns nothing to let it run, or a result to use instead, such as a refusal or a note that the call is waiting for a person. The first plugin that returns a result wins, and the tool does not run.
 - **`afterTool(call, result, ctx)`**, after a tool call runs or is replaced. May return a changed result, such as one with secrets redacted. Results pass through plugins in order.
 - **`onEntry(entry, ctx)`**, after every entry is appended. For watching, such as streaming to a page or writing a timeline. Its return value is ignored, and so is an error it throws, so that a watcher can never leave a turn's results half written.

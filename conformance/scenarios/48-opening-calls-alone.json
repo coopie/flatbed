@@ -1,0 +1,173 @@
+{
+  "name": "opening calls alone need no answer",
+  "description": "A session that opens with calls and nothing else ends the run idle without asking the model, and a reset an opening call requests is ignored.",
+  "agent": {
+    "model": "faux/test",
+    "softLimit": 120000,
+    "hardLimit": 180000
+  },
+  "sections": [
+    {
+      "name": "soul",
+      "text": "You are a test agent."
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the text you give it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "behaviour": {
+        "echo": "text"
+      }
+    }
+  ],
+  "calls": [
+    {
+      "name": "echo",
+      "input": {
+        "text": "hello"
+      }
+    },
+    {
+      "name": "reset",
+      "input": {
+        "reason": "too soon"
+      }
+    }
+  ],
+  "script": [],
+  "steps": [
+    {
+      "run": {},
+      "expect": "idle"
+    },
+    {
+      "run": {},
+      "expect": "idle"
+    }
+  ],
+  "expect": {
+    "sessions": [
+      [
+        {
+          "type": "context",
+          "sections": [
+            {
+              "name": "soul",
+              "text": "You are a test agent."
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "Echo the text you give it.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            },
+            {
+              "name": "reset",
+              "description": "End this session and start a fresh one. Call it when your notes are up to date and the session is long, or when the work is finished. Anything not written down will be forgotten.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "event",
+          "kind": "notice",
+          "attrs": {
+            "from": "harness"
+          },
+          "text": "Session started."
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "opening-1",
+                "name": "echo",
+                "input": {
+                  "text": "hello"
+                }
+              },
+              {
+                "type": "toolCall",
+                "id": "opening-2",
+                "name": "reset",
+                "input": {
+                  "reason": "too soon"
+                }
+              }
+            ],
+            "model": "harness",
+            "usage": {
+              "input": 0,
+              "output": 0
+            },
+            "stop": "toolUse"
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "opening-1",
+            "name": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "hello"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "type": "message",
+          "message": {
+            "role": "tool",
+            "callId": "opening-2",
+            "name": "reset",
+            "content": [
+              {
+                "type": "text",
+                "text": "Session will reset after this turn."
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    ],
+    "requests": []
+  }
+}

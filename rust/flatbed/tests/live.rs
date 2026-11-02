@@ -45,6 +45,7 @@ impl Plugin for Adder {
                 cache: Some(true),
             }],
             tools: vec![Box::new(add)],
+            ..Contribution::default()
         })
     }
 }

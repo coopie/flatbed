@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use crate::stop::StopSignal;
 use crate::types::{Block, Entry, EntryBody, Event, Section, Session, ToolCall, ToolDefinition};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::future::Future;
 use std::sync::Arc;
@@ -52,11 +53,20 @@ pub trait Plugin: Send + Sync {
     async fn on_session_end(&self, _session: &Session, _ctx: &Ctx) {}
 }
 
-/// What a plugin's `context` hook adds to a session.
+/// What a plugin's `context` hook adds to a session: sections, tools, and calls the loop makes as
+/// the session's first exchange.
 #[derive(Default)]
 pub struct Contribution {
     pub sections: Vec<Section>,
     pub tools: Vec<Box<dyn Tool>>,
+    pub calls: Vec<OpeningCall>,
+}
+
+/// A call a plugin asks the loop to make when a session opens, before the model is asked anything.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OpeningCall {
+    pub name: String,
+    pub input: Value,
 }
 
 #[async_trait]

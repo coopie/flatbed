@@ -20,9 +20,9 @@ pub mod stop;
 pub mod store;
 pub mod types;
 
-pub use agent::{Agent, AgentConfig, Outcome, ToolExecution};
+pub use agent::{Agent, AgentConfig, Outcome, ToolExecution, HARNESS_MODEL};
 pub use error::{Error, Result};
-pub use plugin::{Contribution, Ctx, FnTool, Plugin, Tool, ToolResult};
+pub use plugin::{Contribution, Ctx, FnTool, OpeningCall, Plugin, Tool, ToolResult};
 pub use providers::{Provider, ProviderOptions, Request};
 pub use stop::StopSignal;
 pub use store::{FileStore, MemoryStore, Store};
