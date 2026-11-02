@@ -14,12 +14,17 @@
  * The tools answer in one line where they can, and a failure is a result that says what to do
  * differently. Nothing here throws to the loop.
  *
+ * A host may give a `startup` list, the fixed entries of startup.json, as startup.ts describes.
+ * Then startup.json decides what a session opens with, in place of pinning: its system reads
+ * follow the guide where pinned documents would, and its other entries are opening calls.
+ *
  * A host may declare folders with modes, as folders.ts describes. The plugin reads them when it
  * builds a session's tools, so a change, such as unsealing a folder, reaches the agent from its
  * next session. With no folders, nothing here changes.
  */
-import { escapeAttr, escapeText, type Plugin, type Section, type Session, type Tool, type ToolResult } from '@flatbed/core';
+import { escapeAttr, escapeText, type Plugin, type Section, type Session, type Tool, type ToolContext, type ToolResult } from '@flatbed/core';
 import { applyEdit, checkFolders, folderOf, foldersSection, type Folder } from './folders.ts';
+import { checkStartup, fixedReads, STARTUP_DOC, startupRefusal, systemRead, type StartupEntry } from './startup.ts';
 import { checkName, type Doc, type DocStore } from './store.ts';
 
 export type Seed = { name: string; summary: string; body: string; pinned?: boolean };
@@ -36,6 +41,11 @@ export type DocsOptions = {
    * change a mode, such as unsealing a folder, between sessions. None by default.
    */
   folders?: Folder[] | ((session: Session) => Folder[] | Promise<Folder[]>);
+  /**
+   * The fixed entries of startup.json, kept in code. Given, startup.json decides what a session
+   * opens with, and there is no pinning. Leave it out to pin documents instead.
+   */
+  startup?: StartupEntry[];
 };
 
 /** How many days before today the timeline shows as one line each. */
@@ -46,6 +56,17 @@ export const GUIDE = `<documents>
 You keep a set of Markdown documents, and they are your memory. Each session starts with no memory of the last one: you know what is pinned below and what you can read with read_doc. Before a session ends, write down what the next one will need, because anything not written down is lost.
 
 Pin a document when you need it in every session, such as who you are and how you work. Pinned documents follow this section. Leave the rest unpinned and find them with list_docs. A change to a document, or to what is pinned, reaches your context at the next session.
+
+Give every document a one-line summary that says what it is for, and a name like a path, such as people/tomas-reyes. Keep a document as the current state of its subject: rewrite a line when it stops being true rather than adding another.
+
+Your timeline has one document a day, named timeline/YYYY-MM-DD. You see today's in full and one summary line for each of the six days before it. When something happens that a later session would want to know, add a line with add_to_timeline, and keep the day's summary true.
+</documents>`;
+
+/** The guide when startup.json decides what a session opens with. */
+export const STARTUP_GUIDE = `<documents>
+You keep a set of Markdown documents, and they are your memory. Each session starts with no memory of the last one: you know what your startup.json document opens it with, and what you can read with read_doc. Before a session ends, write down what the next one will need, because anything not written down is lost.
+
+startup.json is a list of tool calls, each written as {"name": ..., "input": {...}}, with "system": true or "fixed": true where they apply. The system entries come first, and each reads one document into this context, after this section. The rest run as each session opens, so their results are the first thing you see. Put a document in a system entry when you need it in every session, and read the rest when you need them. The host set the fixed entries, so they stay as they are, and the documents they read are yours to read but not to change. A change to startup.json, or to a document it reads, reaches your context at the next session. A write to startup.json is checked as a whole, and refused with every problem at once when it is not valid JSON, puts a system entry after one that is not, calls a tool you do not have, or changes a fixed entry.
 
 Give every document a one-line summary that says what it is for, and a name like a path, such as people/tomas-reyes. Keep a document as the current state of its subject: rewrite a line when it stops being true rather than adding another.
 
@@ -106,7 +127,13 @@ function refuseChange(name: string, folders: Folder[]): ToolResult | undefined {
 }
 
 export function docsPlugin(options: DocsOptions): Plugin {
-  const { store, seeds = [] } = options;
+  const { store, seeds = [], startup } = options;
+  if (startup !== undefined) {
+    // The host's own list must pass the check that every write to startup.json passes.
+    const checked = checkStartup(JSON.stringify(startup.map((e) => ({ ...e, fixed: true }))), startup);
+    if ('problems' in checked) throw new Error(`The startup option will not do: ${checked.problems.join(' ')}`);
+  }
+  const readOnly = fixedReads(startup ?? []);
   const dayOf = options.today ?? localDay;
   // Tool calls in one turn run at once, and an edit reads before it writes, so writes take turns.
   let writes: Promise<unknown> = Promise.resolve();
@@ -119,9 +146,31 @@ export function docsPlugin(options: DocsOptions): Plugin {
   async function seed() {
     for (const s of seeds) {
       if ((await store.get(s.name)) === undefined) {
-        await store.put({ name: s.name, summary: s.summary, body: s.body, pinned: s.pinned ?? true, writtenBy: 'seed' });
+        await store.put({ name: s.name, summary: s.summary, body: s.body, pinned: startup === undefined && (s.pinned ?? true), writtenBy: 'seed' });
       }
     }
+    if (startup !== undefined && (await store.get(STARTUP_DOC)) === undefined) {
+      const body = `${JSON.stringify(startup.map((e) => ({ ...e, fixed: true })), null, 2)}\n`;
+      await store.put({ name: STARTUP_DOC, summary: 'What each session opens with: system reads first, then opening calls.', body, pinned: false, writtenBy: 'seed' });
+    }
+  }
+
+  /**
+   * Why the agent may not write `body` to `name`, or undefined when it may. A write to startup.json
+   * is checked as a whole, against the tools of the session it is made in.
+   */
+  function refuseBody(name: string, body: string, ctx: ToolContext): ToolResult | undefined {
+    if (startup === undefined || name !== STARTUP_DOC) return undefined;
+    const context = ctx.session.entries.findLast((e) => e.type === 'context');
+    const tools = context?.type === 'context' ? context.tools.map((t) => t.name) : undefined;
+    const checked = checkStartup(body, startup, tools);
+    return 'problems' in checked ? fail(startupRefusal(checked.problems)) : undefined;
+  }
+
+  /** Why the agent may not change `name`, from its folder or from a fixed entry that reads it. */
+  function refuse(name: string, folders: Folder[]): ToolResult | undefined {
+    if (readOnly.has(name)) return fail(`${name} is read by a fixed entry of ${STARTUP_DOC}, which the host set, so you can read it but not change it.`);
+    return refuseChange(name, folders);
   }
 
   /** Runs a tool's work, turning a store's failure into a result the agent can read. */
@@ -133,8 +182,8 @@ export function docsPlugin(options: DocsOptions): Plugin {
     }
   };
 
-  /** The tools for one session, held to that session's folders. */
-  const toolsFor = (folders: Folder[]): Tool[] => [
+  /** Every tool the plugin has, held to one session's folders. */
+  const allTools = (folders: Folder[]): Tool[] => [
     {
       name: 'list_docs',
       description: 'List your documents, one line each with its summary. Use it to find a document before you read or write it, and before you start a new one, so you add to an existing document rather than making a second.',
@@ -145,7 +194,7 @@ export function docsPlugin(options: DocsOptions): Plugin {
         if (within?.mode === 'sealed') return sealed(within);
         const docs = (await store.list()).filter((d) => d.name.startsWith(prefix) && folderOf(d.name, folders)?.mode !== 'sealed');
         if (docs.length === 0) return ok(prefix ? `You have no documents under ${prefix}.` : 'You have no documents yet.');
-        return ok(docs.map((d) => `${d.name}${d.pinned ? ' (pinned)' : ''}: ${d.summary}`).join('\n'));
+        return ok(docs.map((d) => `${d.name}${d.pinned && startup === undefined ? ' (pinned)' : ''}: ${d.summary}`).join('\n'));
       }),
     },
     {
@@ -177,7 +226,7 @@ export function docsPlugin(options: DocsOptions): Plugin {
         const problem = checkName(name);
         if (problem !== undefined) return fail(problem);
         if (name.startsWith(TIMELINE)) return fail('Add to your timeline with add_to_timeline rather than writing it.');
-        const refused = refuseChange(name, folders);
+        const refused = refuse(name, folders) ?? refuseBody(name, str(input.body) ?? '', ctx);
         if (refused !== undefined) return refused;
         const existing = await store.get(name);
         const summary = str(input.summary)?.trim() || existing?.summary;
@@ -196,12 +245,14 @@ export function docsPlugin(options: DocsOptions): Plugin {
       },
       run: (input, ctx) => guarded(() => serially(async () => {
         const name = str(input.name) ?? '';
-        const refused = refuseChange(name, folders);
+        const refused = refuse(name, folders);
         if (refused !== undefined) return refused;
         const doc = await store.get(name);
         if (doc === undefined) return notFound(name);
         const edited = applyEdit(name, doc.body, str(input.passage) ?? '', str(input.replacement) ?? '');
         if ('problem' in edited) return fail(edited.problem);
+        const refusedBody = refuseBody(name, edited.body, ctx);
+        if (refusedBody !== undefined) return refusedBody;
         const written = await store.put({ ...doc, body: edited.body, writtenBy: ctx.agent.id });
         return ok(`Edited ${name} (version ${written.version}).`);
       })),
@@ -218,7 +269,7 @@ export function docsPlugin(options: DocsOptions): Plugin {
         const name = str(input.name) ?? '';
         const pinned = input.pinned === true;
         if (name.startsWith(TIMELINE)) return fail('Your timeline is always in your context, so it needs no pin.');
-        const refused = refuseChange(name, folders);
+        const refused = refuse(name, folders);
         if (refused !== undefined) return refused;
         const doc = await store.get(name);
         if (doc === undefined) return notFound(name);
@@ -251,20 +302,47 @@ export function docsPlugin(options: DocsOptions): Plugin {
     },
   ];
 
+  /** The tools for one session. With startup.json deciding what a session opens with, nothing is pinned. */
+  const toolsFor = (folders: Folder[]) => allTools(folders).filter((tool) => startup === undefined || tool.name !== 'pin_doc');
+
+  /**
+   * The documents the system entries of startup.json read, as sections, and its other entries as
+   * opening calls. A startup.json that fails the check, such as after the host changed its fixed
+   * entries, gives way to the host's entries alone, with a section that says what is wrong.
+   */
+  async function fromStartup(entries: StartupEntry[], folders: Folder[]) {
+    const doc = await store.get(STARTUP_DOC);
+    const checked = doc === undefined ? { problems: [`There is no ${STARTUP_DOC}.`] } : checkStartup(doc.body, entries);
+    const chosen = 'entries' in checked ? checked.entries : entries;
+    const sections: Section[] = [];
+    for (const entry of chosen.filter((e) => e.system)) {
+      const name = systemRead(entry)!;
+      const read = folderOf(name, folders)?.mode === 'sealed' ? undefined : await store.get(name);
+      sections.push({ name, text: read ? renderDoc(read) : `<doc name="${escapeAttr(name)}" missing="true"></doc>` });
+    }
+    const calls = chosen.filter((e) => !e.system).map(({ name, input }) => ({ name, input }));
+    const problems = 'problems' in checked
+      ? [{ name: 'startup-problems', text: `<startup-problems>\n${escapeText(startupRefusal(checked.problems).replace(' was not changed, because:', ' was set aside for this session, which opened with the fixed entries alone, because:'))}\n</startup-problems>` }]
+      : [];
+    return { sections, calls, problems };
+  }
+
   return {
     name: 'docs',
     async context(ctx) {
       const folders = typeof options.folders === 'function' ? await options.folders(ctx.session) : options.folders ?? [];
       checkFolders(folders);
       await seed();
+      const opened = startup === undefined ? undefined : await fromStartup(startup, folders);
       const pinned = (await store.list()).filter((d) => d.pinned && !d.name.startsWith(TIMELINE) && folderOf(d.name, folders)?.mode !== 'sealed');
       const stable: Section[] = [
-        { name: 'documents', text: GUIDE },
+        { name: 'documents', text: startup === undefined ? GUIDE : STARTUP_GUIDE },
         ...(folders.length > 0 ? [{ name: 'folders', text: foldersSection(folders) }] : []),
-        ...pinned.map((d) => ({ name: d.name, text: renderDoc(d) })),
+        ...(opened?.sections ?? pinned.map((d) => ({ name: d.name, text: renderDoc(d) }))),
       ];
       stable[stable.length - 1] = { ...stable.at(-1)!, cache: true };
-      return { sections: [...stable, await timelineSection(store, dayOf(ctx.session))], tools: toolsFor(folders) };
+      const timeline = await timelineSection(store, dayOf(ctx.session));
+      return { sections: [...stable, ...(opened?.problems ?? []), timeline], tools: toolsFor(folders), calls: opened?.calls ?? [] };
     },
   };
 }

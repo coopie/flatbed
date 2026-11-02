@@ -1,6 +1,8 @@
 # @flatbed/docs
 
-Give an agent a set of Markdown documents in place of a system prompt. Some are written for the agent, such as its soul and its note-taking guidelines. The rest it keeps itself, such as notes on people and a daily timeline. The documents pinned to the agent become its context when a session opens, so what it wrote down yesterday is what it knows today, and a reset loses nothing that was written.
+Give an agent a set of Markdown documents in place of a system prompt. Some are written for the agent, such as its soul and its note-taking guidelines. The rest it keeps itself, such as notes on people and a daily timeline. When a session opens, the documents the agent chose become its context, so what it wrote down yesterday is what it knows today, and a reset loses nothing that was written.
+
+The agent chooses them in one of two ways. By default it pins them. A host that passes `startup` instead gives the agent a `startup.json` document, a list of tool calls that decides what each session opens with, as [startup.json](#startupjson) describes.
 
 ## Documents
 
@@ -13,14 +15,14 @@ A `DocStore` holds one agent's documents. It has four calls: `get`, `list`, `put
 When a session opens, the plugin adds these sections, in this order:
 
 1. `documents`: a short guide to how the documents work and how to keep them.
-2. Each pinned document, sorted by name, as `<doc name="..." summary="...">body</doc>`, with the body escaped as the core escapes event text, so a body cannot close its element. The last one is marked `cache: true`.
+2. Each pinned document, sorted by name, or with `startup`, each document a system entry of `startup.json` reads, in its order, as `<doc name="..." summary="...">body</doc>`, with the body escaped as the core escapes event text, so a body cannot close its element. The last one is marked `cache: true`.
 3. `timeline`: today's timeline document in full, after one summary line for each of the six days before it that has one.
 
 The order runs from stable to volatile, because providers cache the start of the context. The guide never changes, the pinned documents change when the agent edits or pins one, and the timeline changes every day. With the cache mark on the last pinned document, a new day pays again only for the timeline.
 
 The only time in the context is the session's day. The plugin takes it once, from the session header, so the same documents always give the same bytes, and a session resumed later still has the day it opened on. The current time reaches the agent through events.
 
-The agent gets six tools: `list_docs`, `read_doc`, `write_doc`, `edit_doc` (replace one exact passage), `pin_doc` (pin or unpin, from the next session) and `add_to_timeline`. `read_doc` shows a document escaped, as the context does, and `edit_doc` accepts a passage quoted in that form. Each answers in one line where it can. A failure is a result that says what to do differently.
+The agent gets six tools: `list_docs`, `read_doc`, `write_doc`, `edit_doc` (replace one exact passage), `pin_doc` (pin or unpin, from the next session, and absent with `startup`) and `add_to_timeline`. `read_doc` shows a document escaped, as the context does, and `edit_doc` accepts a passage quoted in that form. Each answers in one line where it can. A failure is a result that says what to do differently.
 
 When a session ends, the plugin does nothing. The agent's own notes are its memory, and the guide tells it to bring them up to date before it resets.
 
@@ -50,6 +52,39 @@ const agent = createAgent(
 By default the session's day is the host's local date when the session opened. Pass `today: (session) => '2026-10-06'` to set it, such as from the user's timezone.
 
 `@flatbed/docs` loads in a browser. What needs Node, the file store and `exampleSeeds()`, is in `@flatbed/docs/node`, as the session file store is in `@flatbed/core/node`.
+
+## startup.json
+
+`startup.json` is a pattern from Sam's contracting work: a document, kept by the agent, that lists what each session opens with as tool calls. Reads that belong in every session become the system prompt, and everything else arrives as calls the agent seems to have made itself, with their real results, so material reads as material rather than as instructions.
+
+Each entry is a tool call with two flags:
+
+```json
+[
+  { "name": "read_doc", "input": { "name": "soul" }, "system": true, "fixed": true },
+  { "name": "read_doc", "input": { "name": "guidelines/notes" }, "system": true },
+  { "name": "read_doc", "input": { "name": "notes/open-threads" } },
+  { "name": "list_docs", "input": { "prefix": "people/" } }
+]
+```
+
+- `system` entries come first, and each reads one document with `read_doc`. They become sections, in order, after the guide and the folders section, and the last carries the cache mark.
+- Every other entry becomes one of the core's opening calls, as [the loop spec](../../../docs/spec/loop.md) describes under "Opening calls". It runs through every plugin's `beforeTool` and `afterTool`, as any call does, and may name any tool the agent has, not only this plugin's.
+- `fixed` entries are the host's, kept in code and passed as the `startup` option, without the `fixed` flag, which the plugin adds. A document a fixed `read_doc` reads is read-only to the agent: `write_doc`, `edit_doc` and `pin_doc` refuse it and say why.
+
+Pass the fixed entries to set it up:
+
+```ts
+const docs = docsPlugin({
+  store: fileDocStore('data/docs/wren'),
+  seeds: await exampleSeeds(),
+  startup: [{ name: 'read_doc', input: { name: 'soul' }, system: true }],
+});
+```
+
+When the store has no `startup.json`, the plugin writes one holding the fixed entries. The agent changes it with `write_doc` or `edit_doc`, and each write is checked as a whole as it lands, against the tools of the session it is made in. It is refused, with every problem listed at once, when it is not valid JSON, puts a `system` entry after one that is not, has a `system` entry that is not a `read_doc` of one document, calls a tool the agent does not have, or drops, changes, reorders or adds a fixed entry. A change reaches the agent from its next session, as a pin does.
+
+With `startup`, nothing is pinned: there is no `pin_doc`, seeds are written unpinned, `list_docs` shows no pins, and the guide describes `startup.json` in place of pinning. A `startup.json` that no longer passes the check when a session opens, such as after the host changed its fixed entries, is set aside for that session: the session opens with the fixed entries alone, and a `startup-problems` section before the timeline tells the agent what to fix. A system read of a document that does not exist, or is in a sealed folder, gives an empty `<doc name="..." missing="true">`. `checkStartup` and `STARTUP_DOC` are exported, for a host that wants the same check elsewhere, such as in a dashboard.
 
 ## Folders
 
