@@ -322,7 +322,7 @@ export function docsPlugin(options: DocsOptions): Plugin {
     }
     const calls = chosen.filter((e) => !e.system).map(({ name, input }) => ({ name, input }));
     const problems = 'problems' in checked
-      ? [{ name: 'startup-problems', text: `<startup-problems>\n${escapeText(startupRefusal(checked.problems).replace(' was not changed, because:', ' was set aside for this session, which opened with the fixed entries alone, because:'))}\n</startup-problems>` }]
+      ? [{ name: 'startup-problems', text: `<startup-problems>\n${escapeText(startupRefusal(checked.problems, `${STARTUP_DOC} was set aside for this session, which opened with the fixed entries alone`))}\n</startup-problems>` }]
       : [];
     return { sections, calls, problems };
   }

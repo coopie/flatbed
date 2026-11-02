@@ -70,7 +70,7 @@ Each entry is a tool call with two flags:
 
 - `system` entries come first, and each reads one document with `read_doc`. They become sections, in order, after the guide and the folders section, and the last carries the cache mark.
 - Every other entry becomes one of the core's opening calls, as [the loop spec](../../../docs/spec/loop.md) describes under "Opening calls". It runs through every plugin's `beforeTool` and `afterTool`, as any call does, and may name any tool the agent has, not only this plugin's.
-- `fixed` entries are the host's, kept in code and passed as the `startup` option, without the `fixed` flag, which the plugin adds. A document a fixed `read_doc` reads is read-only to the agent: `write_doc`, `edit_doc` and `pin_doc` refuse it and say why.
+- `fixed` entries are the host's, kept in code and passed as the `startup` option, without the `fixed` flag, which the plugin adds. A document a fixed `read_doc` reads is read-only to the agent: `write_doc` and `edit_doc` refuse it and say why.
 
 Pass the fixed entries to set it up:
 

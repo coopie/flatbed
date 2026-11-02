@@ -79,7 +79,7 @@ export function checkStartup(body: string, fixed: StartupEntry[], tools?: string
   for (const [i, want] of fixed.entries()) {
     const got = marked[i];
     if (got === undefined || !same(normal(got), normal(want))) {
-      problems.push(`The host's fixed entries must stay as they are and in their order. Fixed entry ${i + 1} should be ${JSON.stringify(want)}.`);
+      problems.push(`The host's fixed entries must stay as they are and in their order. Fixed entry ${i + 1} should be ${JSON.stringify({ ...want, fixed: true })}.`);
       break;
     }
   }
@@ -87,7 +87,7 @@ export function checkStartup(body: string, fixed: StartupEntry[], tools?: string
   return problems.length > 0 ? { problems } : { entries };
 }
 
-/** The refusal for a write to startup.json that fails the check. */
-export function startupRefusal(problems: string[]): string {
-  return `${STARTUP_DOC} was not changed, because:\n${problems.map((p) => `- ${p}`).join('\n')}\nFix every one and write it again.`;
+/** What happened to a startup.json that fails the check, and why: by default, the refusal of a write. */
+export function startupRefusal(problems: string[], outcome = `${STARTUP_DOC} was not changed`): string {
+  return `${outcome}, because:\n${problems.map((p) => `- ${p}`).join('\n')}\nFix every one and write it again.`;
 }
