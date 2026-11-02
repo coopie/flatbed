@@ -9,7 +9,7 @@ import { createAgent } from './loop.ts';
 import { pathOf } from './render.ts';
 import { fauxProvider, type ScriptStep } from './providers/faux.ts';
 import { memoryStore, newEntryId, newSessionId } from './store.ts';
-import type { AgentConfig, Entry, EntryBody, Event, ParentLink, Plugin, Section, Tool, ToolContext, ToolDefinition, ToolResult } from './types.ts';
+import type { AgentConfig, Entry, EntryBody, Event, OpeningCall, ParentLink, Plugin, Section, Tool, ToolContext, ToolDefinition, ToolResult } from './types.ts';
 
 const SCENARIOS = fileURLToPath(new URL('../../../conformance/scenarios/', import.meta.url));
 const AGENT = 'test';
@@ -41,6 +41,7 @@ type Scenario = {
   agent: Omit<AgentConfig, 'id' | 'plugins'>;
   sections?: Section[];
   tools?: (ToolDefinition & { behaviour: Behaviour })[];
+  calls?: OpeningCall[];
   plugin?: PluginHooks;
   script: (ScriptStep | { abort: string } | { hang: true })[];
   steps: Step[];
@@ -108,7 +109,7 @@ function testPlugin(scenario: Scenario, running: Running): Plugin {
       if (hooks.context !== undefined && 'throw' in hooks.context) throw new Error(hooks.context.throw);
       // `append` fails here, and the hook carries on.
       if (hooks.context !== undefined) await ctx.append({ type: 'custom', plugin: 'test', data: hooks.context.append }).catch(() => {});
-      return { sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map((tool) => toolFor(tool, running)) };
+      return { sections: scenario.sections ?? [], tools: (scenario.tools ?? []).map((tool) => toolFor(tool, running)), calls: scenario.calls ?? [] };
     },
     beforeTool: (call) => hookResult(hooks.beforeTool?.[call.name]),
     afterTool: (call) => hookResult(hooks.afterTool?.[call.name]),

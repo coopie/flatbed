@@ -121,6 +121,9 @@ export type ToolContext = PluginContext & {
   runTool(call: ToolCall): Promise<ToolResult>;
 };
 
+/** A call a plugin asks the loop to make when a session opens, before the model is asked anything. */
+export type OpeningCall = { name: string; input: Record<string, unknown> };
+
 export type ToolResult = { content: (TextBlock | ImageBlock)[]; isError: boolean };
 
 export type Tool = ToolDefinition & {
@@ -131,7 +134,8 @@ type Maybe<T> = T | undefined | void | Promise<T | undefined | void>;
 
 export type Plugin = {
   name: string;
-  context?(ctx: PluginContext): Maybe<{ sections?: Section[]; tools?: Tool[] }>;
+  /** Sections and tools for the session, and calls the loop makes as its first exchange. */
+  context?(ctx: PluginContext): Maybe<{ sections?: Section[]; tools?: Tool[]; calls?: OpeningCall[] }>;
   beforeTool?(call: ToolCall, ctx: ToolContext): Maybe<ToolResult>;
   afterTool?(call: ToolCall, result: ToolResult, ctx: ToolContext): Maybe<ToolResult>;
   onEntry?(entry: Entry, ctx: PluginContext): unknown;

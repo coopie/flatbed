@@ -6,7 +6,7 @@
 import { render, pathOf } from './render.ts';
 import { newEntryId, newSessionId } from './store.ts';
 import type {
-  AgentConfig, AssistantMessage, Entry, EntryBody, Event, Plugin, PluginContext, Provider, RunOutcome,
+  AgentConfig, AssistantMessage, Entry, EntryBody, Event, OpeningCall, Plugin, PluginContext, Provider, RunOutcome,
   Session, Store, Tool, ToolCall, ToolContext, ToolResult,
 } from './types.ts';
 
@@ -16,6 +16,8 @@ export const DEFAULT_MAX_TOKENS = 8_192;
 export const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
 export const SOFT_LIMIT_NOTICE = 'This session is nearly full. Bring your notes up to date, then call reset.';
 const NOT_RUN = 'The harness stopped before this tool ran.';
+/** The `model` of the opening message, which the loop writes itself with no model call behind it. */
+export const HARNESS_MODEL = 'harness';
 
 export const resetTool: Tool = {
   name: 'reset',
@@ -113,6 +115,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
    */
   async function collectContext(session: Session) {
     const sections = [];
+    const calls: OpeningCall[] = [];
     const tools = new Map<string, Tool>();
     const ctx = contextFor(session, 'The session is opening, so nothing can be appended yet.');
     for (const plugin of plugins) {
@@ -123,6 +126,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
         throw new Error(`The ${plugin.name} plugin failed: ${messageOf(error)}`);
       }
       sections.push(...(added?.sections ?? []));
+      calls.push(...(added?.calls ?? []));
       for (const tool of added?.tools ?? []) {
         if (tools.has(tool.name)) throw new Error(`Two tools are named ${tool.name}.`);
         tools.set(tool.name, tool);
@@ -130,23 +134,24 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     }
     if (tools.has(resetTool.name)) throw new Error(`Two tools are named ${resetTool.name}.`);
     tools.set(resetTool.name, resetTool);
-    return { sections, tools };
+    return { sections, tools, calls };
   }
 
   /**
    * Step 1: the agent's newest session, unless it ends in a reset; otherwise a new one. A newest
    * session that holds only its header, because a process stopped after writing it, is opened in place.
+   * The opening calls are returned only for a session this run opened.
    */
-  async function openSession(): Promise<{ session: Session; tools: Map<string, Tool> }> {
+  async function openSession(): Promise<{ session: Session; tools: Map<string, Tool>; calls: OpeningCall[] }> {
     const ids = await store.list(config.id);
     const newestId = ids.at(-1);
     const newest = newestId === undefined ? undefined : await store.read(config.id, newestId);
     if (newest !== undefined && newest.entries.length > 0 && newest.entries.at(-1)?.type !== 'reset') {
-      if (cachedTools?.session === newest.header.id) return { session: newest, tools: cachedTools.tools };
+      if (cachedTools?.session === newest.header.id) return { session: newest, tools: cachedTools.tools, calls: [] };
       // Opened by an earlier process: ask the plugins again for their tools' code.
       const { tools } = await collectContext(newest);
       cachedTools = { session: newest.header.id, tools };
-      return { session: newest, tools };
+      return { session: newest, tools, calls: [] };
     }
     const headerOnly = newest !== undefined && newest.entries.length === 0;
     // The session before the one being opened, whose reset says why this one starts.
@@ -160,7 +165,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
         : { parent: { session: newestId, reason: 'reset' as const } }),
     };
     const session: Session = { header, entries: [] };
-    const { sections, tools } = await collectContext(session);
+    const { sections, tools, calls } = await collectContext(session);
     if (!headerOnly) await store.create(header);
     const definitions = [...tools.values()].map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
     await append(session, { type: 'context', sections, tools: definitions });
@@ -168,7 +173,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
     const why = last?.type !== 'reset' ? 'Session started.' : reason ? `Session started after a reset: ${reason}` : 'Session started after a reset.';
     await append(session, notice(why));
     cachedTools = { session: header.id, tools };
-    return { session, tools };
+    return { session, tools, calls };
   }
 
   /** Step 2: gives every unanswered call of the last assistant message an error result. */
@@ -238,13 +243,12 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
 
   async function run(): Promise<RunOutcome> {
     // 1. Open a session if none is open. Read the store every run, since the host may have appended.
-    const { session, tools } = await openSession();
-    // 2. Repair calls left without a result. 3. Deliver waiting events.
+    const { session, tools, calls: opening } = await openSession();
+    // 2. Repair calls left without a result.
     await repair(session);
-    await deliverQueued(session);
     const softLimit = config.softLimit ?? DEFAULT_SOFT_LIMIT;
     const hardLimit = config.hardLimit ?? DEFAULT_HARD_LIMIT;
-    // 4. Freeze the context. It decides which tools exist and their schemas; the plugins only supply the code.
+    // 3. Freeze the context. It decides which tools exist and their schemas; the plugins only supply the code.
     const { context } = render(pathOf(session.entries));
     const frozen = new Map(context.tools.flatMap((t) => (tools.has(t.name) ? [[t.name, { tool: tools.get(t.name)!, schema: t.inputSchema }] as const] : [])));
     const limit = limiter(toolExecution === 'serial' ? 1 : maxConcurrent);
@@ -302,7 +306,37 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       return { ctx, finish };
     }
 
-    // 5. Loop while the session needs a run.
+    /**
+     * Runs a message's calls by the agent's `toolExecution`, then appends their results in call order.
+     * Returns the reset each call requested, by call index, so that the first in call order wins.
+     */
+    async function runCalls(message: AssistantMessage): Promise<{ reason?: string }[]> {
+      const calls = toolCalls(message);
+      const resets: { reason?: string }[] = [];
+      const start = (call: ToolCall, i: number) => runLimited(call, (reason) => void (resets[i] ??= { reason }));
+      let results: ToolResult[] = [];
+      // A response cut off by maxTokens may hold a call whose input is incomplete, so none of its calls run.
+      if (message.stop === 'maxTokens') results = calls.map(() => errorResult('The response was cut off before this call was complete.'));
+      else if (toolExecution === 'concurrent') results = await Promise.all(calls.map(start));
+      else for (const [i, call] of calls.entries()) results.push(await start(call, i));
+      for (const [i, call] of calls.entries()) {
+        await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
+      }
+      return resets;
+    }
+
+    // 4. Make the opening calls, as the harness's own message. A reset they request is ignored.
+    if (opening.length > 0) {
+      const content = opening.map((call, i): ToolCall => ({ type: 'toolCall', id: `opening-${i + 1}`, name: call.name, input: call.input }));
+      const message: AssistantMessage = { role: 'assistant', content, model: HARNESS_MODEL, usage: { input: 0, output: 0 }, stop: 'toolUse' };
+      await append(session, { type: 'message', message });
+      await runCalls(message);
+      if (signal.aborted) return stopped(session);
+    }
+    // 5. Deliver waiting events.
+    await deliverQueued(session);
+
+    // 6. Loop while the session needs a run.
     while (needsRun(session)) {
       // i. Stop when the stop is set.
       if (signal.aborted) return stopped(session);
@@ -330,25 +364,14 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       // iii. Append the assistant message.
       await append(session, { type: 'message', message });
 
-      // iv. Run the calls, then append their results in call order. A response cut off by maxTokens may
-      // hold a call whose input is incomplete, so none of its calls run. Once the stop is set, a call
-      // that has not started never starts.
-      const calls = toolCalls(message);
-      // The reset each call requested, by call index, so that the first in call order wins.
-      const resets: { reason?: string }[] = [];
-      const start = (call: ToolCall, i: number) => runLimited(call, (reason) => void (resets[i] ??= { reason }));
-      let results: ToolResult[] = [];
-      if (message.stop === 'maxTokens') results = calls.map(() => errorResult('The response was cut off before this call was complete.'));
-      else if (toolExecution === 'concurrent') results = await Promise.all(calls.map(start));
-      else for (const [i, call] of calls.entries()) results.push(await start(call, i));
-      for (const [i, call] of calls.entries()) {
-        await append(session, { type: 'message', message: { role: 'tool', callId: call.id, name: call.name, ...results[i]! } });
-      }
+      // iv. Run the calls, then append their results in call order. Once the stop is set, a call that
+      // has not started never starts.
+      const resets = await runCalls(message);
 
       // v. A reset wins over a stop, since the model has already been told the session will reset.
       const reset = resets.find((r) => r !== undefined);
       if (reset !== undefined) return endSession(session, 'agent', reset.reason);
-      if (signal.aborted && calls.length > 0) return stopped(session);
+      if (signal.aborted && toolCalls(message).length > 0) return stopped(session);
 
       // vi. Check the budget.
       const { input, output, cacheRead = 0, cacheWrite = 0 } = message.usage;
@@ -359,7 +382,7 @@ export function createAgent(config: AgentConfig, deps: { store: Store; providers
       // vii. Deliver waiting events.
       await deliverQueued(session);
     }
-    // 6. End.
+    // 7. End.
     return 'idle';
   }
 
@@ -430,13 +453,17 @@ function untilStopped<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
  * A session needs a run when the last entry on its path, leaving out `custom` and `context` entries,
  * is a tool result or an event from outside the harness. The harness's own notices need no answer,
  * except the soft-limit notice, which the model gets one turn to act on. A stop does not take that
- * turn away, so stop notices after the soft-limit notice are looked past. Worked out from the entries
- * alone, so a restarted process agrees with the one that wrote them.
+ * turn away, so stop notices after the soft-limit notice are looked past. The opening message and its
+ * results are looked past too, since the model asked for nothing. Worked out from the entries alone,
+ * so a restarted process agrees with the one that wrote them.
  */
 function needsRun(session: Session): boolean {
   let afterStop = false;
-  for (const entry of pathOf(session.entries).reverse()) {
-    if (entry.type === 'custom' || entry.type === 'context') continue;
+  const path = pathOf(session.entries);
+  const opening = new Set(path.flatMap((e) => (isOpeningMessage(e) && e.type === 'message' && e.message.role === 'assistant' ? toolCalls(e.message).map((c) => c.id) : [])));
+  for (const entry of path.reverse()) {
+    if (entry.type === 'custom' || entry.type === 'context' || isOpeningMessage(entry)) continue;
+    if (entry.type === 'message' && entry.message.role === 'tool' && opening.has(entry.message.callId)) continue;
     if (entry.type === 'message') return entry.message.role === 'tool' && !afterStop;
     if (entry.type !== 'event') return false;
     if (entry.attrs?.from !== 'harness') return !afterStop;
@@ -445,6 +472,10 @@ function needsRun(session: Session): boolean {
     afterStop = true;
   }
   return false;
+}
+
+function isOpeningMessage(entry: Entry): boolean {
+  return entry.type === 'message' && entry.message.role === 'assistant' && entry.message.model === HARNESS_MODEL;
 }
 
 function toolCalls(message: AssistantMessage): ToolCall[] {

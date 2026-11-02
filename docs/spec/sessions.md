@@ -64,7 +64,7 @@ A message to or from the model, in flatbed's own format.
 There are three roles:
 
 - **`user`**: `content` is a list of blocks. Hosts rarely write these directly; events are the usual way in.
-- **`assistant`**: `content`, plus `model` as `<provider>/<model-name>`, `usage` with `input` and `output` token counts (and `cacheRead` and `cacheWrite` when the provider reports them), and `stop`, one of `end`, `toolUse`, `maxTokens`, `refusal` or `error`. A provider maps a stop reason it does not know to `end`.
+- **`assistant`**: `content`, plus `model` as `<provider>/<model-name>`, or `harness` for the opening message that the loop writes itself, as [loop.md](loop.md) describes, `usage` with `input` and `output` token counts (and `cacheRead` and `cacheWrite` when the provider reports them), and `stop`, one of `end`, `toolUse`, `maxTokens`, `refusal` or `error`. A provider maps a stop reason it does not know to `end`.
 - **`tool`**: the result of one tool call: `callId`, `name`, `content` as a list of blocks, and `isError`.
 
 Content blocks:
