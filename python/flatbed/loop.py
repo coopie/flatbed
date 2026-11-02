@@ -24,6 +24,7 @@ from .types import (
     Entry,
     Event,
     MaybeAwaitable,
+    OpeningCall,
     PluginContext,
     Provider,
     ProviderRequest,
@@ -40,6 +41,8 @@ from .types import (
 SOFT_LIMIT_NOTICE = "This session is nearly full. Bring your notes up to date, then call reset."
 REPAIR_TEXT = "The harness stopped before this tool ran."
 CUT_OFF_TEXT = "The response was cut off before this call was complete."
+# The `model` of the opening message, which the loop writes itself with no model call behind it.
+HARNESS_MODEL = "harness"
 
 
 def _reset_run(tool_input: dict[str, Any], ctx: ToolContext) -> str:
@@ -79,6 +82,14 @@ def error_result(text: str) -> ToolResult:
 
 def tool_calls(message: AssistantMessage) -> list[ToolCall]:
     return [block for block in message["content"] if block["type"] == "toolCall"]
+
+
+def is_opening_message(entry: Entry) -> bool:
+    return (
+        entry["type"] == "message"
+        and entry["message"]["role"] == "assistant"
+        and entry["message"].get("model") == HARNESS_MODEL
+    )
 
 
 def unanswered_calls(path: list[Entry]) -> list[ToolCall]:
@@ -208,15 +219,34 @@ class Agent:
 
     async def _run(self, stop: StopSignal) -> RunOutcome:
         # 1. Open a session if none is open. Read the store every run: the host may have appended.
-        session, tools = await self._open_session()
-        # 2. Repair calls left without a result. 3. Deliver waiting events.
+        session, tools, opening = await self._open_session()
+        # 2. Repair calls left without a result.
         await self._repair(session)
-        await self._deliver_queued(session)
 
-        # 4. Freeze the context: the last context entry on the path, for the whole run.
+        # 3. Freeze the context: the last context entry on the path, for the whole run.
         frozen = render(path_of(session.entries))
 
-        # 5. Loop while the session needs a run.
+        # 4. Make the opening calls, as the harness's own message. A reset they request is ignored.
+        if opening:
+            content: list[Any] = [
+                {"type": "toolCall", "id": f"opening-{index}", "name": call["name"], "input": call["input"]}
+                for index, call in enumerate(opening, start=1)
+            ]
+            harness_message: AssistantMessage = {
+                "role": "assistant",
+                "content": content,
+                "model": HARNESS_MODEL,
+                "usage": {"input": 0, "output": 0},
+                "stop": "toolUse",
+            }
+            await self._append(session, {"type": "message", "message": harness_message})
+            await self._make_calls(harness_message, frozen.tools, tools, session)
+            if stop.is_set:
+                return await self._stopped(session, stop)
+        # 5. Deliver waiting events.
+        await self._deliver_queued(session)
+
+        # 6. Loop while the session needs a run.
         while self._needs_run(session):
             # i. Stop when the stop is set.
             if stop.is_set:
@@ -250,23 +280,13 @@ class Agent:
             # iii. Append the assistant message.
             await self._append(session, {"type": "message", "message": message})
 
-            # iv. Run the calls, then append their results in call order. A response cut off by the
-            # token limit may hold a call with half its input, so none of its calls run.
-            calls = tool_calls(message)
-            # The reset each call requested, by call index, so that the first in call order wins.
-            resets: dict[int, str | None] = {}
-            if message["stop"] == "maxTokens":
-                results = [error_result(CUT_OFF_TEXT) for _ in calls]
-            else:
-                results = await self._run_calls(calls, frozen.tools, tools, session, resets)
-            for call, result in zip(calls, results, strict=True):
-                tool_message = {"role": "tool", "callId": call["id"], "name": call["name"], **result}
-                await self._append(session, {"type": "message", "message": tool_message})
+            # iv. Run the calls, then append their results in call order.
+            resets = await self._make_calls(message, frozen.tools, tools, session)
 
             # v. A reset wins over a stop, since the model has already been told the session will reset.
             if resets:
                 return await self._end_session(session, "agent", resets[min(resets)])
-            if calls and stop.is_set:
+            if tool_calls(message) and stop.is_set:
                 return await self._stopped(session, stop)
 
             # vi. Check the budget.
@@ -279,25 +299,46 @@ class Agent:
 
             # vii. Deliver waiting events.
             await self._deliver_queued(session)
-        # 6. End.
+        # 7. End.
         return "idle"
+
+    async def _make_calls(
+        self,
+        message: AssistantMessage,
+        definitions: list[ToolDefinition],
+        code: dict[str, Tool],
+        session: Session,
+    ) -> dict[int, str | None]:
+        """Runs a message's calls, then appends their results in call order. Returns the reset each
+        call requested, by call index, so that the first in call order wins. A response cut off by the
+        token limit may hold a call with half its input, so none of its calls run."""
+        calls = tool_calls(message)
+        resets: dict[int, str | None] = {}
+        if message["stop"] == "maxTokens":
+            results = [error_result(CUT_OFF_TEXT) for _ in calls]
+        else:
+            results = await self._run_calls(calls, definitions, code, session, resets)
+        for call, result in zip(calls, results, strict=True):
+            tool_message = {"role": "tool", "callId": call["id"], "name": call["name"], **result}
+            await self._append(session, {"type": "message", "message": tool_message})
+        return resets
 
     # Opening, repairing and ending sessions.
 
-    async def _open_session(self) -> tuple[Session, dict[str, Tool]]:
+    async def _open_session(self) -> tuple[Session, dict[str, Tool], list[OpeningCall]]:
         """The agent's newest session, unless it ends in a reset; otherwise a new one. A newest
         session that holds only its header, because a process stopped after writing it, is opened
-        in place."""
+        in place. The opening calls are returned only for a session this run opened."""
         ids = await self.store.list(self.config.id)
         newest = await self.store.read(self.config.id, ids[-1]) if ids else None
         last = newest.entries[-1] if newest and newest.entries else None
         if newest is not None and last is not None and last["type"] != "reset":
             if self._tools is not None and self._tools[0] == newest.header["id"]:
-                return newest, self._tools[1]
+                return newest, self._tools[1], []
             # Opened by an earlier process: ask the plugins again for their tools' code.
-            _, tools = await self._collect_context(newest)
+            _, tools, _ = await self._collect_context(newest)
             self._tools = (newest.header["id"], tools)
-            return newest, tools
+            return newest, tools, []
 
         header_only = newest is not None and not newest.entries
         if newest is not None and header_only:
@@ -307,7 +348,7 @@ class Agent:
             last = previous[-1] if previous else None
         else:
             session = Session(header=self._new_header(ids), entries=[])
-        sections, tools = await self._collect_context(session)
+        sections, tools, calls = await self._collect_context(session)
         if not header_only:
             await self.store.create(session.header)
         definitions = [tool.definition() for tool in tools.values()]
@@ -320,7 +361,7 @@ class Agent:
             why = "Session started after a reset."
         await self._append(session, notice(why))
         self._tools = (session.header["id"], tools)
-        return session, tools
+        return session, tools, calls
 
     def _new_header(self, ids: list[str]) -> Any:
         """A header for a new session: its parent is the previous session, or the agent's parent."""
@@ -338,10 +379,13 @@ class Agent:
             header["parent"] = dict(self.config.parent)
         return header
 
-    async def _collect_context(self, session: Session) -> tuple[list[Any], dict[str, Tool]]:
+    async def _collect_context(
+        self, session: Session
+    ) -> tuple[list[Any], dict[str, Tool], list[OpeningCall]]:
         """Calls every plugin's `context` hook, and adds the core `reset` tool after their tools.
         Nothing can be appended yet, since a session's first entry is its `context` entry."""
         sections: list[Any] = []
+        calls: list[OpeningCall] = []
         tools: dict[str, Tool] = {}
         ctx = self._context(session, refusal="The session is opening, so nothing can be appended yet.")
         for plugin in self.config.plugins:
@@ -350,12 +394,13 @@ class Agent:
             except Exception as error:
                 raise RuntimeError(f"The {plugin.name} plugin failed: {message_of(error)}") from error
             sections.extend(added.sections)
+            calls.extend(added.calls)
             for tool in added.tools:
                 if tool.name in tools or tool.name == RESET_TOOL.name:
                     raise ValueError(f"Two tools are named {tool.name}.")
                 tools[tool.name] = tool
         tools[RESET_TOOL.name] = RESET_TOOL
-        return sections, tools
+        return sections, tools, calls
 
     async def _repair(self, session: Session) -> None:
         """Gives every unanswered call of the last assistant message an error result."""
@@ -446,10 +491,17 @@ class Agent:
         """True when the last entry on the path, leaving out custom and context entries, is a tool
         result or an event from outside the harness. The harness's own notices need no answer, except
         the soft-limit notice, which the model gets one turn to act on. A stop does not take that turn
-        away, so stop notices after the soft-limit notice are looked past."""
+        away, so stop notices after the soft-limit notice are looked past. The opening message and its
+        results are looked past too, since the model asked for nothing."""
         after_stop = False
-        for entry in reversed(path_of(session.entries)):
-            if entry["type"] in ("custom", "context"):
+        path = path_of(session.entries)
+        opening = {
+            call["id"] for entry in path if is_opening_message(entry) for call in tool_calls(entry["message"])
+        }
+        for entry in reversed(path):
+            if entry["type"] in ("custom", "context") or is_opening_message(entry):
+                continue
+            if entry["type"] == "message" and entry["message"].get("callId") in opening:
                 continue
             if entry["type"] == "message":
                 return entry["message"]["role"] == "tool" and not after_stop

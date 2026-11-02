@@ -105,7 +105,7 @@ def make_plugin(scenario: dict[str, Any], running: Running) -> Plugin:
             # `append` fails here, and the hook carries on.
             with contextlib.suppress(Exception):
                 await ctx.append({"type": "custom", "plugin": "test", "data": opening["append"]})
-        return ContextAddition(sections=scenario["sections"], tools=tools)
+        return ContextAddition(sections=scenario["sections"], tools=tools, calls=scenario.get("calls", []))
 
     async def on_entry(entry: dict[str, Any], ctx: Any) -> None:
         if entry["type"] == "message" and entry["message"]["role"] == "tool":

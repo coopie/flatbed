@@ -9,8 +9,8 @@ use flatbed::providers::faux::{Faux, Script, Scripted};
 use flatbed::render::path_of;
 use flatbed::{
     Agent, AgentConfig, Block, Contribution, Ctx, Entry, EntryBody, Event, Header, MemoryStore,
-    Message, ParentLink, Plugin, Provider, Section, Session, Stop, StopSignal, Store, Tool,
-    ToolCall, ToolDefinition, ToolExecution, ToolResult, Usage,
+    Message, OpeningCall, ParentLink, Plugin, Provider, Section, Session, Stop, StopSignal, Store,
+    Tool, ToolCall, ToolDefinition, ToolExecution, ToolResult, Usage,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -32,6 +32,8 @@ struct Scenario {
     sections: Vec<Section>,
     #[serde(default)]
     tools: Vec<ScenarioTool>,
+    #[serde(default)]
+    calls: Vec<OpeningCall>,
     #[serde(default)]
     plugin: Hooks,
     script: Vec<ScriptStep>,
@@ -175,6 +177,7 @@ struct Expect {
 struct ScenarioPlugin {
     sections: Vec<Section>,
     tools: Vec<ScenarioTool>,
+    calls: Vec<OpeningCall>,
     hooks: Hooks,
 }
 
@@ -200,6 +203,7 @@ impl Plugin for ScenarioPlugin {
                 .iter()
                 .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
                 .collect(),
+            calls: self.calls.clone(),
         })
     }
 
@@ -417,6 +421,7 @@ fn agent(
     config.plugins.push(Box::new(ScenarioPlugin {
         sections: scenario.sections.clone(),
         tools: tools.collect(),
+        calls: scenario.calls.clone(),
         hooks: scenario.plugin.clone(),
     }));
     let providers = HashMap::from([("faux".to_string(), faux as Arc<dyn Provider>)]);
