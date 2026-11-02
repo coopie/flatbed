@@ -45,3 +45,29 @@ Work for at most 150 minutes, and write up what you have when you reach it, at t
 **Suggestions.** `docs/stack.md` could say that the example app's tests read `DATABASE_URL` from `.env`, so a builder who links `.env` for a live run should run `scripts/check.sh assistant` without it until the Supabase project is back. The walkthrough, a snapshot from 6 October, does not mention opening calls.
 
 **How it went.** The probe first meant the provider risk was settled in a few minutes, before any core changed. TypeScript first, as the reference, made handing Python and Rust to two parallel agents with the commit hash a quick, clean job. The spec had no word for an assistant message no model wrote, and "When a session needs a run" needed one more exception. Both are now in loop.md.
+
+## Review
+
+A careful piece. The spec reads as one account rather than a patch: the run steps are renumbered cleanly, "Opening calls" says what the message is, how it counts and what happens on a stop, a reset and a crash, and needs-run and the budget each gained one clause. The three cores make the same change in the same shape, with the turn's call-running pulled out once in each, and scenarios 47 and 48 show the behaviour a reader would notice. The provider probe before any core changed was the right order. The commit check in `startup.ts` is small and its tests are at the plugin's boundary.
+
+**What I changed** (one commit, `a550749`, and this section):
+
+- A fixed-entry problem told the agent the entry "should be" the host's entry without `"fixed": true`. An agent that copied it in failed the check again, with the same message. It now shows the entry with its flag, and the test expects that.
+- The `startup-problems` section built its wording by `.replace` on the refusal text, which would silently stop working if the refusal's wording changed. `startupRefusal` now takes what happened as an argument.
+- The README said `pin_doc` refuses a fixed-read document, but there is no `pin_doc` with `startup`.
+- `docs/stack.md` now says the example app's tests read `DATABASE_URL` from `.env`, and that with the shared `.env` linked, `scripts/check.sh` stops at `assistant` and never runs `playground`, `python` or `rust`. The builder suggested the first half; I hit the second, since the worktree still had the `.env` link.
+
+Checks: with `.env` linked, `ts` passes and `assistant` fails only on the five Postgres tests, as the write-up says. `scripts/check.sh playground python rust` passes. `scripts/check.sh ts` passes after my change. I did not make a live run, since my changes do not touch how a request is built.
+
+**What I flagged:**
+
+- An opening `reset` is ignored, but its result still says "Session will reset after this turn." The model's first exchange then holds a statement that is false. Either the core gives an opening `reset` an error result, such as "reset does nothing as an opening call", or `checkStartup` refuses `reset` in `startup.json`. The first is a spec and suite change in three cores; the second covers the one host. I left it for the lead.
+- `read_doc`'s description still says "unless it is pinned and already in your context", which is wrong with `startup`. Rewording it to "unless it is already in your context" fits both modes, but it changes the tools' bytes that `examples/playground/recordings/press.json` holds, so I left it.
+- Read-only covers only documents a fixed `read_doc` reads, as the write-up says. If Parker has its own reading tools in fixed entries, those documents stay writable.
+- The fixed-entry check reports the first mismatch and stops. That keeps one bad edit from listing every later fixed entry, but it is a narrower reading of "every problem at once".
+- `supervisor/agent.ts` takes the verdict's `model` from the last assistant message, which would be `harness` for a supervisor agent with opening calls and no reply. No supervisor has opening calls today.
+
+**Where the docs did not give me enough to judge:**
+
+- Whether a plugin's opening calls should go through every plugin's `beforeTool`, including a supervisor guard, which may spend a model call judging a read the host chose. The brief says through `beforeTool`, and the spec now does, but nothing says whether a guard should look past harness calls.
+- Whether `.env` is meant to stay linked in a worktree after a live run. The brief says to link it; the write-up says it was removed; it was there when I started. Nothing says whose job it is to unlink it.

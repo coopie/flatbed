@@ -32,4 +32,6 @@ The example app's sessions page shows the same view for its agents.
 
 Tests that call a real model are skipped unless `FLATBED_LIVE=1`, so the ordinary run is fast, free and passes on a fresh clone. Live runs read `ANTHROPIC_API_KEY` from `.env` at the repo root, which git ignores.
 
+The example app's tests read `DATABASE_URL` from the same `.env`, and run against Postgres when it is set. The shared `.env` still holds the URL of the Supabase project that is gone, so with it linked into a worktree the `assistant` section fails with "tenant/user ... not found", and `scripts/check.sh` stops there without running the sections after it. Until the project is restored, run `scripts/check.sh` with `.env` unlinked, or run the other sections by name.
+
 Never print, log or commit a value from `.env`. Session logs, write-ups and command output are read by other agents and people, so a key that reaches any of them has leaked.
