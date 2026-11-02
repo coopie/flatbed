@@ -18,7 +18,8 @@ flatbed succeeds if a reader can understand the whole core in one sitting, and t
 
 **Plugins and libraries, in `ts/packages/`:**
 
-- `docs`: a versioned document store, documents chosen as context sections by pinning or by `startup.json`, the agent's daily timeline last, and tools to read and write them
+- `docs`: a versioned document store, documents chosen as context sections by pinning, the agent's daily timeline last, and tools to read and write them
+- `resources`: structured state the system acts on, such as a schedule, which the agent reads as JSON and changes with JSON Patch, each change checked whole against a schema and the resource's own check; and the startup resource, a list of tool calls that decides what a session opens with
 - `supervisor`: a spec format for a supervisor (task, preamble, checklist), the verdict schema derived from it, a runner that checks a session in one model call or with an agent, and a plugin that applies verdicts to tool calls
 - `mcp`: tools served by MCP servers, which is how a tool written in any language joins an agent
 - `dispatch`: sub-agents, as child sessions that report back
@@ -37,7 +38,8 @@ A lightly held plan, started on 6 October 2026 and last rewritten on 18 October.
 
 - The docs and the spec, with the docs brought in line with Sam's updated starter docs on 18 October.
 - The core in TypeScript, Python and Rust, aligned on 18 October to one async host API ([spec/host.md](spec/host.md)). Each passes the same 48 conformance scenarios and has the fake, Anthropic and OpenAI-compatible providers and a rough CLI. Each runs a turn's tool calls together or one at a time, by the agent's `toolExecution`, and gives tools `ctx.runTool` to run other calls under the same limit. A session's tools are fixed when it opens: tools that joined a session part way through, added on 19 October, broke thinking models on Anthropic and were taken out on 20 October, as [decisions.md](decisions.md) records. Since 2 November a plugin can give a session opening calls, which the loop makes as the harness's own first exchange, so that material such as notes arrives as tool results rather than in the system prompt. All three have passed the live check against Anthropic.
-- The docs plugin: documents as context, chosen by pinning or, from 2 November, by a `startup.json` document of tool calls that the host's fixed entries anchor, and the timeline.
+- The docs plugin: documents as context, chosen by pinning, and the timeline.
+- The resources library and plugin, from 2 November: structured state read as JSON and changed with JSON Patch against a version, with startup, what a session opens with, as its first resource. It took startup over from the docs plugin, where it had been a `startup.json` document for a day.
 - The supervisor: the spec format, one-call and agent runners, and the guard plugin.
 - The MCP plugin, with a Python MCP server as the example, and the dispatch plugin for sub-agents.
 - Codemode in all three languages, on one shared Monty worker process, reviewed and fixed: [codemode.md](codemode.md).
@@ -58,7 +60,7 @@ A lightly held plan, started on 6 October 2026 and last rewritten on 18 October.
 
 **Built on flatbed elsewhere**
 
-- [Parker](https://github.com/coopie/parker), a personal agent Sam talks to on Telegram, from 19 October 2026. It depends on flatbed's core, docs plugin and supervisor, opens its sessions from `startup.json` from 2 November, and grows a toolbelt of tool groups that may come back here once a second agent needs it.
+- [Parker](https://github.com/coopie/parker), a personal agent Sam talks to on Telegram, from 19 October 2026. It depends on flatbed's core, docs plugin and supervisor, opens its sessions from startup from 2 November, is moving its schedule and briefs to resources, and grows a toolbelt of tool groups that may come back here once a second agent needs it.
 
 **Later, if it earns its place**
 
