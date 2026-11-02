@@ -45,6 +45,7 @@ test('a write to startup.json is checked as a whole, and refused with every prob
     { name: 'read_doc', input: { name: 'notes' } },
     { name: 'read_doc', input: { name: 'rules' }, system: true },
     { name: 'send_email', input: {} },
+    { name: 'reset', input: {} },
   ]);
   const good = JSON.stringify([...FIXED.map((e) => ({ ...e, fixed: true })), { name: 'read_doc', input: { name: 'notes' } }]);
   const { agent, faux, docs } = await setUp([
@@ -61,6 +62,7 @@ test('a write to startup.json is checked as a whole, and refused with every prob
   deepEqual(lines.slice(1, -1), [
     '- Entry 2 is a system entry after one that is not. System entries come first.',
     '- Entry 3 calls send_email, which is not one of your tools.',
+    '- Entry 4 calls reset, which would end every session as it opened.',
     '- The host\'s fixed entries must stay as they are and in their order. Fixed entry 1 should be {"name":"read_doc","input":{"name":"soul"},"system":true,"fixed":true}.',
   ]);
   equal(second![1], true);

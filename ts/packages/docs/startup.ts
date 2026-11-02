@@ -67,7 +67,8 @@ export function checkStartup(body: string, fixed: StartupEntry[], tools?: string
     }
     const entry: StartupEntry = { name: raw.name, input: raw.input, system: raw.system === true, fixed: raw.fixed === true };
     entries.push(entry);
-    if (tools !== undefined && !tools.includes(entry.name)) problems.push(`${at} calls ${entry.name}, which is not one of your tools.`);
+    if (entry.name === 'reset') problems.push(`${at} calls reset, which would end every session as it opened.`);
+    else if (tools !== undefined && !tools.includes(entry.name)) problems.push(`${at} calls ${entry.name}, which is not one of your tools.`);
     if (!entry.system) systemEnded = true;
     else if (systemEnded) problems.push(`${at} is a system entry after one that is not. System entries come first.`);
     else if (systemRead(entry) === undefined) problems.push(`${at} is a system entry, so it must read one document with read_doc.`);
