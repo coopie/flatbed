@@ -45,3 +45,26 @@ The live run on `claude-opus-5-5` with thinking passed in 11 s. In one parallel 
 **What is left.** Parker still has to move `cron.json`, `briefs/` and its `startup.json` document over; the README says how to copy startup across. Python and Rust have no resources, since this is a TS plugin.
 
 **How it went.** The brief was clear, and Parker's `cron.ts` and `agent-tools.md` made the shape obvious. What took longest was turning `@cfworker/json-schema`'s nested errors into one line per problem. In `assistant` and `playground`, `scripts/check.sh` prints "× installing dependencies" from pnpm's `verifyDepsBeforeRun`, but passes. It does this on the base branch too, and is worth a look.
+
+## Review
+
+The piece does what the brief asks, and reads well. The library is small and the refusals are written for the agent: a failed path names what is there instead, schema errors come once each at the deepest place, and a stale edit says to read again. Startup moved over whole, with its fallback, `reset` refusal and read-only fixed reads, and the docs plugin is simpler for losing it. The README is enough to set a host up from. `scripts/check.sh ts` and `scripts/check.sh playground` pass after my changes, with `.env` unlinked. I did not repeat the live run.
+
+**What I changed,** in one commit:
+- `applyPatch` refused nothing when a path ended in `__proto__`: the assignment set the copy's prototype, so the member never reached the value, yet the edit reported "Saved". `add` (and so `replace`, `move` and `copy`) now refuses a member named `__proto__`.
+- A `from` that was not a string failed with "Pointer.startsWith is not a function". The well-formedness check now says `from` must be a JSON Pointer.
+- `memoryResourceStore` handed out its own stored objects from `get` and `history`, so a host that changed what it read changed the history. It now returns copies, as the file store does.
+- The decision said the patch code was about 150 lines; it is about 170.
+
+**What I flagged,** for the lead:
+- **Plugin order now matters twice.** The resources plugin must come before docs so the system reads sit before the timeline, and the refusal of writes to fixed reads moved from inside the docs tools to startup's `beforeTool`. A plugin listed earlier whose `beforeTool` answers a `write_doc` first, such as a guard that holds a call for a person and runs it later, would skip that refusal. The README says to list resources first; it does not say why for the second reason.
+- **Two section cache marks.** Startup marks its last system read and docs marks its guide, which uses both section breakpoints the Anthropic provider has left after the tools and history. Fine today, but a third plugin's mark would be dropped silently.
+- **`readOnly` is followed through `properties`, `patternProperties`, `additionalProperties`, `prefixItems` and `items` only.** A schema that puts a host field under `allOf`, `anyOf`, `oneOf` or `$ref` leaves it unprotected with no warning. Parker's schedule and briefs will not need those, but `createResources` could refuse a `readOnly` it cannot reach.
+- **`@flatbed/resources` depends on `@flatbed/docs`** only for startup. Parker's schedule will pull in docs with it. A subpath export for startup would cut that if a host ever wants resources alone.
+- **Worker compatibility is inferred,** from tests passing under `--disallow-code-generation-from-strings`, not run in `workerd`. That is a fair proxy, but Parker's first deploy is the real test.
+- Copying an entry that has a host field into a new key is refused with "this edit sets it. Leave it as it is.", which is right but reads oddly for a copy. Minor.
+
+**Where the docs did not give me enough to judge:**
+- Whether a TS-only plugin with its own on-disk format needs a spec. The docs plugin set the precedent of none, and `ways-of-working` speaks of the spec only for the core, so I took it as fine.
+- How many cache marks a plugin may use, and how plugins should agree on order. Nothing in the spec or `stack.md` says, and this piece is the first where two plugins' sections must interleave in a set order.
+- How to check that code runs in a Cloudflare Worker. The brief asks for it, and `stack.md` does not say how; a `wrangler dev` or `workerd` smoke test there would let the next piece check rather than infer.
