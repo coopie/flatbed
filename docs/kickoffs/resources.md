@@ -25,3 +25,23 @@ JSON Schema validation needs a validator. A small, well-known one is fine; check
 ## Time and setting
 
 Work for at most 150 minutes, and write up what you have at the bottom of this brief. Questions go to the lead, in a `## Question for the lead` section here, carrying on with your best guess. Work on the branch `resources` in the worktree `~/Documents/Programming/flatbed-wt/resources`, commit as you go, and leave merging to the lead. For live runs, symlink `.env` from `~/Documents/Programming/flatbed/.env` and remove the link when you finish; with it in place, `scripts/check.sh` fails at `assistant` on Postgres tests, as `docs/stack.md` says, so run the other sections by name. Never print or log a value from `.env`. Never use em dashes in anything you write.
+
+## Write-up
+
+**What changed.** A new package, `ts/packages/resources`, with a [README](../../ts/packages/resources/README.md) a host can set up from. `createResources(store, definitions)` is the library: `read`, `edit` (a JSON Patch against a version), `write` (a whole value) and `problems`. Every change is applied to a copy, then the schema, the `readOnly` fields (skipped for `host: true`) and `check` are applied, and it is saved as the next version or refused with every problem. The store refuses a stale `put` itself, so the host and the agent cannot overwrite each other. `memoryResourceStore` and `fileResourceStore` (in `/node`) keep every version. `resourcesPlugin` adds the `resources` section and `read_resource` and `edit_resource`, and runs each resource's own hooks. Startup is now `startupResource({ fixed, docs, folders? })`, with everything it did before: the fixed entries kept by its check, `reset` refused, the fallback and `startup-problems` section, read-only fixed reads and missing or sealed reads. The docs plugin lost `startup` and gained `pinning: false`, which also drops pinning from `read_doc`'s description. The decision entry and the overview are updated.
+
+**Choices someone could make differently.**
+- JSON Patch is written in the package (171 lines) rather than taken from `fast-json-patch`, so a failed path says what is there instead, such as an object's members.
+- The validator is `@cfworker/json-schema`, which has no `eval` or `new Function`. The tests pass under `node --disallow-code-generation-from-strings`. I did not run it inside `workerd`.
+- Startup stays an ordered list, since order matters. Its problems now name entries by path (`The entry at /1`), to match patch paths.
+- `@flatbed/resources` depends on `@flatbed/docs`, but only for startup: it renders system reads with `renderDoc`, and refuses writes to fixed reads through `writeTarget` in its own `beforeTool`. That keeps the docs plugin free of startup.
+- Section order is now resources, the system reads, then the docs guide and the timeline. Before, the docs guide came first.
+- `readOnly` fields are compared only where the object holding them survives, so removing a whole entry is allowed. In lists they are compared by position.
+
+**How I know it works.** `scripts/check.sh` passed with `.env` unlinked ("all checks passed"). Resources has 11 tests: six at the boundary (the six cases the brief lists) and the five startup tests, ported. Docs has 12. The playground check and build passed. Its recording is unchanged, because it pins, so the tool bytes are the same.
+
+The live run on `claude-opus-5-5` with thinking passed in 11 s. In one parallel turn Opus read both resources and the doc list. In the next it sent two patches. One went to `startup`: `add /-` with a notes read, saved. The other went to `schedule`: two `replace` operations and an `add` with a new key. That one was refused as stale, because the test's host fired the entry in between. Opus read the schedule again, saw `lastRun`, and resent the same patch against version 2, which was saved, with `lastRun` kept. Its paths, ops and values were correct throughout. A probe I did not keep asked it to "replace" an entry that had `lastRun`. It wrote `remove` then `add` under new ids, which is allowed. JSON Patch looks like a low risk for Opus. I have not tried smaller models.
+
+**What is left.** Parker still has to move `cron.json`, `briefs/` and its `startup.json` document over; the README says how to copy startup across. Python and Rust have no resources, since this is a TS plugin.
+
+**How it went.** The brief was clear, and Parker's `cron.ts` and `agent-tools.md` made the shape obvious. What took longest was turning `@cfworker/json-schema`'s nested errors into one line per problem. In `assistant` and `playground`, `scripts/check.sh` prints "× installing dependencies" from pnpm's `verifyDepsBeforeRun`, but passes. It does this on the base branch too, and is worth a look.
