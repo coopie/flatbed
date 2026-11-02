@@ -86,6 +86,9 @@ function add(root: { value: Json }, parts: string[], value: Json): void {
     else if (INDEX.test(last) && Number(last) <= parent.length) parent.splice(Number(last), 0, value);
     else throw new Error(`${pointerOf(parts)} is not a place in the list: use an index from 0 to ${parent.length}, or - to add at the end.`);
   } else {
+    // Assigning __proto__ would set the object's prototype rather than add a member, so the edit
+    // would report saved while the member never reached the value.
+    if (last === '__proto__') throw new Error('A member cannot be named __proto__.');
     parent[last] = value;
   }
 }
@@ -147,6 +150,7 @@ function malformed(patch: unknown): string | undefined {
     if (!isObject(operation)) return `${at} is not an object.`;
     if (typeof operation.op !== 'string' || !OPS.includes(operation.op)) return `${at} has op ${JSON.stringify(operation.op)}. The ops are ${OPS.join(', ')}.`;
     if (typeof operation.path !== 'string') return `${at} needs a "path", a JSON Pointer such as /ola-card/prompt.`;
+    if (Object.hasOwn(operation, 'from') && typeof operation.from !== 'string') return `${at} has a "from" that is not a JSON Pointer, such as /ola-card/prompt.`;
     const unknown = Object.keys(operation).filter((k) => !['op', 'path', 'value', 'from'].includes(k));
     if (unknown.length > 0) return `${at} has ${unknown.map((k) => JSON.stringify(k)).join(', ')}, which an operation does not take. It takes op, path, and value or from.`;
   }

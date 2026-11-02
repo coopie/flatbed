@@ -31,7 +31,9 @@ export function memoryResourceStore(): ResourceStore {
   const resources = new Map<string, Stored[]>();
   return {
     async get(name) {
-      return resources.get(name)?.at(-1);
+      // A copy, as the file store gives, so a caller that changes what it read cannot change the store.
+      const newest = resources.get(name)?.at(-1);
+      return newest && structuredClone(newest);
     },
     async put(name, value, expected, by) {
       const versions = resources.get(name) ?? [];
@@ -41,7 +43,7 @@ export function memoryResourceStore(): ResourceStore {
       return stored;
     },
     async history(name) {
-      return [...(resources.get(name) ?? [])];
+      return structuredClone(resources.get(name) ?? []);
     },
   };
 }
