@@ -41,7 +41,7 @@ const schedule: Resource<Schedule> = {
 - `onChange`: called after every saved change, by the agent or the host.
 - `plugin(self)`: hooks of the resource's own, run as part of the resources plugin, such as context made from its value. `self.read()` gives the value, and `self.problems(value)` checks one. The startup resource below uses it.
 
-**Fields marked `readOnly: true` belong to the host.** An edit by the agent that would set, change or remove one is refused. A field is compared only where the object that holds it is still there, so the agent can still remove a whole entry. The check follows `properties`, `patternProperties`, `additionalProperties`, `prefixItems` and `items`, not `$ref`.
+**Fields marked `readOnly: true` belong to the host.** An edit by the agent that would set, change or remove one is refused. A field is compared only where the object that holds it is still there, so the agent can still remove a whole entry. The check follows `properties`, `patternProperties`, `additionalProperties`, `prefixItems` and `items`, and not `$ref`, `allOf`, `anyOf` or `oneOf`, so keep host fields where it can find them.
 
 **Collections keyed by id suit resources best,** such as `{"weekly-plan": {...}, "bins": {...}}`. A patch path such as `/weekly-plan/prompt` then names the same entry whatever else changes, and `readOnly` fields are compared by key. In a list they are compared by position, so removing an early item looks like a change to every host field after it. Use a list where order matters, as startup does.
 
@@ -104,7 +104,7 @@ const resources = createResources(fileResourceStore('data/resources/wren'), [
 const plugins = [resourcesPlugin(resources), docsPlugin({ store: docs, pinning: false })];
 ```
 
-Give the docs plugin `pinning: false`, so that there is no `pin_doc`, seeds are written unpinned, and its guide and `read_doc` no longer mention pinning. If the docs plugin has folders, give `startupResource` the same `folders`, so that a system read of a sealed document stays empty. List the resources plugin first, so that the system reads come before the docs plugin's guide and timeline.
+Give the docs plugin `pinning: false`, so that there is no `pin_doc`, seeds are written unpinned, and its guide and `read_doc` no longer mention pinning. If the docs plugin has folders, give `startupResource` the same `folders`, so that a system read of a sealed document stays empty. List the resources plugin first, so that the system reads come before the docs plugin's guide and timeline, and so that its refusal of writes to fixed documents runs before any guard that might hold a write.
 
 Its initial value is the fixed entries. An edit is refused, with every problem at once, when it puts a `system` entry after one that is not, has a `system` entry that is not a `read_doc` of one document, calls a tool the agent does not have in the session it edits from, calls `reset`, which would end every session as it opened, or drops, changes, reorders or adds a fixed entry. A change reaches the agent from its next session. A stored value that no longer passes when a session opens, such as after the host changed its fixed entries, is set aside for that session: it opens with the fixed entries alone, and a `startup-problems` section says what to fix. A system read of a document that does not exist, or is in a sealed folder, gives an empty `<doc name="..." missing="true">`. `startupProblems` is exported for a host that wants the same check elsewhere, such as in a dashboard.
 
